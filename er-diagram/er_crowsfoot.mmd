@@ -2,8 +2,8 @@ erDiagram
     %% DephGraph — crow's-foot ER diagram (matches schema.sql, 23 tables)
 
     TEAM ||--o{ SERVICE : owns
+    TEAM ||--o{ REMEDIATION_PLAN : raises
     SERVICE ||--o{ DEPLOYMENT : "deployed as"
-    SERVICE ||--o| REMEDIATION_PLAN : has
     SERVICE ||--o{ PR_REVIEW : targets
     SERVICE ||--o{ WAIVED_FOR : "waiver for"
     PACKAGE ||--o{ PACKAGE_VERSION : "has version"
@@ -24,7 +24,6 @@ erDiagram
     PACKAGE_VERSION ||--o{ AFFECTS : "affected by"
     VULNERABILITY ||--o{ WAIVED_FOR : waived
     REMEDIATION_PLAN ||--o{ REMEDIATION_ACTION : contains
-    PACKAGE ||--o{ REMEDIATION_ACTION : "acted on"
     REMEDIATION_ACTION ||--o{ RESOLVES : resolves
     VULNERABILITY ||--o{ RESOLVES : "resolved by"
     PR_REVIEW ||--o{ PR_RISK_VERDICT : "produces"
@@ -154,7 +153,7 @@ erDiagram
     }
     REMEDIATION_PLAN {
         int plan_id PK
-        int service_id FK, UK
+        int team_id FK
         timestamp created_at
         enum status
     }
@@ -162,7 +161,6 @@ erDiagram
         int plan_id PK, FK
         int action_seq PK "partial key"
         enum action_type
-        int package_id FK
         varchar target_version
         decimal est_effort_hrs
     }

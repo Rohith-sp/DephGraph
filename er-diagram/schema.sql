@@ -286,26 +286,25 @@ CREATE TABLE waived_for (
 
 CREATE TABLE remediation_plan (
     plan_id        INT AUTO_INCREMENT PRIMARY KEY,
-    service_id     INT NOT NULL UNIQUE,     -- UNIQUE enforces the 1:1
+    team_id        INT NOT NULL,            -- total participation in RAISED_BY (1:N)
     created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     status         ENUM('DRAFT','APPROVED','IN_PROGRESS','DONE') NOT NULL DEFAULT 'DRAFT',
-    CONSTRAINT fk_plan_service FOREIGN KEY (service_id)
-        REFERENCES service(service_id) ON DELETE CASCADE
+    CONSTRAINT fk_plan_team FOREIGN KEY (team_id)
+        REFERENCES team(team_id) ON DELETE RESTRICT
 ) ENGINE=InnoDB;
+
+CREATE INDEX idx_plan_team ON remediation_plan(team_id);
 
 -- WEAK ENTITY: an action has no meaning outside its plan
 CREATE TABLE remediation_action (
     plan_id        INT NOT NULL,
     action_seq     INT NOT NULL,                        -- partial key
     action_type    ENUM('UPGRADE','REMOVE','CONSOLIDATE','REPLACE') NOT NULL,
-    package_id     INT NOT NULL,
     target_version VARCHAR(60),
     est_effort_hrs DECIMAL(5,1),
     PRIMARY KEY (plan_id, action_seq),
     CONSTRAINT fk_action_plan FOREIGN KEY (plan_id)
-        REFERENCES remediation_plan(plan_id) ON DELETE CASCADE,
-    CONSTRAINT fk_action_package FOREIGN KEY (package_id)
-        REFERENCES package(package_id) ON DELETE RESTRICT
+        REFERENCES remediation_plan(plan_id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 -- M:N  RESOLVES — one action can clear many vulnerabilities

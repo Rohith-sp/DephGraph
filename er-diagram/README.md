@@ -5,7 +5,7 @@ It stores the full dependency graph of an organisation's services and answers qu
 *"which services reach this vulnerable package?"*, *"which dependencies are never executed and can be deleted?"*
 and *"which single upgrade fixes the most services?"*.
 
-**At a glance:** 14 entities (5 weak) · 23 relational tables · 1 recursive relationship · 1 ternary relationship · 2 multivalued attributes · 3 derived-attribute views.
+**At a glance:** 14 entities (5 weak) · 16 relationships · 23 relational tables · 1 recursive relationship · 1 ternary relationship · 2 multivalued attributes · 3 derived-attribute views.
 
 ![DephGraph ER diagram](images/er_diagram_full.png)
 
@@ -34,8 +34,8 @@ erDiagram
     %% DephGraph — crow's-foot ER diagram (matches schema.sql, 23 tables)
 
     TEAM ||--o{ SERVICE : owns
+    TEAM ||--o{ REMEDIATION_PLAN : raises
     SERVICE ||--o{ DEPLOYMENT : "deployed as"
-    SERVICE ||--o| REMEDIATION_PLAN : has
     SERVICE ||--o{ PR_REVIEW : targets
     SERVICE ||--o{ WAIVED_FOR : "waiver for"
     PACKAGE ||--o{ PACKAGE_VERSION : "has version"
@@ -56,7 +56,6 @@ erDiagram
     PACKAGE_VERSION ||--o{ AFFECTS : "affected by"
     VULNERABILITY ||--o{ WAIVED_FOR : waived
     REMEDIATION_PLAN ||--o{ REMEDIATION_ACTION : contains
-    PACKAGE ||--o{ REMEDIATION_ACTION : "acted on"
     REMEDIATION_ACTION ||--o{ RESOLVES : resolves
     VULNERABILITY ||--o{ RESOLVES : "resolved by"
     PR_REVIEW ||--o{ PR_RISK_VERDICT : "produces"
@@ -186,7 +185,7 @@ erDiagram
     }
     REMEDIATION_PLAN {
         int plan_id PK
-        int service_id FK, UK
+        int team_id FK
         timestamp created_at
         enum status
     }
@@ -194,7 +193,6 @@ erDiagram
         int plan_id PK, FK
         int action_seq PK "partial key"
         enum action_type
-        int package_id FK
         varchar target_version
         decimal est_effort_hrs
     }
@@ -245,7 +243,7 @@ erDiagram
 | `SEMANTIC_CLUSTER` | strong | `cluster_id` | Group of packages that do the same job (e.g. "http client") |
 | `SCAN_RUN` | strong | `scan_id` | One observation window of a scanner (eBPF agent, manifest parser, OSV sync) |
 | `VULNERABILITY` | strong | `vuln_id` | A CVE / GHSA advisory from OSV.dev |
-| `REMEDIATION_PLAN` | strong | `plan_id` | The fix plan for a service (1:1) |
+| `REMEDIATION_PLAN` | strong | `plan_id` | A fix plan raised by a team (output of the set-cover solver) |
 | `REMEDIATION_ACTION` | **weak** (owner: REMEDIATION_PLAN) | `(plan_id, action_seq)` | One step: UPGRADE / REMOVE / CONSOLIDATE / REPLACE |
 | `PR_REVIEW` | **weak** (owner: SERVICE) | `(service_id, pr_number)` | A pull request checked by the PR risk gate |
 | `PR_RISK_VERDICT` | **weak** (owner: PR_REVIEW) | `(service_id, pr_number, dep_name)` | Gate verdict for one dependency added by a PR |
@@ -256,7 +254,7 @@ erDiagram
 |---|---|---|---|
 | OWNS | TEAM – SERVICE | 1 : N (total on SERVICE) | FK `service.team_id` |
 | DEPLOYED_AS *(identifying)* | SERVICE – DEPLOYMENT | 1 : N | composite PK of `deployment` |
-| HAS | SERVICE – REMEDIATION_PLAN | 1 : 1 | FK + `UNIQUE(service_id)` |
+| RAISED_BY | TEAM – REMEDIATION_PLAN | 1 : N (total on REMEDIATION_PLAN) | FK `remediation_plan.team_id` |
 | TARGETS *(identifying)* | SERVICE – PR_REVIEW | 1 : N | composite PK of `pr_review` |
 | HAS_VERSION *(identifying)* | PACKAGE – PACKAGE_VERSION | 1 : N | composite PK of `package_version` |
 | GROUPED_INTO | PACKAGE – SEMANTIC_CLUSTER | N : 1 (partial) | nullable FK `package.cluster_id` |
@@ -268,7 +266,6 @@ erDiagram
 | AFFECTS | VULNERABILITY – PACKAGE_VERSION | M : N | table `affects` (+ `fixed_in`) |
 | WAIVED_FOR | VULNERABILITY – SERVICE | M : N | table `waived_for` (+ `reason`, `approved_by`, `expires_on`) |
 | CONTAINS *(identifying)* | REMEDIATION_PLAN – REMEDIATION_ACTION | 1 : N | composite PK of `remediation_action` |
-| ACTS_ON | REMEDIATION_ACTION – PACKAGE | N : 1 | FK `remediation_action.package_id` |
 | RESOLVES | REMEDIATION_ACTION – VULNERABILITY | M : N | table `resolves` |
 | PRODUCED_FOR *(identifying)* | PR_REVIEW – PR_RISK_VERDICT | 1 : N | composite PK of `pr_risk_verdict` |
 
@@ -289,7 +286,7 @@ the gate from judging exactly the new dependencies it most needs to judge.
 |---|---|---|
 | Strong entities (9) | one table each, surrogate PK | `team`, `service`, `package`, `maintainer`, `license`, `semantic_cluster`, `scan_run`, `vulnerability`, `remediation_plan` |
 | Weak entities (5) | owner's PK + partial key as composite PK, `ON DELETE CASCADE` | `deployment`, `package_version`, `remediation_action`, `pr_review`, `pr_risk_verdict` |
-| 1 : N and 1 : 1 relationships | FK on the N side (UNIQUE for 1 : 1) | no extra table |
+| 1 : N relationships | FK on the N side | no extra table |
 | M : N relationships (6) | own table, PK = both FKs | `maintained_by`, `depends_on`, `resolves_to`, `affects`, `waived_for`, `resolves` |
 | Ternary relationship (1) | own table, PK = all three FKs | `observes` |
 | Multivalued attributes (2) | own table, PK = owner FK + value | `package_alias`, `maintainer_email` |
