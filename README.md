@@ -63,6 +63,9 @@ DephGraph/
     ├── er_chen.drawio         # Chen diagram, editable
     ├── er_chen_overview.drawio
     └── images/                # Rendered ER diagrams
+└── relational-model/
+    ├── README.md              # Phase 2: step-by-step ER-to-relational mapping, sample tables
+    └── relational_schema.mmd  # Relational schema diagram (23 relations, PK/FK)
 ```
 
 ---
@@ -83,7 +86,8 @@ The project is in the **design phase**. The ER model, relational schema and buil
 
 | Phase | Scope | Status |
 |---|---|---|
-| ER model and schema | 23 tables, views, signature queries | Done |
+| Phase 1: ER model | Chen ER diagram, 14 entities, 16 relationships | Done |
+| Phase 2: Relational model | 7-step ER-to-relational mapping, 23 relations ([`relational-model/`](relational-model/)) | Done |
 | Setup | Repo, cloud accounts, CI | Planned |
 | Ingestion | Manifest parsing, OSV and deps.dev sync | Planned |
 | Analysis | Blast radius, set cover, prune, licence propagation | Planned |

@@ -1,0 +1,166 @@
+erDiagram
+    %% DephGraph relational schema: the 23 relations produced by the ER-to-relational mapping
+
+    TEAM ||--o{ SERVICE : "team_id"
+    TEAM ||--o{ REMEDIATION_PLAN : "team_id"
+    SEMANTIC_CLUSTER |o--o{ PACKAGE : "cluster_id"
+    LICENSE |o--o{ PACKAGE_VERSION : "license_id"
+    SERVICE ||--o{ DEPLOYMENT : "service_id"
+    PACKAGE ||--o{ PACKAGE_VERSION : "package_id"
+    REMEDIATION_PLAN ||--o{ REMEDIATION_ACTION : "plan_id"
+    SERVICE ||--o{ PR_REVIEW : "service_id"
+    PR_REVIEW ||--o{ PR_RISK_VERDICT : "service_id, pr_number"
+    DEPLOYMENT ||--o{ RESOLVES_TO : "service_id, deploy_seq"
+    PACKAGE_VERSION ||--o{ RESOLVES_TO : "package_id, version_string"
+    PACKAGE_VERSION ||--o{ DEPENDS_ON : "dependent_*"
+    PACKAGE_VERSION ||--o{ DEPENDS_ON : "dependency_*"
+    PACKAGE ||--o{ MAINTAINED_BY : "package_id"
+    MAINTAINER ||--o{ MAINTAINED_BY : "maintainer_id"
+    PACKAGE_VERSION ||--o{ AFFECTS : "package_id, version_string"
+    VULNERABILITY ||--o{ AFFECTS : "vuln_id"
+    REMEDIATION_ACTION ||--o{ RESOLVES : "plan_id, action_seq"
+    VULNERABILITY ||--o{ RESOLVES : "vuln_id"
+    VULNERABILITY ||--o{ WAIVED_FOR : "vuln_id"
+    SERVICE ||--o{ WAIVED_FOR : "service_id"
+    PACKAGE ||--o{ PACKAGE_ALIAS : "package_id"
+    MAINTAINER ||--o{ MAINTAINER_EMAIL : "maintainer_id"
+    DEPLOYMENT ||--o{ OBSERVES : "service_id, deploy_seq"
+    SCAN_RUN ||--o{ OBSERVES : "scan_id"
+    PACKAGE_VERSION ||--o{ OBSERVES : "package_id, version_string"
+
+    TEAM {
+        int team_id PK
+        varchar team_name
+        varchar contact_email
+        varchar contact_slack
+    }
+    SERVICE {
+        int service_id PK
+        varchar service_name
+        varchar criticality
+        int team_id FK
+    }
+    SCAN_RUN {
+        int scan_id PK
+        varchar source_tool
+        timestamp started_at
+        timestamp ended_at
+    }
+    PACKAGE {
+        int package_id PK
+        varchar package_name
+        varchar ecosystem
+        int cluster_id FK
+    }
+    LICENSE {
+        int license_id PK
+        varchar spdx_id
+        boolean is_copyleft
+    }
+    MAINTAINER {
+        int maintainer_id PK
+        varchar handle
+        date last_active_at
+    }
+    SEMANTIC_CLUSTER {
+        int cluster_id PK
+        varchar cluster_label
+    }
+    VULNERABILITY {
+        int vuln_id PK
+        varchar osv_id
+        varchar severity
+        decimal cvss_score
+    }
+    REMEDIATION_PLAN {
+        int plan_id PK
+        varchar status
+        timestamp created_at
+        int team_id FK
+    }
+    DEPLOYMENT {
+        int service_id PK, FK
+        int deploy_seq PK
+        varchar environment
+        timestamp deployed_at
+        boolean is_active
+    }
+    PACKAGE_VERSION {
+        int package_id PK, FK
+        varchar version_string PK
+        date published_at
+        char sha256
+        int license_id FK
+    }
+    REMEDIATION_ACTION {
+        int plan_id PK, FK
+        int action_seq PK
+        varchar action_type
+        varchar target_version
+    }
+    PR_REVIEW {
+        int service_id PK, FK
+        int pr_number PK
+        varchar author
+        timestamp opened_at
+        varchar filter_stage_exit
+    }
+    PR_RISK_VERDICT {
+        int service_id PK, FK
+        int pr_number PK, FK
+        varchar dep_name PK
+        varchar verdict
+        varchar reason
+    }
+    RESOLVES_TO {
+        int service_id PK, FK
+        int deploy_seq PK, FK
+        int package_id PK, FK
+        varchar version_string PK, FK
+        int depth
+    }
+    DEPENDS_ON {
+        int dependent_package_id PK, FK
+        varchar dependent_version PK, FK
+        int dependency_package_id PK, FK
+        varchar dependency_version PK, FK
+        varchar scope
+        boolean is_direct
+    }
+    MAINTAINED_BY {
+        int package_id PK, FK
+        int maintainer_id PK, FK
+        varchar role
+    }
+    AFFECTS {
+        int package_id PK, FK
+        varchar version_string PK, FK
+        int vuln_id PK, FK
+        varchar fixed_in
+    }
+    RESOLVES {
+        int plan_id PK, FK
+        int action_seq PK, FK
+        int vuln_id PK, FK
+    }
+    WAIVED_FOR {
+        int vuln_id PK, FK
+        int service_id PK, FK
+        date expires_on
+    }
+    PACKAGE_ALIAS {
+        int package_id PK, FK
+        varchar alias PK
+    }
+    MAINTAINER_EMAIL {
+        int maintainer_id PK, FK
+        varchar email PK
+    }
+    OBSERVES {
+        int service_id PK, FK
+        int deploy_seq PK, FK
+        int scan_id PK, FK
+        int package_id PK, FK
+        varchar version_string PK, FK
+        int exec_count
+    }
