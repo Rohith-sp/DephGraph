@@ -1,0 +1,197 @@
+erDiagram
+    %% DephGraph — crow's-foot ER diagram (matches schema.sql, 23 tables)
+
+    TEAM ||--o{ SERVICE : owns
+    SERVICE ||--o{ DEPLOYMENT : "deployed as"
+    SERVICE ||--o| REMEDIATION_PLAN : has
+    SERVICE ||--o{ PR_REVIEW : targets
+    SERVICE ||--o{ WAIVED_FOR : "waiver for"
+    PACKAGE ||--o{ PACKAGE_VERSION : "has version"
+    PACKAGE ||--o{ PACKAGE_ALIAS : "known as"
+    PACKAGE ||--o{ MAINTAINED_BY : "maintained by"
+    MAINTAINER ||--o{ MAINTAINED_BY : maintains
+    MAINTAINER ||--o{ MAINTAINER_EMAIL : "reached at"
+    SEMANTIC_CLUSTER |o--o{ PACKAGE : groups
+    LICENSE |o--o{ PACKAGE_VERSION : licenses
+    PACKAGE_VERSION ||--o{ DEPENDS_ON : dependent
+    PACKAGE_VERSION ||--o{ DEPENDS_ON : dependency
+    DEPLOYMENT ||--o{ RESOLVES_TO : "resolves to"
+    PACKAGE_VERSION ||--o{ RESOLVES_TO : "resolved in"
+    DEPLOYMENT ||--o{ OBSERVES : observed
+    PACKAGE_VERSION ||--o{ OBSERVES : observed
+    SCAN_RUN ||--o{ OBSERVES : during
+    VULNERABILITY ||--o{ AFFECTS : affects
+    PACKAGE_VERSION ||--o{ AFFECTS : "affected by"
+    VULNERABILITY ||--o{ WAIVED_FOR : waived
+    REMEDIATION_PLAN ||--o{ REMEDIATION_ACTION : contains
+    PACKAGE ||--o{ REMEDIATION_ACTION : "acted on"
+    REMEDIATION_ACTION ||--o{ RESOLVES : resolves
+    VULNERABILITY ||--o{ RESOLVES : "resolved by"
+    PR_REVIEW ||--o{ PR_RISK_VERDICT : "produces"
+
+    TEAM {
+        int team_id PK
+        varchar team_name UK
+        varchar contact_email
+        varchar contact_slack
+        timestamp created_at
+    }
+    SERVICE {
+        int service_id PK
+        varchar service_name UK
+        varchar repo_url
+        enum criticality
+        int team_id FK
+    }
+    DEPLOYMENT {
+        int service_id PK, FK
+        int deploy_seq PK "partial key"
+        enum environment
+        timestamp deployed_at
+        boolean is_active
+    }
+    LICENSE {
+        int license_id PK
+        varchar spdx_id UK
+        varchar license_name
+        boolean is_copyleft
+        boolean is_permissive
+    }
+    PACKAGE {
+        int package_id PK
+        varchar package_name
+        enum ecosystem
+        boolean is_internal
+        varchar source_repo_url
+        int cluster_id FK
+    }
+    PACKAGE_ALIAS {
+        int package_id PK, FK
+        varchar alias PK
+    }
+    PACKAGE_VERSION {
+        int package_id PK, FK
+        varchar version_string PK "partial key"
+        date published_at
+        int license_id FK
+        char sha256
+    }
+    MAINTAINER {
+        int maintainer_id PK
+        varchar handle UK
+        varchar display_name
+        date last_active_at
+    }
+    MAINTAINER_EMAIL {
+        int maintainer_id PK, FK
+        varchar email PK
+    }
+    MAINTAINED_BY {
+        int package_id PK, FK
+        int maintainer_id PK, FK
+        enum role
+        date since_date
+    }
+    DEPENDS_ON {
+        int dependent_package_id PK, FK
+        varchar dependent_version PK, FK
+        int dependency_package_id PK, FK
+        varchar dependency_version PK, FK
+        enum scope PK
+        boolean is_direct
+    }
+    RESOLVES_TO {
+        int service_id PK, FK
+        int deploy_seq PK, FK
+        int package_id PK, FK
+        varchar version_string PK, FK
+        smallint depth
+        timestamp resolved_at
+    }
+    SCAN_RUN {
+        int scan_id PK
+        enum source_tool
+        timestamp started_at
+        timestamp ended_at
+    }
+    OBSERVES {
+        int service_id PK, FK
+        int deploy_seq PK, FK
+        int package_id PK, FK
+        varchar version_string PK, FK
+        int scan_id PK, FK
+        bigint exec_count
+        timestamp first_seen
+        timestamp last_seen
+        boolean is_live "derived"
+    }
+    SEMANTIC_CLUSTER {
+        int cluster_id PK
+        varchar cluster_label
+        int representative_package_id
+        decimal cohesion_score
+    }
+    VULNERABILITY {
+        int vuln_id PK
+        varchar osv_id UK
+        varchar summary
+        enum severity
+        decimal cvss_score
+        date published_at
+    }
+    AFFECTS {
+        int vuln_id PK, FK
+        int package_id PK, FK
+        varchar version_string PK, FK
+        varchar fixed_in
+    }
+    WAIVED_FOR {
+        int vuln_id PK, FK
+        int service_id PK, FK
+        varchar reason
+        varchar approved_by
+        date expires_on
+    }
+    REMEDIATION_PLAN {
+        int plan_id PK
+        int service_id FK, UK
+        timestamp created_at
+        enum status
+    }
+    REMEDIATION_ACTION {
+        int plan_id PK, FK
+        int action_seq PK "partial key"
+        enum action_type
+        int package_id FK
+        varchar target_version
+        decimal est_effort_hrs
+    }
+    RESOLVES {
+        int plan_id PK, FK
+        int action_seq PK, FK
+        int vuln_id PK, FK
+    }
+    PR_REVIEW {
+        int service_id PK, FK
+        int pr_number PK "partial key"
+        varchar title
+        varchar author
+        timestamp opened_at
+        timestamp merged_at
+        enum filter_stage_exit
+    }
+    PR_RISK_VERDICT {
+        int service_id PK, FK
+        int pr_number PK, FK
+        varchar dep_name PK "partial key"
+        enum dep_ecosystem
+        varchar dep_version
+        enum verdict
+        varchar reason
+        int cve_count_seen
+        decimal abandonment_seen
+        int siblings_seen
+        int context_tokens
+        varchar model_used
+        timestamp decided_at
+    }

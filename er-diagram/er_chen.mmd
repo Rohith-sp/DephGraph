@@ -1,0 +1,200 @@
+flowchart TB
+    classDef ent  fill:#DAE8FC,stroke:#1F4E79,stroke-width:2px,color:#1F4E79,font-weight:bold
+    classDef weak fill:#DAE8FC,stroke:#1F4E79,stroke-width:4px,color:#1F4E79,font-weight:bold
+    classDef rel  fill:#D5E8D4,stroke:#2D6A2E,stroke-width:2px,color:#1E4620,font-weight:bold
+    classDef idn  fill:#D5E8D4,stroke:#2D6A2E,stroke-width:5px,color:#1E4620,font-weight:bold
+    classDef att  fill:#FFF2CC,stroke:#9A7D0A,stroke-width:1.5px,color:#7F6000
+    classDef mv   fill:#FFF2CC,stroke:#9A7D0A,stroke-width:4px,color:#7F6000
+    classDef der  fill:#FFF2CC,stroke:#9A7D0A,stroke-width:1.5px,stroke-dasharray:5 4,color:#7F6000
+
+    TEAM[TEAM]:::ent
+    SERVICE[SERVICE]:::ent
+    DEPLOYMENT[[DEPLOYMENT]]:::weak
+    SCANRUN[SCAN_RUN]:::ent
+    REMEDIATIONPLAN[REMEDIATION_PLAN]:::ent
+    PRREVIEW[[PR_REVIEW]]:::weak
+    PACKAGEVERSION[[PACKAGE_VERSION]]:::weak
+    PACKAGE[PACKAGE]:::ent
+    MAINTAINER[MAINTAINER]:::ent
+    REMEDIATIONACTION[[REMEDIATION_ACTION]]:::weak
+    PRRISKVERDICT[[PR_RISK_VERDICT]]:::weak
+    VULNERABILITY[VULNERABILITY]:::ent
+    LICENSE[LICENSE]:::ent
+    SEMANTICCLUSTER[SEMANTIC_CLUSTER]:::ent
+
+    R0{OWNS}:::rel
+    TEAM ---|"1"| R0
+    R0 ===|"N"| SERVICE
+    R1{DEPLOYED_AS}:::idn
+    SERVICE ---|"1"| R1
+    R1 ===|"N"| DEPLOYMENT
+    R2{RAISED_BY}:::rel
+    TEAM ---|"1"| R2
+    R2 ===|"N"| REMEDIATIONPLAN
+    R3{TARGETS}:::idn
+    SERVICE ---|"1"| R3
+    R3 ===|"N"| PRREVIEW
+    R4{RESOLVES_TO}:::rel
+    DEPLOYMENT ---|"M"| R4
+    R4 ---|"N"| PACKAGEVERSION
+    R4A0(["depth"]):::att
+    R4 --- R4A0
+    R5{HAS_VERSION}:::idn
+    PACKAGE ---|"1"| R5
+    R5 ===|"N"| PACKAGEVERSION
+    R6{MAINTAINED_BY}:::rel
+    PACKAGE ---|"M"| R6
+    R6 ---|"N"| MAINTAINER
+    R6A0(["role"]):::att
+    R6 --- R6A0
+    R7{CONTAINS}:::idn
+    REMEDIATIONPLAN ---|"1"| R7
+    R7 ===|"N"| REMEDIATIONACTION
+    R8{PRODUCED_FOR}:::idn
+    PRREVIEW ---|"1"| R8
+    R8 ===|"N"| PRRISKVERDICT
+    R9{AFFECTS}:::rel
+    PACKAGEVERSION ---|"M"| R9
+    R9 ---|"N"| VULNERABILITY
+    R9A0(["fixed_in"]):::att
+    R9 --- R9A0
+    R10{LICENSED_UNDER}:::rel
+    PACKAGEVERSION ---|"N"| R10
+    R10 ---|"1"| LICENSE
+    R11{GROUPED_INTO}:::rel
+    PACKAGE ---|"N"| R11
+    R11 ---|"1"| SEMANTICCLUSTER
+    R12{RESOLVES}:::rel
+    REMEDIATIONACTION ---|"M"| R12
+    R12 ---|"N"| VULNERABILITY
+    R13{WAIVED_FOR}:::rel
+    VULNERABILITY ---|"M"| R13
+    R13 ---|"N"| SERVICE
+    R13A0(["expires_on"]):::att
+    R13 --- R13A0
+
+    RDEP{DEPENDS_ON}:::rel
+    PACKAGEVERSION ---|"M dependent"| RDEP
+    RDEP ---|"N dependency"| PACKAGEVERSION
+    RDEPA0(["scope"]):::att
+    RDEP --- RDEPA0
+    RDEPA1(["is_direct"]):::att
+    RDEP --- RDEPA1
+
+    ROBS{OBSERVES}:::rel
+    DEPLOYMENT ---|"M"| ROBS
+    SCANRUN ---|"P"| ROBS
+    ROBS ---|"N"| PACKAGEVERSION
+    ROBSA0(["exec_count"]):::att
+    ROBS --- ROBSA0
+    ROBSA1(["is_live"]):::der
+    ROBS --- ROBSA1
+
+    TEAM_a0(["<u>team_id</u>"]):::att
+    TEAM --- TEAM_a0
+    TEAM_a1(["team_name"]):::att
+    TEAM --- TEAM_a1
+    TEAM_a2(["contact_email"]):::att
+    TEAM --- TEAM_a2
+    TEAM_a3(["contact_slack"]):::att
+    TEAM --- TEAM_a3
+    SERVICE_a0(["<u>service_id</u>"]):::att
+    SERVICE --- SERVICE_a0
+    SERVICE_a1(["service_name"]):::att
+    SERVICE --- SERVICE_a1
+    SERVICE_a2(["criticality"]):::att
+    SERVICE --- SERVICE_a2
+    SERVICE_a3(["exposure_score"]):::der
+    SERVICE --- SERVICE_a3
+    DEPLOYMENT_a0(["<i><u>deploy_seq</u></i>"]):::att
+    DEPLOYMENT --- DEPLOYMENT_a0
+    DEPLOYMENT_a1(["environment"]):::att
+    DEPLOYMENT --- DEPLOYMENT_a1
+    DEPLOYMENT_a2(["deployed_at"]):::att
+    DEPLOYMENT --- DEPLOYMENT_a2
+    DEPLOYMENT_a3(["is_active"]):::att
+    DEPLOYMENT --- DEPLOYMENT_a3
+    SCANRUN_a0(["<u>scan_id</u>"]):::att
+    SCANRUN --- SCANRUN_a0
+    SCANRUN_a1(["source_tool"]):::att
+    SCANRUN --- SCANRUN_a1
+    SCANRUN_a2(["started_at"]):::att
+    SCANRUN --- SCANRUN_a2
+    SCANRUN_a3(["ended_at"]):::att
+    SCANRUN --- SCANRUN_a3
+    REMEDIATIONPLAN_a0(["<u>plan_id</u>"]):::att
+    REMEDIATIONPLAN --- REMEDIATIONPLAN_a0
+    REMEDIATIONPLAN_a1(["status"]):::att
+    REMEDIATIONPLAN --- REMEDIATIONPLAN_a1
+    REMEDIATIONPLAN_a2(["created_at"]):::att
+    REMEDIATIONPLAN --- REMEDIATIONPLAN_a2
+    REMEDIATIONPLAN_a3(["coverage_pct"]):::der
+    REMEDIATIONPLAN --- REMEDIATIONPLAN_a3
+    PRREVIEW_a0(["<i><u>pr_number</u></i>"]):::att
+    PRREVIEW --- PRREVIEW_a0
+    PRREVIEW_a1(["author"]):::att
+    PRREVIEW --- PRREVIEW_a1
+    PRREVIEW_a2(["opened_at"]):::att
+    PRREVIEW --- PRREVIEW_a2
+    PRREVIEW_a3(["filter_stage_exit"]):::att
+    PRREVIEW --- PRREVIEW_a3
+    PACKAGEVERSION_a0(["<i><u>version_string</u></i>"]):::att
+    PACKAGEVERSION --- PACKAGEVERSION_a0
+    PACKAGEVERSION_a1(["published_at"]):::att
+    PACKAGEVERSION --- PACKAGEVERSION_a1
+    PACKAGEVERSION_a2(["sha256"]):::att
+    PACKAGEVERSION --- PACKAGEVERSION_a2
+    PACKAGEVERSION_a3(["age"]):::der
+    PACKAGEVERSION --- PACKAGEVERSION_a3
+    PACKAGE_a0(["<u>package_id</u>"]):::att
+    PACKAGE --- PACKAGE_a0
+    PACKAGE_a1(["package_name"]):::att
+    PACKAGE --- PACKAGE_a1
+    PACKAGE_a2(["ecosystem"]):::att
+    PACKAGE --- PACKAGE_a2
+    PACKAGE_a3(["alias"]):::mv
+    PACKAGE --- PACKAGE_a3
+    PACKAGE_a4(["abandonment_score"]):::der
+    PACKAGE --- PACKAGE_a4
+    MAINTAINER_a0(["<u>maintainer_id</u>"]):::att
+    MAINTAINER --- MAINTAINER_a0
+    MAINTAINER_a1(["handle"]):::att
+    MAINTAINER --- MAINTAINER_a1
+    MAINTAINER_a2(["email"]):::mv
+    MAINTAINER --- MAINTAINER_a2
+    MAINTAINER_a3(["last_active_at"]):::att
+    MAINTAINER --- MAINTAINER_a3
+    REMEDIATIONACTION_a0(["<i><u>action_seq</u></i>"]):::att
+    REMEDIATIONACTION --- REMEDIATIONACTION_a0
+    REMEDIATIONACTION_a1(["action_type"]):::att
+    REMEDIATIONACTION --- REMEDIATIONACTION_a1
+    REMEDIATIONACTION_a2(["target_version"]):::att
+    REMEDIATIONACTION --- REMEDIATIONACTION_a2
+    PRRISKVERDICT_a0(["<i><u>dep_name</u></i>"]):::att
+    PRRISKVERDICT --- PRRISKVERDICT_a0
+    PRRISKVERDICT_a1(["verdict"]):::att
+    PRRISKVERDICT --- PRRISKVERDICT_a1
+    PRRISKVERDICT_a2(["reason"]):::att
+    PRRISKVERDICT --- PRRISKVERDICT_a2
+    PRRISKVERDICT_a3(["context_tokens"]):::der
+    PRRISKVERDICT --- PRRISKVERDICT_a3
+    VULNERABILITY_a0(["<u>vuln_id</u>"]):::att
+    VULNERABILITY --- VULNERABILITY_a0
+    VULNERABILITY_a1(["osv_id"]):::att
+    VULNERABILITY --- VULNERABILITY_a1
+    VULNERABILITY_a2(["severity"]):::att
+    VULNERABILITY --- VULNERABILITY_a2
+    VULNERABILITY_a3(["cvss_score"]):::att
+    VULNERABILITY --- VULNERABILITY_a3
+    LICENSE_a0(["<u>license_id</u>"]):::att
+    LICENSE --- LICENSE_a0
+    LICENSE_a1(["spdx_id"]):::att
+    LICENSE --- LICENSE_a1
+    LICENSE_a2(["is_copyleft"]):::att
+    LICENSE --- LICENSE_a2
+    SEMANTICCLUSTER_a0(["<u>cluster_id</u>"]):::att
+    SEMANTICCLUSTER --- SEMANTICCLUSTER_a0
+    SEMANTICCLUSTER_a1(["cluster_label"]):::att
+    SEMANTICCLUSTER --- SEMANTICCLUSTER_a1
+    SEMANTICCLUSTER_a2(["member_count"]):::der
+    SEMANTICCLUSTER --- SEMANTICCLUSTER_a2
