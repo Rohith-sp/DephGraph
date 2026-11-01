@@ -66,6 +66,10 @@ DephGraph/
 └── relational-model/
     ├── README.md              # Phase 2: step-by-step ER-to-relational mapping, sample tables
     └── relational_schema.mmd  # Relational schema diagram (23 relations, PK/FK)
+├── normalization/
+│   └── README.md              # Phase 3a: FDs, minimal cover, 1NF → BCNF, lossless join
+└── relational-algebra/
+    └── README.md              # Phase 3b: constraints, update violations, queries in relational algebra
 ```
 
 ---
@@ -82,12 +86,14 @@ This creates the `dephgraph` database with all tables, constraints and views. Th
 
 ## Status
 
-The project is in the **design phase**. The ER model, relational schema and build plan are done. The application (ingestion pipeline, analysis engine, dashboard and PR gate) will be built in the phases listed in [`DephGraph_BUILD_PRD.md`](DephGraph_BUILD_PRD.md).
+The project is in the **design phase**. The ER model, relational schema, normalization, relational algebra and build plan are done. The application (ingestion pipeline, analysis engine, dashboard and PR gate) will be built in the phases listed in [`DephGraph_BUILD_PRD.md`](DephGraph_BUILD_PRD.md).
 
 | Phase | Scope | Status |
 |---|---|---|
 | Phase 1: ER model | Chen ER diagram, 14 entities, 16 relationships | Done |
 | Phase 2: Relational model | 7-step ER-to-relational mapping, 23 relations ([`relational-model/`](relational-model/)) | Done |
+| Phase 3a: Normalization | Functional dependencies, minimal cover, 1NF → BCNF, all 23 relations in BCNF ([`normalization/`](normalization/)) | Done |
+| Phase 3b: Relational algebra | Constraints, update violations, 7 queries in relational algebra ([`relational-algebra/`](relational-algebra/)) | Done |
 | Setup | Repo, cloud accounts, CI | Planned |
 | Ingestion | Manifest parsing, OSV and deps.dev sync | Planned |
 | Analysis | Blast radius, set cover, prune, licence propagation | Planned |
