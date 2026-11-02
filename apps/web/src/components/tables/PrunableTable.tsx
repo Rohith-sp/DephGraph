@@ -17,7 +17,7 @@ export function PrunableTable({ rows }: { rows: PrunablePackage[] }) {
       </THead>
       <TBody>
         {rows.map((r) => (
-          <TR key={r.package_id}>
+          <TR key={`${r.package_id}@${r.version}`}>
             <TD>{r.name}</TD>
             <TD>{r.ecosystem}</TD>
             <TD>{r.version}</TD>
