@@ -26,7 +26,7 @@ from app.routers import (
     stats,
     vulnerabilities,
 )
-from app.services import cluster_engine
+from app.services import cluster_engine, pr_gate_engine
 
 configure_logging()
 log = structlog.get_logger()
@@ -39,6 +39,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     if settings.environment == "production":  # load the SBERT model off the event loop
         asyncio.create_task(asyncio.to_thread(cluster_engine.load_model))
     yield
+    await pr_gate_engine.close_groq()
     await close_all()
 
 

@@ -2,7 +2,8 @@
 
 Decisions: a vuln with NULL cvss_score is ADVISORY (unknown severity, never silently PASS);
 overall PR verdict = worst dependency verdict; Stage 1 only fast-exits when the version has no
-`affects` row AND is neither copyleft nor abandoned >= 80 (so §8's BLOCK rules stay reachable).
+`affects` row AND is neither copyleft nor abandoned >= 40 (§8: 40-79 is ADVISORY, >= 80 BLOCK). NULL abandonment (no version row;
+the view COALESCEs a missing publish date to 50) counts as 0.
 """
 
 import asyncio
@@ -28,6 +29,9 @@ log = structlog.get_logger()
 RANK = {"PASS": 0, "ADVISORY": 1, "BLOCK": 2}
 MAX_PROMPT_CHARS = 1200  # ~300 tokens at chars/4
 LLM_ATTEMPTS = 4
+GROQ_TIMEOUT = 8  # seconds per request
+GROQ_CONCURRENCY = 3
+STAGE3_BUDGET = 15  # seconds for all Stage 3 calls together; keeps the webhook well under 30s
 
 
 @dataclass
@@ -101,7 +105,7 @@ async def evaluate(session: AsyncSession, eco: str, name: str, ver: str) -> DepV
         ver=ver,
     )
     sig = await _signals(session, eco, name, ver)
-    if not has_affects and not sig["copyleft"] and (sig["abandonment"] or 0) < 80:
+    if not has_affects and not sig["copyleft"] and (sig["abandonment"] or 0) < 40:
         dep.reasoning = "no known vulnerabilities (stage 1)"
         return dep
     vulns = await rows(
@@ -126,21 +130,42 @@ async def evaluate(session: AsyncSession, eco: str, name: str, ver: str) -> DepV
 
 
 def build_prompt(dep: DepVerdict) -> str:
+    """<= MAX_PROMPT_CHARS; variable parts are cut first so the JSON instruction always survives."""
+    head = (
+        f"Dependency {dep.name[:100]}=={dep.version[:50]} added in a PR. Rule-based verdict: "
+        f"{dep.verdict} ({dep.reasoning[:300]}). copyleft={dep.facts.get('copyleft')} "
+        f"abandonment={dep.facts.get('abandonment')}. Vulns: "
+    )
+    tail = '.\nReply JSON only: {"verdict":"ADVISORY"|"BLOCK","reasoning":"<=2 sentences"}'
     vulns = ", ".join(
         f"{v['osv_id']} cvss={v['cvss_score']} fixed_in={v['fixed_in']}"
         for v in dep.facts.get("vulns", [])
     )
-    text = (
-        f"Dependency {dep.name}=={dep.version} added in a PR. Rule-based verdict: {dep.verdict} "
-        f"({dep.reasoning}). copyleft={dep.facts.get('copyleft')} "
-        f"abandonment={dep.facts.get('abandonment')}. Vulns: {vulns or 'none'}.\n"
-        'Reply JSON only: {"verdict":"ADVISORY"|"BLOCK","reasoning":"<=2 sentences"}'
-    )
-    return text[:MAX_PROMPT_CHARS]
+    room = MAX_PROMPT_CHARS - len(head) - len(tail)
+    if len(vulns) > room:
+        vulns = vulns[: room - 1] + "…"
+    return head + (vulns or "none") + tail
+
+
+_groq: AsyncGroq | None = None
+
+
+def _client() -> AsyncGroq:
+    global _groq
+    if _groq is None:
+        _groq = AsyncGroq(api_key=settings.groq_api_key, max_retries=0, timeout=GROQ_TIMEOUT)
+    return _groq
+
+
+async def close_groq() -> None:
+    global _groq
+    if _groq is not None:
+        await _groq.close()
+        _groq = None
 
 
 async def _ask_groq(prompt: str) -> str:
-    client = AsyncGroq(api_key=settings.groq_api_key, max_retries=0)
+    client = _client()
     for attempt in range(LLM_ATTEMPTS):
         try:
             resp = await client.chat.completions.create(
@@ -190,16 +215,23 @@ async def stage3(dep: DepVerdict, service_id: int, pr_number: int) -> None:
         log.warning("review_response_not_stored", error=str(e))
 
 
-async def review(
-    session: AsyncSession,
-    service_id: int,
-    pr_number: int,
-    deps: list[tuple[str, str, str]],
-) -> tuple[str, int, list[DepVerdict]]:
-    """deps = (ecosystem, name, version). Returns (overall verdict, max stage, per-dep)."""
-    out = [await evaluate(session, *d) for d in deps]
-    for d in out:
-        if d.verdict == "ADVISORY":
+async def evaluate_all(session: AsyncSession, deps: list[tuple[str, str, str]]) -> list[DepVerdict]:
+    """Stages 1-2 (DB reads only). deps = (ecosystem, name, version)."""
+    return [await evaluate(session, *d) for d in deps]
+
+
+async def refine(out: list[DepVerdict], service_id: int, pr_number: int) -> tuple[str, int]:
+    """Stage 3 for ADVISORY deps, concurrently, no DB transaction open. Returns (overall, stage)."""
+    sem = asyncio.Semaphore(GROQ_CONCURRENCY)
+
+    async def one(d: DepVerdict) -> None:
+        async with sem:
             await stage3(d, service_id, pr_number)
+
+    todo = [one(d) for d in out if d.verdict == "ADVISORY"]
+    try:
+        await asyncio.wait_for(asyncio.gather(*todo), STAGE3_BUDGET)
+    except TimeoutError:  # unfinished deps keep their Stage 2 verdict
+        log.warning("stage3_budget_exceeded", budget=STAGE3_BUDGET)
     overall = max((d.verdict for d in out), key=RANK.__getitem__, default="PASS")
-    return overall, max((d.stage_reached for d in out), default=1), out
+    return overall, max((d.stage_reached for d in out), default=1)

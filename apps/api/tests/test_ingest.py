@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from app.database import SessionLocal, get_mongo, get_redis
 from app.models.mongo import ensure_indexes
+from app.routers import ingest
 from app.services import blast_radius
 from tests.upstream import mock_upstreams
 
@@ -193,3 +194,73 @@ async def test_scan_osv_failure_writes_nothing(client, auth, reseed):
         r = await client.post("/ingest/scan/1", headers=auth)
     assert r.status_code == 502
     assert await scalar(count) == before
+
+
+async def _new_service() -> int:
+    async with SessionLocal() as s, s.begin():
+        return (
+            await s.execute(
+                text(
+                    "INSERT INTO service (team_id, name) VALUES (1, 'tmp-svc') RETURNING service_id"
+                )
+            )
+        ).scalar_one()
+
+
+async def test_ingest_inserts_packages_in_sorted_order(client, auth, reseed):
+    content = "zzzpkg==1.0\naaapkg==1.0\nmmmpkg==1.0\n"
+    with mock_upstreams():
+        r = await client.post("/ingest/manifest", json={**body(), "content": content}, headers=auth)
+    assert r.status_code == 200
+    names = await scalar(
+        "SELECT string_agg(name, ',' ORDER BY package_id) FROM package "
+        "WHERE name IN ('zzzpkg','aaapkg','mmmpkg')"
+    )
+    assert names == "aaapkg,mmmpkg,zzzpkg"
+
+
+async def test_ingest_service_deleted_mid_flight_is_404(client, auth, monkeypatch, reseed):
+    sid = await _new_service()
+    real = ingest._fetch_upstream
+
+    async def delete_then_fetch(refs):
+        async with SessionLocal() as s, s.begin():
+            await s.execute(text("DELETE FROM service WHERE service_id = :i"), {"i": sid})
+        return await real(refs)
+
+    monkeypatch.setattr(ingest, "_fetch_upstream", delete_then_fetch)
+    with mock_upstreams():
+        r = await client.post("/ingest/manifest", json=body(service_id=sid), headers=auth)
+    assert r.status_code == 404
+
+
+async def test_scan_service_deleted_mid_flight_is_404(client, auth, monkeypatch, reseed):
+    sid = await _new_service()
+    real = ingest.lock_service
+
+    async def delete_then_lock(session, service_id):
+        async with SessionLocal() as s, s.begin():
+            await s.execute(text("DELETE FROM service WHERE service_id = :i"), {"i": sid})
+        await real(session, service_id)
+
+    monkeypatch.setattr(ingest, "lock_service", delete_then_lock)
+    assert (await client.post(f"/ingest/scan/{sid}", headers=auth)).status_code == 404
+
+
+async def test_scan_409_when_deployment_lands_mid_scan(client, auth, monkeypatch, reseed):
+    before = await scalar("SELECT count(*) FROM scan_run WHERE service_id = 1")
+
+    async def new_deploy_then_fetch(refs):
+        async with SessionLocal() as s, s.begin():
+            await s.execute(
+                text(
+                    "INSERT INTO deployment (service_id, deploy_seq) "
+                    "SELECT 1, max(deploy_seq) + 1 FROM deployment WHERE service_id = 1"
+                )
+            )
+        return {}, {}
+
+    monkeypatch.setattr(ingest.osv_fetcher, "fetch_advisories", new_deploy_then_fetch)
+    r = await client.post("/ingest/scan/1", headers=auth)
+    assert r.status_code == 409
+    assert await scalar("SELECT count(*) FROM scan_run WHERE service_id = 1") == before

@@ -32,7 +32,9 @@ async def _upsert_packages(
     session: AsyncSession, ecosystem: str, parsed: list[ParsedPackage]
 ) -> tuple[list[PkgRef], int]:
     """Ensure package + package_version rows exist; returns (refs, new version rows)."""
-    stmt = insert(Package).values([{"ecosystem": ecosystem, "name": p.name} for p in parsed])
+    # sorted inserts: consistent row-lock order across concurrent ingests avoids deadlocks
+    names = sorted({p.name for p in parsed})
+    stmt = insert(Package).values([{"ecosystem": ecosystem, "name": n} for n in names])
     stmt = stmt.on_conflict_do_update(
         index_elements=["ecosystem", "name"], set_={"name": stmt.excluded.name}
     ).returning(Package.name, Package.package_id)
@@ -40,7 +42,12 @@ async def _upsert_packages(
     refs = [PkgRef(ids[p.name], ecosystem, p.name, p.version) for p in parsed]
     ins = (
         insert(PackageVersion)
-        .values([{"package_id": r.package_id, "version_string": r.version} for r in refs])
+        .values(
+            [
+                {"package_id": pid, "version_string": v}
+                for pid, v in sorted({(r.package_id, r.version) for r in refs})
+            ]
+        )
         .on_conflict_do_nothing()
         .returning(PackageVersion.package_id)
     )
@@ -163,6 +170,7 @@ async def ingest_manifest(body: IngestRequest, session: DbSession) -> dict[str, 
     )
     async with session.begin():
         await lock_service(session, body.service_id)
+        await require_service(session, body.service_id)  # deleted since the first check -> 404
         refs, inserted = await _upsert_packages(session, body.ecosystem, parsed)
         await apply_metadata(session, _rekey(refs, meta))
         vulns = await osv_fetcher.upsert_advisories(session, _rekey(refs, hits), advisories)
@@ -203,6 +211,9 @@ async def scan_service(service_id: int, session: DbSession) -> dict[str, object]
     hits, advisories = await osv_fetcher.fetch_advisories(refs) if refs else ({}, {})
     async with session.begin():
         await lock_service(session, service_id)
+        await require_service(session, service_id)
+        if await latest_seq(session, service_id) != seq:  # a manifest landed mid-scan
+            raise HTTPException(409, "Service changed during scan; retry")
         vulns = await osv_fetcher.upsert_advisories(session, hits, advisories)
         await _record_scan(session, service_id)
     await osv_fetcher.store_raw(advisories)

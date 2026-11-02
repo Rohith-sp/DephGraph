@@ -16,7 +16,7 @@ from app.database import DbSession
 from app.schemas.analysis import VerdictOut
 from app.schemas.common import Envelope, ok
 from app.services import github, pr_gate_engine
-from app.services.queries import require_service, rows
+from app.services.queries import lock_service, require_service, rows
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/pr-gate", tags=["pr-gate"])
@@ -58,16 +58,18 @@ async def webhook(
         return ok({"skipped": True})
 
     html_url = str(repo.get("html_url", "")).rstrip("/").removesuffix(".git")
-    svc = await rows(
-        session,
-        "SELECT service_id FROM service WHERE lower(repo_url) = lower(:url)",
-        url=html_url,
-    )
+    async with session.begin():
+        svc = await rows(
+            session,
+            "SELECT service_id FROM service WHERE lower(repo_url) = lower(:url)",
+            url=html_url,
+        )
     if not svc:
         return _skipped("repository not registered")
     service_id = svc[0]["service_id"]
 
     install_id = (payload.get("installation") or {}).get("id")
+    # no DB transaction is held across GitHub or Groq calls: short read tx, then short write tx
     async with httpx.AsyncClient(timeout=15) as client:
         token = (
             await github.installation_token(client, install_id)
@@ -75,9 +77,13 @@ async def webhook(
             else None
         )
         deps = await github.pr_added_deps(client, repo["full_name"], number, token)
-        verdict, stage, results = await pr_gate_engine.review(session, service_id, number, deps)
-        await _store(session, service_id, number, pr, results)
-        await session.commit()
+        async with session.begin():
+            results = await pr_gate_engine.evaluate_all(session, deps)
+        verdict, stage = await pr_gate_engine.refine(results, service_id, number)
+        async with session.begin():
+            await lock_service(session, service_id)
+            await require_service(session, service_id)  # deleted mid-review -> 404, not FK 500
+            await _store(session, service_id, number, pr, results)
         processing_ms = int((time.monotonic() - started) * 1000)
         if token:
             summary = "\n".join(
@@ -116,6 +122,19 @@ async def webhook(
     )
 
 
+def _worst_per_name(results: list[pr_gate_engine.DepVerdict]) -> list[pr_gate_engine.DepVerdict]:
+    """The PK is (service, pr, dep_name) but deps differ by ecosystem/version: keep the worst."""
+    worst: dict[str, pr_gate_engine.DepVerdict] = {}
+    for d in results:
+        key = d.name[:255]
+        if (
+            key not in worst
+            or pr_gate_engine.RANK[d.verdict] > pr_gate_engine.RANK[worst[key].verdict]
+        ):
+            worst[key] = d
+    return list(worst.values())
+
+
 async def _store(
     session: AsyncSession,
     service_id: int,
@@ -140,13 +159,12 @@ async def _store(
         text("DELETE FROM pr_risk_verdict WHERE service_id = :s AND pr_number = :n"),
         {"s": service_id, "n": number},
     )
-    for d in results:
+    for d in _worst_per_name(results):
         await session.execute(
             text(
                 "INSERT INTO pr_risk_verdict (service_id, pr_number, dep_name, risk_level, "
                 "stage_reached, context_tokens, reasoning) "
-                "VALUES (:s, :n, :dep, :v, :st, :ct, :why) "
-                "ON CONFLICT (service_id, pr_number, dep_name) DO NOTHING"
+                "VALUES (:s, :n, :dep, :v, :st, :ct, :why)"
             ),
             {
                 "s": service_id,

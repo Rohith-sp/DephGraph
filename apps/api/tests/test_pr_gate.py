@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -61,8 +62,11 @@ async def post(client, body: dict, event="pull_request", sig=None):
     )
 
 
-async def mkpkg(name, cvss=None, fixed="1.1.0", vuln=True, copyleft=False):
-    """Insert fresh pypi package `name` 1.0.0 (abandonment 0) with an optional vuln."""
+async def mkpkg(name, cvss=None, fixed="1.1.0", vuln=True, copyleft=False, age=0, yanked=False):
+    """Insert fresh pypi package `name` 1.0.0 with an optional vuln.
+
+    Abandonment = age/1yr*15 (+40 if yanked); age=0 -> 0.
+    """
     async with SessionLocal() as s, s.begin():
         pid = (
             await s.execute(
@@ -74,10 +78,10 @@ async def mkpkg(name, cvss=None, fixed="1.1.0", vuln=True, copyleft=False):
         ).scalar_one()
         await s.execute(
             text(
-                "INSERT INTO package_version (package_id, version_string, license_id, published_at) "
-                "VALUES (:p, '1.0.0', :l, now())"
+                "INSERT INTO package_version (package_id, version_string, license_id, published_at, "
+                "is_yanked) VALUES (:p, '1.0.0', :l, now() - make_interval(secs => :age), :y)"
             ),
-            {"p": pid, "l": 3 if copyleft else 1},
+            {"p": pid, "l": 3 if copyleft else 1, "age": age, "y": yanked},
         )
         if vuln:
             vid = (
@@ -298,3 +302,103 @@ def test_added_deps_parsers():
 def test_prompt_truncated():
     dep = pr_gate_engine.DepVerdict("x" * 5000, "1", "ADVISORY", 2, "r")
     assert len(pr_gate_engine.build_prompt(dep)) <= 1200
+
+
+YEAR = 31557600
+
+
+@pytest.mark.parametrize(
+    "age,yanked,want",
+    [
+        (int(2.6 * YEAR), False, (1, "PASS")),  # 39
+        (0, True, (2, "ADVISORY")),  # 40
+        (int(2.6 * YEAR), True, (2, "ADVISORY")),  # 79
+        (YEAR * 8 // 3, True, (2, "BLOCK")),  # 80
+    ],
+)
+async def test_stage1_abandonment_boundaries(age, yanked, want):
+    name = f"aband{age}{yanked}"
+    await mkpkg(name, vuln=False, age=age, yanked=yanked)
+    async with SessionLocal() as s, s.begin():
+        d = await pr_gate_engine.evaluate(s, "pypi", name, "1.0.0")
+    assert (d.stage_reached, d.verdict) == want
+
+
+async def _verdicts(client, auth):
+    rows = (await client.get("/pr-gate/verdicts/1", headers=auth)).json()["data"]
+    return {r["dep_name"]: r["verdict"] for r in rows if r["pr_number"] == 7}
+
+
+@respx.mock
+async def test_same_name_deps_keep_worst_and_redelivery_replaces(client, auth, reseed):
+    await mkpkg("dupe", cvss=9.8)  # 1.0.0 BLOCK; 2.0.0 is unknown -> PASS
+
+    def hunk(ver):
+        return "@@ -1 +1,2 @@\n flask==2.0.0\n+dupe==" + ver + "\n"
+
+    respx.get(FILES).respond(  # same name in two files -> two deps, one PK
+        200,
+        json=[
+            {"filename": "requirements.txt", "patch": hunk("2.0.0")},
+            {"filename": "dev/requirements.txt", "patch": hunk("1.0.0")},
+        ],
+    )
+    d = (await post(client, payload())).json()["data"]
+    assert d["verdict"] == "BLOCK" and len(d["deps"]) == 2
+    assert await _verdicts(client, auth) == {"dupe": "BLOCK"}  # PASS did not hide BLOCK
+
+    respx.clear()  # synchronize: only the safe version remains -> stale BLOCK is gone
+    patch = "@@ -1 +1,2 @@\n flask==2.0.0\n+dupe==2.0.0\n"
+    respx.get(FILES).respond(200, json=[{"filename": "requirements.txt", "patch": patch}])
+    await post(client, payload("synchronize"))
+    assert await _verdicts(client, auth) == {"dupe": "PASS"}
+
+
+def test_prompt_keeps_instruction_with_many_vulns():
+    vulns = [
+        {"osv_id": f"GHSA-{i:04d}-xxxx-yyyy", "cvss_score": 7.5, "fixed_in": "9.9.9"}
+        for i in range(30)
+    ]
+    dep = pr_gate_engine.DepVerdict(
+        "x" * 5000, "1" * 500, "ADVISORY", 2, "r" * 5000, facts={"vulns": vulns}
+    )
+    prompt = pr_gate_engine.build_prompt(dep)
+    assert len(prompt) <= 1200
+    assert prompt.endswith('"reasoning":"<=2 sentences"}')
+    assert "Reply JSON only" in prompt
+
+
+@respx.mock
+async def test_stage3_concurrent_capped_and_client_closed(monkeypatch):
+    monkeypatch.setattr(settings, "groq_api_key", "gsk")
+    live = peak = 0
+
+    async def slow(request):
+        nonlocal live, peak
+        live += 1
+        peak = max(peak, live)
+        await asyncio.sleep(0.05)
+        live -= 1
+        return httpx.Response(200, json=groq_reply("ADVISORY", "ok"))
+
+    respx.post(GROQ).mock(side_effect=slow)
+    deps = [pr_gate_engine.DepVerdict(f"d{i}", "1", "ADVISORY", 2, "r") for i in range(7)]
+    overall, stage = await pr_gate_engine.refine(deps, 1, 7)
+    assert (overall, stage) == ("ADVISORY", 3)
+    assert 1 < peak <= 3
+    assert pr_gate_engine._client().timeout == pr_gate_engine.GROQ_TIMEOUT
+    await pr_gate_engine.close_groq()
+    assert pr_gate_engine._groq is None
+
+
+@respx.mock
+async def test_stage3_budget_keeps_stage2(monkeypatch):
+    monkeypatch.setattr(settings, "groq_api_key", "gsk")
+    monkeypatch.setattr(pr_gate_engine, "STAGE3_BUDGET", 0.05)
+
+    async def hang(request):
+        await asyncio.sleep(5)
+
+    respx.post(GROQ).mock(side_effect=hang)
+    dep = pr_gate_engine.DepVerdict("slow", "1", "ADVISORY", 2, "r")
+    assert await pr_gate_engine.refine([dep], 1, 7) == ("ADVISORY", 2)

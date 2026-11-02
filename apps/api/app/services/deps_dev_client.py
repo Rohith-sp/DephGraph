@@ -83,7 +83,8 @@ async def apply_metadata(session: AsyncSession, meta: dict[PkgRef, Metadata]) ->
             index_elements=["spdx_id"], set_={"name": stmt.excluded.name}
         ).returning(License.spdx_id, License.license_id)
         ids = {s: i for s, i in (await session.execute(stmt)).all()}
-    for ref, m in meta.items():
+    # sorted: consistent row-lock order across concurrent ingests avoids deadlocks
+    for ref, m in sorted(meta.items(), key=lambda kv: (kv[0].package_id, kv[0].version)):
         await session.execute(
             update(PackageVersion)
             .where(

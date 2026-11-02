@@ -1,5 +1,8 @@
+import time
+
 import pytest
 from fastapi import Request
+from jose import jwt
 
 from app.config import settings
 from app.limiter import client_ip, storage
@@ -63,3 +66,33 @@ def test_client_ip_trusts_only_last_proxy_hop(monkeypatch):
     assert client_ip(_req(None)) == "10.0.0.9"
     monkeypatch.setattr(settings, "trusted_proxy_hops", 0)
     assert client_ip(_req("1.2.3.4")) == "10.0.0.9"
+
+
+def _token(sub: str, secret: str | None = None) -> dict[str, str]:
+    t = jwt.encode(
+        {"sub": sub, "aud": "authenticated", "exp": int(time.time()) + 600},
+        secret or settings.supabase_jwt_secret,
+        algorithm="HS256",
+    )
+    return {"Authorization": f"Bearer {t}"}
+
+
+async def test_limit_keyed_per_verified_user(client, low_limit):
+    a, b = _token("user-a"), _token("user-b")
+    for _ in range(3):
+        assert (await client.get("/services", headers=a)).status_code == 200
+    assert (await client.get("/services", headers=a)).status_code == 429
+    assert (await client.get("/services", headers=b)).status_code == 200  # same IP, own bucket
+
+
+async def test_forged_sub_falls_back_to_ip_bucket(client, low_limit):
+    codes = [
+        (await client.get("/services", headers=_token(f"fake-{i}", "wrong-secret"))).status_code
+        for i in range(4)
+    ]
+    assert codes == [401, 401, 401, 429]  # rotating forged subs cannot dodge the limit
+
+
+async def test_webhook_exempt_from_limit(client, low_limit):
+    codes = [(await client.post("/pr-gate/webhook", content=b"{}")).status_code for _ in range(6)]
+    assert codes == [401] * 6
