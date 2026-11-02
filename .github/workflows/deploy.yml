@@ -1,0 +1,12 @@
+# Vercel (apps/web) and Render (apps/api, render.yaml autoDeploy) deploy from the git integration
+# on push to main. This job only gates on CI having been triggered; extend if deploy hooks are needed.
+name: Deploy
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Deploy handled by Vercel/Render git integrations for ${{ github.sha }}"

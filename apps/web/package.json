@@ -1,0 +1,33 @@
+{
+  "name": "web",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "15.5.28",
+    "react": "19.2.9",
+    "react-dom": "19.2.9",
+    "@supabase/supabase-js": "2.46.1",
+    "@supabase/ssr": "0.5.1",
+    "class-variance-authority": "0.7.0",
+    "clsx": "2.1.1",
+    "tailwind-merge": "2.5.4",
+    "lucide-react": "0.460.0"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3",
+    "tailwindcss": "3.4.14",
+    "autoprefixer": "10.4.20",
+    "postcss": "8.4.49",
+    "eslint": "9.14.0",
+    "eslint-config-next": "15.5.28",
+    "@types/node": "22.9.0",
+    "@types/react": "19.0.0",
+    "@types/react-dom": "19.0.0"
+  }
+}
