@@ -27,5 +27,9 @@ services:
         sync: false
       - key: INTERNAL_CRON_SECRET
         sync: false
+      - key: CORS_ORIGINS  # JSON list, e.g. ["https://dephgraph.vercel.app"]
+        sync: false
       - key: ENVIRONMENT
         value: production
+      - key: TRUSTED_PROXY_HOPS  # Render's proxy = 1; see app/limiter.py
+        value: "1"

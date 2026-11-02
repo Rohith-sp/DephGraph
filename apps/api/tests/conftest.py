@@ -31,6 +31,7 @@ settings.mongo_db_name = TEST_DB
 settings.redis_url = re.sub(r"/\d+$", "", settings.redis_url) + "/15"
 settings.supabase_jwt_secret = "test-jwt-secret-at-least-32-characters"
 settings.internal_cron_secret = "test-cron-secret"
+settings.rate_limit = "1000000/minute"  # test_polish lowers it per test
 
 sys.path.insert(0, str(ROOT / "scripts"))
 import seed_db  # noqa: E402

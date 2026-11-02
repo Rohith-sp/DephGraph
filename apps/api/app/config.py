@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     github_private_key_base64: str = ""
     environment: str = "development"
     cors_origins: list[str] = ["http://localhost:3000"]
+    rate_limit: str = "100/minute"  # per client IP, all routes except /health
+    # Reverse proxies in front of the app (Render = 1). 0 = ignore X-Forwarded-For.
+    trusted_proxy_hops: int = 1
 
 
 settings = Settings()

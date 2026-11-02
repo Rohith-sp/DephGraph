@@ -1,7 +1,7 @@
 # Web framework
-fastapi>=0.115.6
+fastapi==0.162.0
 uvicorn[standard]==0.32.0
-python-multipart>=0.0.18
+python-multipart==0.0.33
 
 # PostgreSQL
 asyncpg==0.29.0
@@ -12,7 +12,7 @@ motor==3.6.0
 pymongo==4.9.2  # motor 3.6.0 requires pymongo<4.10 (PRD pin 4.10.1 is unsatisfiable)
 
 # Cache (redis-py speaks to local redis and Upstash rediss://)
-redis>=5.2,<6
+redis==5.3.1
 
 # Validation & config
 pydantic==2.9.2
@@ -34,15 +34,15 @@ groq==0.12.0
 
 # Version parsing + CVSS scoring
 packaging==24.2
-cvss>=3.2
+cvss==3.6
 
 # Auth
 supabase==2.10.0
-python-jose[cryptography]>=3.4.0
+python-jose[cryptography]==3.5.0
 
 # Logging & rate limiting
 structlog==24.4.0
-slowapi==0.1.9
+limits==5.8.0  # per-IP rate limit (app/limiter.py)
 
 # Testing
 pytest==8.3.3

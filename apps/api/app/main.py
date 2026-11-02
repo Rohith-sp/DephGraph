@@ -12,7 +12,9 @@ from starlette.exceptions import HTTPException
 
 from app.config import settings
 from app.database import close_all
+from app.limiter import RateLimitMiddleware
 from app.models.mongo import ensure_indexes
+from app.observability import RequestContextMiddleware, configure_logging
 from app.routers import (
     clusters,
     health,
@@ -26,6 +28,7 @@ from app.routers import (
 )
 from app.services import cluster_engine
 
+configure_logging()
 log = structlog.get_logger()
 
 
@@ -40,6 +43,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="DephGraph API", lifespan=lifespan)
+# add_middleware: last added is outermost, so CORS headers also land on 429/500 responses
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(RequestContextMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
