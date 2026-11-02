@@ -1,6 +1,5 @@
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from fastapi.responses import JSONResponse
 from pymongo.errors import PyMongoError
 
 from app.auth import get_current_user
@@ -64,9 +63,5 @@ async def members(cluster_id: int, session: DbSession) -> dict[str, object]:
 
 
 @router.post("/recompute", status_code=202)
-async def recompute(tasks: BackgroundTasks) -> JSONResponse:
-    redis = get_redis()
-    if not await redis.set(cluster_engine.LOCK_KEY, "1", nx=True, ex=cluster_engine.LOCK_TTL):
-        return JSONResponse(ok({"status": "already_running"}), status_code=202)
-    tasks.add_task(cluster_engine.run_guarded, redis)
-    return JSONResponse(ok({"status": "accepted"}), status_code=202)
+async def recompute(tasks: BackgroundTasks) -> dict[str, object]:
+    return ok({"status": await cluster_engine.start(tasks)})

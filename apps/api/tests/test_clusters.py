@@ -65,6 +65,29 @@ async def test_recompute_lock_held(client, auth, monkeypatch):
     assert r.status_code == 202 and r.json()["data"]["status"] == "already_running"
 
 
+CRON = {"X-Cron-Secret": "test-cron-secret"}
+
+
+async def test_internal_recompute_accepted(client, fake_model, reseed):
+    r = await client.post("/internal/cluster-recompute", headers=CRON)
+    assert r.status_code == 202 and r.json()["data"]["status"] == "accepted"
+
+
+@pytest.mark.parametrize("headers", [{}, {"X-Cron-Secret": "wrong"}])
+async def test_internal_recompute_bad_secret(client, headers):
+    assert (await client.post("/internal/cluster-recompute", headers=headers)).status_code == 401
+
+
+async def test_internal_recompute_lock_held(client, monkeypatch):
+    async def boom() -> int:
+        raise AssertionError("must not run")
+
+    monkeypatch.setattr(cluster_engine, "recompute", boom)
+    await get_redis().set(cluster_engine.LOCK_KEY, "1", ex=60)
+    r = await client.post("/internal/cluster-recompute", headers=CRON)
+    assert r.status_code == 202 and r.json()["data"]["status"] == "already_running"
+
+
 async def test_recompute_failure_releases_lock(client, auth, monkeypatch):
     async def boom() -> int:
         raise RuntimeError("model exploded")
@@ -72,6 +95,15 @@ async def test_recompute_failure_releases_lock(client, auth, monkeypatch):
     monkeypatch.setattr(cluster_engine, "recompute", boom)
     assert (await client.post("/clusters/recompute", headers=auth)).status_code == 202
     assert await get_redis().get(cluster_engine.LOCK_KEY) is None
+
+
+async def test_release_with_stale_token_keeps_new_lock():
+    redis = get_redis()
+    await redis.set(cluster_engine.LOCK_KEY, "new", ex=60)
+    assert not await cluster_engine.release(redis, "stale")
+    assert await redis.get(cluster_engine.LOCK_KEY) == "new"
+    assert await cluster_engine.release(redis, "new")
+    assert await redis.get(cluster_engine.LOCK_KEY) is None
 
 
 async def test_members_404_and_422(client, auth):

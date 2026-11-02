@@ -42,7 +42,8 @@ health check `/health`). Set the `sync: false` variables in the dashboard:
 `ENVIRONMENT=production` (JSON logs, SBERT preload) and `TRUSTED_PROXY_HOPS=1` are preset in the blueprint.
 Optional: `MONGO_DB_NAME`, `GROQ_MODEL`, `RATE_LIMIT` (default `100/minute`).
 
-Rate limiting is per client IP, in memory, so it needs a single worker. The client IP is the
+Rate limiting is per authenticated user (verified JWT `sub`), falling back to client IP for anonymous or
+invalid-token requests. It is in memory, so it needs a single worker. The fallback client IP is the
 `X-Forwarded-For` entry added by the last trusted proxy (`TRUSTED_PROXY_HOPS` entries from the right);
 entries further left are client-supplied and ignored. If you put another proxy/CDN in front of Render, raise
 `TRUSTED_PROXY_HOPS` to match, otherwise all clients share one bucket.
@@ -69,15 +70,11 @@ Send the secret in a request header (Advanced > Headers). Times are in the job's
 | Job | Method + URL | Header | Schedule |
 |---|---|---|---|
 | OSV sync | `POST https://dephgraph-api.onrender.com/internal/osv-sync` | `X-Cron-Secret: <INTERNAL_CRON_SECRET>` | `0 2 * * *` |
-| Cluster recompute | `POST https://dephgraph-api.onrender.com/clusters/recompute` | `Authorization: Bearer <JWT>` (see note) | `0 3 * * 0` |
+| Cluster recompute | `POST https://dephgraph-api.onrender.com/internal/cluster-recompute` | `X-Cron-Secret: <INTERNAL_CRON_SECRET>` | `0 3 * * 0` |
 | Health ping | `GET https://dephgraph-api.onrender.com/health` | none | `*/10 * * * *` |
 
-Note: `/clusters/recompute` currently requires a user JWT, not `X-Cron-Secret`, and Supabase access tokens
-expire, so this job will start failing with 401 after the token lapses. Until the endpoint accepts the cron
-secret, treat this job as manual or refresh the token.
-
-`/health` is exempt from rate limiting; other routes return `429` with the standard envelope after 100 requests
-per minute per IP.
+`/health` and `/pr-gate/webhook` are exempt from rate limiting; other routes return `429` with the standard
+envelope after 100 requests per minute per user (or per IP when anonymous).
 
 ## 5. Smoke test
 

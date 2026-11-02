@@ -3,16 +3,18 @@
 import asyncio
 import json
 import threading
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import structlog
+from fastapi import BackgroundTasks
 from pymongo import UpdateOne
 from sklearn.feature_extraction.text import CountVectorizer
 from sqlalchemy import text
 
-from app.database import SessionLocal, get_mongo
+from app.database import SessionLocal, get_mongo, get_redis
 from app.services.queries import rows
 
 log = structlog.get_logger()
@@ -93,7 +95,7 @@ async def recompute() -> int:
     docs = [f"{p['name']}: {p['description'] or ''}" for p in pkgs]
     vectors = await asyncio.to_thread(encode, docs) if docs else np.zeros((0, 384))
     result = await asyncio.to_thread(cluster, vectors)
-    words = top_keywords(docs, result.labels)
+    words = await asyncio.to_thread(top_keywords, docs, result.labels)
 
     cluster_of: dict[int, int] = {}  # package_id -> new cluster_id
     async with SessionLocal() as session, session.begin():
@@ -145,11 +147,31 @@ async def recompute() -> int:
     return len(words)
 
 
-async def run_guarded(redis: Any) -> None:
+# Delete only if we still own the lock: a run that outlives LOCK_TTL must not free a newer holder's.
+_RELEASE = (
+    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end return 0"
+)
+
+
+async def release(redis: Any, token: str) -> bool:
+    return bool(await redis.eval(_RELEASE, 1, LOCK_KEY, token))
+
+
+async def run_guarded(redis: Any, token: str) -> None:
     """Background entry: lock already held by the caller; always logs, always releases."""
     try:
         await recompute()
     except Exception:  # noqa: BLE001 -- background job: log and swallow so the lock is released
         log.exception("cluster_recompute_failed")
     finally:
-        await redis.delete(LOCK_KEY)
+        await release(redis, token)
+
+
+async def start(tasks: BackgroundTasks) -> str:
+    """Take the lock and schedule a guarded recompute; returns the status string."""
+    redis = get_redis()
+    token = uuid.uuid4().hex
+    if not await redis.set(LOCK_KEY, token, nx=True, ex=LOCK_TTL):
+        return "already_running"
+    tasks.add_task(run_guarded, redis, token)
+    return "accepted"
