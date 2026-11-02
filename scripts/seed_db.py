@@ -23,7 +23,63 @@ CLUSTERS = {
     "HTTP client": "requests httpx aiohttp axios node-fetch got reqwest",
     "Serialization": "pyyaml serde serde_json",
 }
-GPL = {"mysql-connector-python", "handlebars", "regex"}  # synthetic license assignment for demo
+DESCRIPTIONS = {
+    "requests": "Simple HTTP client library for sending web requests and reading responses",
+    "httpx": "Next generation HTTP client with async support for sending web requests",
+    "aiohttp": "Asynchronous HTTP client and server framework for sending web requests",
+    "urllib3": "HTTP client with connection pooling for sending web requests",
+    "axios": "Promise based HTTP client for the browser and node sending web requests",
+    "node-fetch": "HTTP client bringing the fetch API to node for sending web requests",
+    "got": "Human friendly and powerful HTTP request client library",
+    "follow-redirects": "HTTP client wrapper that follows redirects for web requests",
+    "reqwest": "Ergonomic high level HTTP client for sending web requests in Rust",
+    "pyyaml": "Data serialization library: YAML parser and serializer for configuration data",
+    "serde": "Data serialization framework: serialize and deserialize Rust data structures",
+    "serde_json": "Data serialization library: JSON serializer and deserializer for Rust data",
+    "qs": "Data serialization library: query string parser and serializer",
+    "minimist": "JavaScript utility helper: command line argument parser",
+    "click": "Command line interface toolkit for composing commands with options and flags",
+    "pydantic": "Data serialization and validation library: parse and serialize typed data models",
+    "jinja2": "Template engine rendering text and HTML from templates",
+    "handlebars": "Template engine rendering text and HTML from semantic templates",
+    "markupsafe": "Safely escape markup strings for HTML template rendering",
+    "flask": "Web application framework: lightweight framework routing requests to view handlers",
+    "express": "Web application framework: minimalist framework routing requests to handlers",
+    "werkzeug": "Web application framework toolkit: routing, request and response utilities",
+    "hyper": "HTTP client and server implementation in Rust for web requests",
+    "react": "Web application framework: building user interface components",
+    "webpack": "Web application framework tooling: bundles modules for the browser",
+    "numpy": "Numerical array computing with matrices and linear algebra",
+    "pandas": "Data analysis library with tabular dataframes and statistics",
+    "pillow": "Image processing library for opening and manipulating pictures",
+    "rand": "Random number generators and probability distributions",
+    "uuid": "JavaScript utility helper: generate unique identifiers",
+    "sqlalchemy": "SQL database toolkit and object relational mapper",
+    "mysql-connector-python": "MySQL database driver for connecting and querying SQL databases",
+    "cryptography": "Cryptographic recipes for encryption, hashing and signing",
+    "certifi": "Root certificates bundle for verifying TLS trust",
+    "idna": "Internationalized domain name encoding and decoding",
+    "semver": "JavaScript utility helper: semantic version parser and comparison",
+    "chalk": "JavaScript utility helper: terminal string color styling",
+    "debug": "JavaScript utility helper: tiny debugging output function",
+    "moment": "JavaScript utility helper: parse, validate and format dates",
+    "lodash": "JavaScript utility helper functions for arrays, objects and strings",
+    "async": "Utility functions for asynchronous control flow and concurrency",
+    "tokio": "Asynchronous runtime for Rust with tasks, timers and concurrency",
+    "bytes": "Utilities for working with byte buffers",
+    "regex": "Regular expression engine for pattern matching text",
+    "libc": "Raw bindings to platform system libraries",
+    "cfg-if": "Macro for conditional compilation",
+    "ms": "JavaScript utility helper: convert time durations to milliseconds",
+    "inherits": "JavaScript utility helper: class inheritance function",
+    "safe-buffer": "JavaScript utility helper: safer buffer allocation functions",
+    "charset-normalizer": "Detect and normalize text character encodings",
+}
+GPL = {
+    "mysql-connector-python",
+    "handlebars",
+    "regex",
+}  # synthetic license assignment for demo
 ALIASES = {"pillow": ["PIL"], "pyyaml": ["yaml"], "beautifulsoup4": ["bs4"]}
 SERVICES = [  # (team idx, name, language, ecosystem)
     (0, "api-gateway", "python", "pypi"),
@@ -95,7 +151,7 @@ async def main(dsn: str = DSN) -> None:
         pid = {n: i + 1 for i, (_, n) in enumerate(pkgs)}
         await c.executemany(
             "INSERT INTO package (ecosystem, name, description) VALUES ($1, $2, $3)",
-            [(e, n, f"{n} ({e} package)") for e, n in pkgs],
+            [(e, n, DESCRIPTIONS.get(n, f"{n} ({e} package)")) for e, n in pkgs],
         )
         await c.executemany(
             "INSERT INTO package_alias VALUES ($1, $2)",
@@ -114,7 +170,14 @@ async def main(dsn: str = DSN) -> None:
             vers[n] = [(v, i) for i, v in enumerate(vs)]
             for i, v in enumerate(vs):
                 rows.append(
-                    (pid[n], v, lic, cl, ts(age + (3 - i) * 120), n == "node-fetch" and i == 0)
+                    (
+                        pid[n],
+                        v,
+                        lic,
+                        cl,
+                        ts(age + (3 - i) * 120),
+                        n == "node-fetch" and i == 0,
+                    )
                 )
         await c.executemany("INSERT INTO package_version VALUES ($1, $2, $3, $4, $5, $6)", rows)
 
@@ -123,7 +186,14 @@ async def main(dsn: str = DSN) -> None:
             "INSERT INTO maintainer (username, profile_url) VALUES ($1, $2)",
             [
                 (u, f"https://github.com/{u}")
-                for u in ["alice-dev", "bob-oss", "carol-rs", "dave-py", "erin-js", "frank-core"]
+                for u in [
+                    "alice-dev",
+                    "bob-oss",
+                    "carol-rs",
+                    "dave-py",
+                    "erin-js",
+                    "frank-core",
+                ]
             ],
         )
         await c.executemany(
@@ -131,7 +201,15 @@ async def main(dsn: str = DSN) -> None:
             [
                 (i, f"{u}@example.org", True)
                 for i, u in enumerate(
-                    ["alice-dev", "bob-oss", "carol-rs", "dave-py", "erin-js", "frank-core"], 1
+                    [
+                        "alice-dev",
+                        "bob-oss",
+                        "carol-rs",
+                        "dave-py",
+                        "erin-js",
+                        "frank-core",
+                    ],
+                    1,
                 )
             ],
         )

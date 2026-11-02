@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -13,14 +14,17 @@ from app.config import settings
 from app.database import close_all
 from app.models.mongo import ensure_indexes
 from app.routers import (
+    clusters,
     health,
     ingest,
     internal,
+    pr_gate,
     remediation,
     services,
     stats,
     vulnerabilities,
 )
+from app.services import cluster_engine
 
 log = structlog.get_logger()
 
@@ -29,6 +33,8 @@ log = structlog.get_logger()
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     log.info("startup", environment=settings.environment)
     await ensure_indexes()
+    if settings.environment == "production":  # load the SBERT model off the event loop
+        asyncio.create_task(asyncio.to_thread(cluster_engine.load_model))
     yield
     await close_all()
 
@@ -64,5 +70,15 @@ async def upstream_error(_: Request, exc: httpx.HTTPError) -> JSONResponse:
     return _err(502, "Upstream service unavailable")
 
 
-for r in (health, ingest, services, vulnerabilities, remediation, stats, internal):
+for r in (
+    health,
+    ingest,
+    services,
+    vulnerabilities,
+    remediation,
+    stats,
+    internal,
+    clusters,
+    pr_gate,
+):
     app.include_router(r.router)

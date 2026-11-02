@@ -18,7 +18,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -78,6 +78,7 @@ class SemanticCluster(Base):
     label: Mapped[str] = mapped_column(String(120))
     centroid_vec: Mapped[Any | None] = mapped_column(JSONB)
     member_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    keywords: Mapped[list[str]] = mapped_column(ARRAY(String), server_default="{}")
     created_at: Mapped[datetime] = _now()
 
 
@@ -148,7 +149,10 @@ class PackageVersion(Base):
 class RemediationAction(Base):
     __tablename__ = "remediation_action"
     plan_id: Mapped[int] = mapped_column(
-        BigInteger, _fk("remediation_plan.plan_id"), primary_key=True, autoincrement=False
+        BigInteger,
+        _fk("remediation_plan.plan_id"),
+        primary_key=True,
+        autoincrement=False,
     )
     action_seq: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
     description: Mapped[str | None] = mapped_column(Text)
@@ -181,6 +185,7 @@ class PrRiskVerdict(Base):
     risk_level: Mapped[str] = mapped_column(String(20))
     stage_reached: Mapped[int] = mapped_column(Integer)
     context_tokens: Mapped[int | None] = mapped_column(Integer)
+    reasoning: Mapped[str | None] = mapped_column(Text)
     decided_at: Mapped[datetime] = _now()
 
 
@@ -190,7 +195,10 @@ class MaintainedBy(Base):
         BigInteger, _fk("package.package_id"), primary_key=True, autoincrement=False
     )
     maintainer_id: Mapped[int] = mapped_column(
-        BigInteger, _fk("maintainer.maintainer_id"), primary_key=True, autoincrement=False
+        BigInteger,
+        _fk("maintainer.maintainer_id"),
+        primary_key=True,
+        autoincrement=False,
     )
     role: Mapped[str] = mapped_column(String(40), server_default="owner")
 
@@ -319,7 +327,10 @@ class PackageAlias(Base):
 class MaintainerEmail(Base):
     __tablename__ = "maintainer_email"
     maintainer_id: Mapped[int] = mapped_column(
-        BigInteger, _fk("maintainer.maintainer_id"), primary_key=True, autoincrement=False
+        BigInteger,
+        _fk("maintainer.maintainer_id"),
+        primary_key=True,
+        autoincrement=False,
     )
     email: Mapped[str] = mapped_column(String(255), primary_key=True)
     is_primary: Mapped[bool] = mapped_column(Boolean, server_default="false")

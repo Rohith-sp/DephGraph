@@ -161,3 +161,36 @@ class StatsOut(BaseModel):
 class SyncOut(BaseModel):
     packages_scanned: int
     vulns_fetched: int
+
+
+class ClusterOut(BaseModel):
+    cluster_id: int
+    label: str
+    keywords: list[str]
+    member_count: int
+
+
+class ClusterMember(BaseModel):
+    package_id: int
+    name: str
+    ecosystem: str
+    x: float | None  # null only if Mongo embeddings are unavailable
+    y: float | None
+
+
+class RedundancyOut(BaseModel):
+    service_id: int
+    service_name: str
+    cluster_id: int
+    cluster_label: str
+    package_count: int
+    packages: list[str]
+
+
+class VerdictOut(BaseModel):
+    pr_number: int
+    dep_name: str
+    verdict: Literal["PASS", "ADVISORY", "BLOCK"]
+    stage_reached: int
+    reasoning: str | None
+    decided_at: datetime

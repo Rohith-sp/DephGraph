@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     github_webhook_secret: str = ""
     internal_cron_secret: str = ""
     groq_api_key: str = ""
+    groq_model: str = "llama-3.1-70b-versatile"
+    github_app_id: str = ""
+    github_private_key_base64: str = ""
     environment: str = "development"
     cors_origins: list[str] = ["http://localhost:3000"]
 
