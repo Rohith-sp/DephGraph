@@ -44,6 +44,7 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     image: dephgraph-api
+    pull_policy: build  # never pull: the image only exists locally
     command: ["python", "../../scripts/docker_init.py"]
     environment: &api-env
       DATABASE_URL: postgresql+asyncpg://dephgraph:dephgraph@postgres:5432/dephgraph
@@ -62,6 +63,7 @@ services:
   api:
     build: *api-build
     image: dephgraph-api
+    pull_policy: build
     environment: *api-env
     ports: ["${API_PORT:-8000}:8000"]
     volumes:
