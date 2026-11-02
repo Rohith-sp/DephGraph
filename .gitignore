@@ -11,3 +11,15 @@ coverage
 next-env.d.ts
 apps/web/test-results/
 apps/web/playwright-report/
+apps/web/e2e/.auth/
+
+# env files (keep the template)
+.env
+.env.*
+!.env.example
+
+# logs, reports, keys, OS files
+*.log
+htmlcov/
+*.pem
+.DS_Store

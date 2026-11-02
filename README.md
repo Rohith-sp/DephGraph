@@ -89,15 +89,13 @@ This creates the `dephgraph` database with all tables, constraints and views. Th
 Needs Docker, Python 3.12 (with [uv](https://docs.astral.sh/uv/)) and Node 20+.
 
 ```bash
-docker compose up -d                       # Postgres 15, Mongo 7, Redis 7
-# .env.local (gitignored): config defaults already match the compose services, so only secrets are needed
-printf 'SUPABASE_JWT_SECRET=dev-secret-at-least-32-characters\nINTERNAL_CRON_SECRET=dev-cron-secret\n' > .env.local
+docker compose up -d                       # Postgres 15, Mongo 7, Redis 7; first start applies migrations 001-006
+# (to re-apply migrations: docker compose down -v, which wipes all local data)
+# .env.local (gitignored): defaults already match the compose services, so only secrets are needed; never overwrites an existing file
+[ -f .env.local ] || printf 'SUPABASE_JWT_SECRET=dev-secret-at-least-32-characters\nINTERNAL_CRON_SECRET=dev-cron-secret\n' > .env.local
 
 uv venv -p 3.12 apps/api/.venv
 uv pip install -p apps/api/.venv -r apps/api/requirements.txt
-for f in apps/api/migrations/*.sql; do     # 001 -> 006, in order
-  docker compose exec -T postgres psql -U dephgraph -d dephgraph -v ON_ERROR_STOP=1 < "$f"
-done
 apps/api/.venv/bin/python scripts/seed_db.py
 
 cd apps/api && .venv/bin/uvicorn app.main:app --reload   # API on :8000
@@ -111,6 +109,25 @@ apps/api/.venv/bin/python scripts/make_dev_token.py     # prints a dev JWT
 # apps/web/.env.local: AUTH_DISABLED=true and DEV_API_TOKEN=<that token>
 npm run dev -w apps/web                                  # dashboard on :3000
 ```
+
+### Supabase locally (real auth)
+
+Runs the full product against a local Supabase stack (Postgres, Auth, Studio, Mailpit) with real
+sign-in. Needs the [Supabase CLI](https://supabase.com/docs/guides/local-development); ports 55320-55329.
+
+```bash
+supabase start        # applies apps/api/migrations via the supabase/migrations symlink
+supabase status -o env  # keys for .env.local: SUPABASE_URL=http://127.0.0.1:55321, SUPABASE_ANON_KEY,
+                        # SUPABASE_SERVICE_ROLE_KEY, SUPABASE_JWT_SECRET, DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:55322/postgres
+                        # apps/web/.env.local: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY (leave AUTH_DISABLED unset)
+apps/api/.venv/bin/python scripts/demo.py   # reset + seed, creates demo@dephgraph.local, runs the whole product
+```
+
+Studio is on http://127.0.0.1:55323, sign-in emails (magic links) in Mailpit on http://127.0.0.1:55324.
+The demo calls live OSV, deps.dev and GitHub (unauthenticated, low rate limit; the PR-gate step prints a
+note if GitHub refuses). E2E with real auth: build and start the web app, then
+`cd apps/web && npx playwright test` with `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` exported (it
+creates the e2e users and logs in through `/login`); `AUTH_DISABLED=true DEV_API_TOKEN=... npx playwright test` is the no-Supabase CI mode.
 
 Tests: `apps/api/.venv/bin/pytest apps/api/tests/`. Deployment: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 

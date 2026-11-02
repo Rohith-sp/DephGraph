@@ -21,6 +21,10 @@ through the API, which connects as the table owner (bypasses RLS). Before going 
 - add team scoping: the schema has no user-to-team link yet, so add one in a new migration, replace
   `USING (true)` with a predicate on it, and enforce the same check in the API.
 
+New projects sign tokens with ES256/RS256 asymmetric keys; the API verifies them against
+`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`, so set `SUPABASE_URL` on Render. `SUPABASE_JWT_SECRET` is only
+needed for legacy HS256 projects. To rehearse against a local stack, see README "Supabase locally".
+
 Use the pooled connection string for `DATABASE_URL`, with the `postgresql+asyncpg://` scheme.
 
 ## 2. Render (API)
@@ -33,7 +37,8 @@ health check `/health`). Set the `sync: false` variables in the dashboard:
 | `DATABASE_URL` | Supabase Postgres, `postgresql+asyncpg://...` |
 | `MONGO_URI` | MongoDB Atlas SRV string |
 | `REDIS_URL` | Upstash `rediss://...` |
-| `SUPABASE_JWT_SECRET` | Supabase > Project Settings > API > JWT secret |
+| `SUPABASE_URL` | Supabase project URL (JWKS source for ES256/RS256 tokens) |
+| `SUPABASE_JWT_SECRET` | legacy HS256 projects only: Project Settings > API > JWT secret |
 | `GROQ_API_KEY` | Groq key (PR gate stage 3) |
 | `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY_BASE64`, `GITHUB_WEBHOOK_SECRET` | GitHub App; key is the PEM, base64-encoded |
 | `INTERNAL_CRON_SECRET` | long random string; guards `/internal/*` |

@@ -7,7 +7,7 @@ from limits.strategies import MovingWindowRateLimiter
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
-from app.auth import decode_token
+from app.auth import auth_configured, decode_token
 from app.config import settings
 
 # shortcut: in-memory counters are correct only with a single worker (render.yaml: --workers 1);
@@ -34,7 +34,7 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def limit_key(request: Request) -> str:
+async def limit_key(request: Request) -> str:
     """Verified JWT subject, else client IP.
 
     All traffic arrives via the Next.js server, so the IP is one shared bucket; the `sub` of a
@@ -42,9 +42,9 @@ def limit_key(request: Request) -> str:
     to the IP bucket, so a made-up `sub` cannot dodge the limit.
     """
     scheme, _, token = request.headers.get("authorization", "").partition(" ")
-    if scheme.lower() == "bearer" and token and settings.supabase_jwt_secret:
+    if scheme.lower() == "bearer" and token and auth_configured():
         try:
-            if sub := decode_token(token).get("sub"):
+            if sub := (await decode_token(token)).get("sub"):
                 return f"user:{sub}"
         except JWTError:
             pass
@@ -57,7 +57,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # limit is read per request so tests can change settings.rate_limit
         if request.url.path not in EXEMPT_PATHS and not _window.hit(
-            parse(settings.rate_limit), limit_key(request)
+            parse(settings.rate_limit), await limit_key(request)
         ):
             return JSONResponse({"data": None, "error": "Rate limit exceeded"}, 429)
         return await call_next(request)

@@ -12,7 +12,10 @@ class Settings(BaseSettings):
     mongo_uri: str = "mongodb://localhost:27017"
     mongo_db_name: str = "dephgraph"
     redis_url: str = "redis://localhost:6379/0"
-    supabase_jwt_secret: str = ""
+    supabase_url: str = ""  # JWKS source for ES256/RS256 tokens; also where the web app signs in
+    supabase_anon_key: str = ""  # only the scripts use these two; the app never reads them
+    supabase_service_role_key: str = ""
+    supabase_jwt_secret: str = ""  # legacy HS256 projects
     github_webhook_secret: str = ""
     internal_cron_secret: str = ""
     groq_api_key: str = ""
