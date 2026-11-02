@@ -18,18 +18,18 @@ async def rows(session: AsyncSession, sql: str, **params: Any) -> Rows:
     return [dict(r) for r in (await session.execute(text(sql), params)).mappings()]
 
 
-async def require_service(
-    session: AsyncSession, service_id: int, lock: bool = False
-) -> dict[str, Any]:
+async def require_service(session: AsyncSession, service_id: int) -> dict[str, Any]:
     found = await rows(
-        session,
-        "SELECT service_id, name FROM service WHERE service_id = :id"
-        + (" FOR UPDATE" if lock else ""),
-        id=service_id,
+        session, "SELECT service_id, name FROM service WHERE service_id = :id", id=service_id
     )
     if not found:
         raise HTTPException(404, "Service not found")
     return found[0]
+
+
+async def lock_service(session: AsyncSession, service_id: int) -> None:
+    """Serialize writers per service until the transaction ends (no row lock held on `service`)."""
+    await session.execute(text("SELECT pg_advisory_xact_lock(:s)"), {"s": service_id})
 
 
 async def latest_seq(session: AsyncSession, service_id: int) -> int | None:

@@ -2,7 +2,9 @@ import asyncio
 import hashlib
 import time
 from datetime import datetime
+from typing import Any, TypeVar
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pymongo.errors import PyMongoError
@@ -17,11 +19,12 @@ from app.models.sql import Package, PackageVersion
 from app.schemas.common import Envelope, ok
 from app.schemas.ingest import IngestRequest, IngestResult, ScanResult
 from app.services import blast_radius, osv_fetcher
-from app.services.deps_dev_client import apply_metadata, fetch_metadata
+from app.services.deps_dev_client import Metadata, apply_metadata, fetch_metadata
 from app.services.manifest_parser import ParsedPackage, PkgRef, parse_manifest
-from app.services.queries import latest_seq, require_service, rows
+from app.services.queries import latest_seq, lock_service, require_service, rows
 
 log = structlog.get_logger()
+T = TypeVar("T")
 router = APIRouter(prefix="/ingest", dependencies=[Depends(get_current_user)], tags=["ingest"])
 
 
@@ -105,7 +108,7 @@ async def _record_scan(session: AsyncSession, service_id: int) -> None:
 
 
 async def _store_manifest(body: IngestRequest, parsed: list[ParsedPackage]) -> None:
-    """Best-effort raw copy to Mongo, deduplicated by content sha256."""
+    """Best-effort raw copy to Mongo, deduplicated per service by content sha256."""
     digest = hashlib.sha256(body.content.encode()).hexdigest()
     doc = {
         "service_id": body.service_id,
@@ -117,29 +120,57 @@ async def _store_manifest(body: IngestRequest, parsed: list[ParsedPackage]) -> N
         "sha256": digest,
     }
     try:
-        await raw_manifests().update_one({"sha256": digest}, {"$setOnInsert": doc}, upsert=True)
+        await raw_manifests().update_one(
+            {"service_id": body.service_id, "sha256": digest}, {"$setOnInsert": doc}, upsert=True
+        )
     except PyMongoError as e:
         log.warning("manifest_store_failed", error=str(e))
+
+
+async def _fetch_upstream(
+    refs: list[PkgRef],
+) -> tuple[dict[PkgRef, list[str]], dict[str, dict[str, Any]], dict[PkgRef, Metadata]]:
+    """OSV + deps.dev in parallel with no DB connection held; an OSV failure cancels deps.dev."""
+    try:
+        async with asyncio.TaskGroup() as tg:
+            osv = tg.create_task(osv_fetcher.fetch_advisories(refs))
+            meta = tg.create_task(fetch_metadata(refs))
+    except* httpx.HTTPError as eg:  # let the app-level 502 handler see the bare error
+        raise eg.exceptions[0] from None
+    hits, advisories = osv.result()
+    return hits, advisories, meta.result()
+
+
+def _rekey(real: list[PkgRef], data: dict[PkgRef, T]) -> dict[PkgRef, T]:
+    """Fetch results are keyed by placeholder refs (package_id 0); re-key to the DB-backed refs."""
+    by_name = {(r.name, r.version): r for r in real}
+    return {by_name[(k.name, k.version)]: v for k, v in data.items()}
 
 
 @router.post("/manifest", response_model=Envelope[IngestResult])
 async def ingest_manifest(body: IngestRequest, session: DbSession) -> dict[str, object]:
     started = time.perf_counter()
     async with session.begin():
-        await require_service(session, body.service_id, lock=True)
-        try:
-            parsed = parse_manifest(body.ecosystem, body.content)
-        except ValueError as e:
-            raise HTTPException(422, str(e)) from e
-        if not parsed:
-            raise HTTPException(422, "No versioned packages found in manifest")
+        await require_service(session, body.service_id)
+    try:
+        parsed = parse_manifest(body.ecosystem, body.content)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    if not parsed:
+        raise HTTPException(422, "No versioned packages found in manifest")
+    hits, advisories, meta = await _fetch_upstream(
+        [PkgRef(0, body.ecosystem, p.name, p.version) for p in parsed]
+    )
+    async with session.begin():
+        await lock_service(session, body.service_id)
         refs, inserted = await _upsert_packages(session, body.ecosystem, parsed)
-        meta, vulns = await asyncio.gather(fetch_metadata(refs), osv_fetcher.sync(session, refs))
-        await apply_metadata(session, meta)
+        await apply_metadata(session, _rekey(refs, meta))
+        vulns = await osv_fetcher.upsert_advisories(session, _rekey(refs, hits), advisories)
         await _record_deployment(session, body.service_id, parsed, refs)
         await _record_scan(session, body.service_id)
+    await osv_fetcher.store_raw(advisories)
     await _store_manifest(body, parsed)
-    await blast_radius.invalidate(body.service_id)
+    await blast_radius.invalidate()
     return ok(
         {
             "packages_parsed": len(parsed),
@@ -154,7 +185,7 @@ async def ingest_manifest(body: IngestRequest, session: DbSession) -> dict[str, 
 async def scan_service(service_id: int, session: DbSession) -> dict[str, object]:
     started = time.perf_counter()
     async with session.begin():
-        await require_service(session, service_id, lock=True)
+        await require_service(session, service_id)
         seq = await latest_seq(session, service_id)
         found = (
             await rows(
@@ -168,10 +199,14 @@ async def scan_service(service_id: int, session: DbSession) -> dict[str, object]
             if seq is not None
             else []
         )
-        refs = [PkgRef(r["package_id"], r["ecosystem"], r["name"], r["version"]) for r in found]
-        vulns = await osv_fetcher.sync(session, refs) if refs else 0
+    refs = [PkgRef(r["package_id"], r["ecosystem"], r["name"], r["version"]) for r in found]
+    hits, advisories = await osv_fetcher.fetch_advisories(refs) if refs else ({}, {})
+    async with session.begin():
+        await lock_service(session, service_id)
+        vulns = await osv_fetcher.upsert_advisories(session, hits, advisories)
         await _record_scan(session, service_id)
-    await blast_radius.invalidate(service_id)
+    await osv_fetcher.store_raw(advisories)
+    await blast_radius.invalidate()
     return ok(
         {
             "packages_scanned": len(refs),

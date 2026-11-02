@@ -5,6 +5,8 @@ import pytest
 from sqlalchemy import text
 
 from app.database import SessionLocal, get_mongo, get_redis
+from app.models.mongo import ensure_indexes
+from app.services import blast_radius
 from tests.upstream import mock_upstreams
 
 FIX = Path(__file__).parent / "fixtures"
@@ -27,7 +29,8 @@ async def scalar(sql: str, **p):
 
 
 async def test_ingest_manifest_happy(client, auth, reseed):
-    await get_redis().set("dephgraph:blast_radius:1", "stale")
+    key = await blast_radius.cache_key(2)  # another service's entry: vulns are shared
+    await get_redis().set(key, "stale")
     with mock_upstreams():
         r = await client.post("/ingest/manifest", json=body(), headers=auth)
     assert r.status_code == 200, r.text
@@ -36,7 +39,7 @@ async def test_ingest_manifest_happy(client, auth, reseed):
     assert d["packages_inserted"] >= 1
     assert d["vulns_fetched"] == 1
     assert d["duration_ms"] < 60_000
-    assert await get_redis().get("dephgraph:blast_radius:1") is None  # cache invalidated
+    assert await get_redis().get(key) is None  # cache invalidated
 
     assert await scalar("SELECT max(deploy_seq) FROM deployment WHERE service_id = 1") == 3
     assert await scalar("SELECT count(*) FROM resolves_to WHERE service_id=1 AND deploy_seq=3") >= 8
@@ -153,3 +156,40 @@ async def test_scan_404_and_401_and_422(client, auth):
     assert (await client.post("/ingest/scan/999", headers=auth)).status_code == 404
     assert (await client.post("/ingest/scan/1")).status_code == 401
     assert (await client.post("/ingest/scan/abc", headers=auth)).status_code == 422
+
+
+async def test_identical_manifest_for_two_services_is_stored_twice(client, auth, reseed):
+    with mock_upstreams():
+        for sid in (1, 2):
+            assert (
+                await client.post("/ingest/manifest", json=body(service_id=sid), headers=auth)
+            ).status_code == 200
+    assert await get_mongo()["raw_manifests"].count_documents({}) == 2
+
+
+async def test_ensure_indexes_drops_legacy_sha256_unique_index():
+    coll = get_mongo()["raw_manifests"]
+    await coll.create_index([("sha256", 1)], unique=True)
+    assert await ensure_indexes()
+    keys = [i["key"] for i in (await coll.index_information()).values()]
+    assert [("sha256", 1)] not in keys
+    assert [("service_id", 1), ("sha256", 1)] in keys
+
+
+async def test_ingest_drops_overlong_names_and_versions(client, auth, reseed):
+    content = f"flask==2.0.1\n{'a' * 256}==1.0\nrequests=={'1' * 101}\n"
+    with mock_upstreams():
+        r = await client.post("/ingest/manifest", json={**body(), "content": content}, headers=auth)
+    assert r.status_code == 200
+    assert r.json()["data"]["packages_parsed"] == 1
+
+
+async def test_scan_osv_failure_writes_nothing(client, auth, reseed):
+    count = "SELECT count(*) FROM scan_run WHERE service_id = 1"
+    before = await scalar(count)
+    router = mock_upstreams()
+    router.post("https://api.osv.dev/v1/querybatch").respond(503)
+    with router:
+        r = await client.post("/ingest/scan/1", headers=auth)
+    assert r.status_code == 502
+    assert await scalar(count) == before

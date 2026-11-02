@@ -4,9 +4,10 @@ from typing import Any
 
 
 def greedy_set_cover(
-    open_vulns: set[int], pkg_coverage: dict[Any, set[int]]
+    open_vulns: set[Any], pkg_coverage: dict[Any, set[Any]]
 ) -> list[dict[str, Any]]:
-    """Pick the package fixing the most still-open vulns until none can be added.
+    """Pick the package fixing the most still-open elements (any hashable, e.g. vuln ids or
+    (service, package, vuln) tuples) until none can be added.
 
     Ties break by key order for determinism. Vulns no package covers stay uncovered, so
     the final cumulative_coverage_pct can be < 100.

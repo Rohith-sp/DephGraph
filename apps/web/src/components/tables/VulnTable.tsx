@@ -14,9 +14,8 @@ export interface VulnQuery {
 
 const VARIANT = { CRITICAL: "critical", HIGH: "high", MEDIUM: "medium", LOW: "low" } as const;
 
-export const SeverityBadge = ({ severity }: { severity: Severity }) => (
-  <Badge variant={VARIANT[severity]}>{severity}</Badge>
-);
+export const SeverityBadge = ({ severity }: { severity: Severity | "NONE" | null }) =>
+  severity && severity !== "NONE" ? <Badge variant={VARIANT[severity]}>{severity}</Badge> : <span>—</span>;
 
 const href = (query: VulnQuery, patch: Partial<VulnQuery>) => {
   const m = { ...query, ...patch };

@@ -67,7 +67,7 @@ async def test_blast_radius_and_cache(client, auth):
     assert d["total_vulns"] == len(
         {v["vuln_id"] for x in d["vulnerable_packages"] for v in x["vulns"]}
     )
-    assert await get_redis().ttl("dephgraph:blast_radius:1") > 86000
+    assert await get_redis().ttl(await blast_radius.cache_key(1)) > 86000
 
     again = (await client.get("/blast-radius/1", headers=auth)).json()["data"]
     assert again["cached"] is True
@@ -79,12 +79,12 @@ async def test_blast_radius_works_when_redis_down(client, auth, monkeypatch):
         async def get(self, *_, **__):
             raise OSError("down")
 
-        set = delete = get
+        set = delete = incr = get
 
     monkeypatch.setattr(blast_radius, "get_redis", lambda: Dead())
     r = await client.get("/blast-radius/1", headers=auth)
     assert r.status_code == 200 and r.json()["data"]["cached"] is False
-    await blast_radius.invalidate(1)  # must swallow the error too
+    await blast_radius.invalidate()  # must swallow the error too
 
 
 async def test_blast_radius_path_follows_dependencies():
@@ -192,7 +192,8 @@ async def test_plan_get(client, auth):
         "step", "package", "package_id", "ecosystem", "from_version", "to_version",
         "vulns_fixed", "services_affected", "new_coverage", "cumulative_coverage_pct",
     }  # fmt: skip
-    assert steps[0]["new_coverage"] == len(steps[0]["vulns_fixed"])
+    # coverage counts (service, package, vuln) elements, so it is >= distinct vulns
+    assert steps[0]["new_coverage"] >= len(steps[0]["vulns_fixed"])
 
 
 async def test_plan_404_422_401(client, auth):
@@ -265,13 +266,34 @@ async def test_stats_401(client):
 async def test_internal_osv_sync(client, reseed):
     from tests.upstream import mock_upstreams
 
-    await get_redis().set("dephgraph:blast_radius:1", "x")
+    key = await blast_radius.cache_key(1)
+    await get_redis().set(key, "x")
     with mock_upstreams():
         r = await client.post("/internal/osv-sync", headers={"X-Cron-Secret": "test-cron-secret"})
     assert r.status_code == 200 and r.json()["data"]["packages_scanned"] > 0
-    assert await get_redis().get("dephgraph:blast_radius:1") is None
+    assert await get_redis().get(key) is None
 
 
 @pytest.mark.parametrize("headers", [{}, {"X-Cron-Secret": "wrong"}, {"X-Cron-Secret": ""}])
 async def test_internal_osv_sync_rejects(client, headers):
     assert (await client.post("/internal/osv-sync", headers=headers)).status_code == 401
+
+
+async def test_invalidate_drops_all_services_and_bumps_generation():
+    redis = get_redis()
+    old = [await blast_radius.cache_key(i) for i in (1, 2)]
+    for k in old:
+        await redis.set(k, "x")
+    await blast_radius.invalidate()
+    assert [await redis.get(k) for k in old] == [None, None]
+    assert await blast_radius.cache_key(1) != old[0]  # a racing writer's old key is unreachable
+    assert await redis.get(blast_radius.GEN_KEY) == "1"
+
+
+async def test_remediation_coverage_is_per_service_and_package():
+    from app.services.set_cover import greedy_set_cover
+
+    # same vuln 7 in two services/packages: fixing (s1, P) must not cover (s2, Q)
+    universe = {(1, "P", 7), (2, "Q", 7)}
+    plan = greedy_set_cover(universe, {"P": {(1, "P", 7)}})
+    assert plan[-1]["cumulative_coverage_pct"] == 50.0

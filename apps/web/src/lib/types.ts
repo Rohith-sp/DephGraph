@@ -60,7 +60,7 @@ export interface Vulnerability {
   vuln_id: number;
   osv_id: string;
   title: string | null;
-  severity: Severity;
+  severity: Severity | "NONE" | null;
   cvss_score: number | null;
   published_at: string | null;
   affected_packages: number;

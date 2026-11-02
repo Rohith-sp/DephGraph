@@ -33,7 +33,10 @@ async def osv_sync(
             JOIN package p ON p.package_id = rt.package_id
             """,
         )
-        refs = [PkgRef(r["package_id"], r["ecosystem"], r["name"], r["version"]) for r in found]
-        vulns = await osv_fetcher.sync(session, refs) if refs else 0
+    refs = [PkgRef(r["package_id"], r["ecosystem"], r["name"], r["version"]) for r in found]
+    hits, advisories = await osv_fetcher.fetch_advisories(refs) if refs else ({}, {})
+    async with session.begin():
+        vulns = await osv_fetcher.upsert_advisories(session, hits, advisories)
+    await osv_fetcher.store_raw(advisories)
     await blast_radius.invalidate()
     return ok({"packages_scanned": len(refs), "vulns_fetched": vulns})

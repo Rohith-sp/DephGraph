@@ -35,13 +35,19 @@ async def build_plan(session: AsyncSession, team_id: int) -> list[dict[str, Any]
     for r in open_rows:
         if r["fixed_in"]:
             by_pkg.setdefault(r["package_id"], []).append(r)
+    # element = (service, package, vuln): upgrading P in one service must not mark Q's rows fixed
     steps = greedy_set_cover(
-        {r["vuln_id"] for r in open_rows},
-        {pid: {r["vuln_id"] for r in rs} for pid, rs in by_pkg.items()},
+        {(r["service_id"], r["package_id"], r["vuln_id"]) for r in open_rows},
+        {pid: {(r["service_id"], pid, r["vuln_id"]) for r in rs} for pid, rs in by_pkg.items()},
     )
     plan = []
     for s in steps:
-        rs = [r for r in by_pkg[s["package"]] if r["vuln_id"] in s["vulns_fixed"]]
+        fixed = set(s["vulns_fixed"])
+        rs = [
+            r
+            for r in by_pkg[s["package"]]
+            if (r["service_id"], r["package_id"], r["vuln_id"]) in fixed
+        ]
         plan.append(
             {
                 "step": s["step"],
@@ -51,7 +57,7 @@ async def build_plan(session: AsyncSession, team_id: int) -> list[dict[str, Any]
                 "from_version": ", ".join(sorted({r["version_string"] for r in rs}, key=_vkey)),
                 "to_version": max((r["fixed_in"] for r in rs), key=_vkey),
                 "vulns_fixed": sorted({r["osv_id"] for r in rs}),
-                "vuln_ids": s["vulns_fixed"],
+                "vuln_ids": sorted({r["vuln_id"] for r in rs}),
                 "services_affected": sorted({r["service_name"] for r in rs}),
                 "new_coverage": s["new_coverage"],
                 "cumulative_coverage_pct": s["cumulative_coverage_pct"],

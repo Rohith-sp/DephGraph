@@ -14,5 +14,5 @@ test("dep graph renders nodes", async ({ page }) => {
 
 test("vuln table shows critical badge", async ({ page }) => {
   await page.goto("/vulnerabilities");
-  await expect(page.getByText("CRITICAL")).toBeVisible();
+  await expect(page.getByRole("table").getByText("CRITICAL", { exact: true }).first()).toBeVisible();
 });

@@ -10,6 +10,8 @@ from packaging.requirements import InvalidRequirement, Requirement
 
 log = structlog.get_logger()
 
+MAX_NAME, MAX_VERSION = 255, 100  # package.name / version_string column widths
+
 
 @dataclass(frozen=True)
 class ParsedPackage:
@@ -114,7 +116,10 @@ def parse_manifest(ecosystem: str, content: str) -> list[ParsedPackage]:
         raise ValueError(f"unsupported ecosystem: {ecosystem}") from None
     except (json.JSONDecodeError, tomllib.TOMLDecodeError, AttributeError) as e:
         raise ValueError(f"malformed {ecosystem} manifest: {e}") from e
-    return list({p.name: p for p in reversed(parsed)}.values())[::-1]
+    fits = [p for p in parsed if len(p.name) <= MAX_NAME and len(p.version) <= MAX_VERSION]
+    if len(fits) < len(parsed):
+        log.warning("manifest_overlong_dropped", count=len(parsed) - len(fits))
+    return list({p.name: p for p in reversed(fits)}.values())[::-1]
 
 
 @dataclass(frozen=True)

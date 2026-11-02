@@ -16,20 +16,27 @@ log = structlog.get_logger()
 CACHE_TTL = 86400
 
 
-def cache_key(service_id: int) -> str:
-    return f"dephgraph:blast_radius:{service_id}"
+PREFIX = "dephgraph:blast_radius:"
+GEN_KEY = f"{PREFIX}gen"
 
 
-async def invalidate(service_id: int | None = None) -> None:
-    """Drop one service's cache entry (or all). Cache errors never propagate."""
+async def cache_key(service_id: int) -> str:
+    """Keyed by a generation counter: a reader that computed before an invalidation writes to a
+    stale generation nobody reads, so it can never resurrect old data."""
+    return f"{PREFIX}{service_id}:{await get_redis().get(GEN_KEY) or 0}"
+
+
+async def invalidate() -> None:
+    """Vulnerability/affects rows are shared across services, so drop every entry.
+
+    Cache errors never propagate.
+    """
     redis = get_redis()
     try:
-        if service_id is not None:
-            await redis.delete(cache_key(service_id))
-        else:
-            keys = [k async for k in redis.scan_iter("dephgraph:blast_radius:*")]
-            if keys:
-                await redis.delete(*keys)
+        await redis.incr(GEN_KEY)
+        keys = [k async for k in redis.scan_iter(f"{PREFIX}*") if k != GEN_KEY]
+        if keys:
+            await redis.delete(*keys)
     except (RedisError, OSError) as e:
         log.warning("cache_invalidate_failed", error=str(e))
 
@@ -113,8 +120,6 @@ async def compute(session: AsyncSession, service_id: int) -> dict[str, Any]:
         SELECT rt.package_id, rt.version_string AS version, v.vuln_id, v.osv_id, v.severity,
                v.cvss_score
         FROM resolves_to rt
-        JOIN v_blast_radius br ON br.pkg_id = rt.package_id AND br.ver = rt.version_string
-                              AND br.depth = 0
         JOIN affects a ON (a.package_id, a.version_string) = (rt.package_id, rt.version_string)
         JOIN vulnerability v ON v.vuln_id = a.vuln_id
         WHERE rt.service_id = :s AND rt.deploy_seq = :q
@@ -156,14 +161,17 @@ async def compute(session: AsyncSession, service_id: int) -> dict[str, Any]:
 
 async def get_blast_radius(session: AsyncSession, service_id: int) -> dict[str, Any]:
     redis = get_redis()
+    key: str | None = None
     try:
-        if raw := await redis.get(cache_key(service_id)):
+        key = await cache_key(service_id)  # read the generation BEFORE computing
+        if raw := await redis.get(key):
             return {**json.loads(raw), "cached": True}
     except (RedisError, OSError, ValueError) as e:
         log.warning("cache_read_failed", error=str(e))
     data = await compute(session, service_id)
-    try:
-        await redis.set(cache_key(service_id), json.dumps(data), ex=CACHE_TTL)
-    except (RedisError, OSError) as e:
-        log.warning("cache_write_failed", error=str(e))
+    if key:
+        try:
+            await redis.set(key, json.dumps(data), ex=CACHE_TTL)
+        except (RedisError, OSError) as e:
+            log.warning("cache_write_failed", error=str(e))
     return data

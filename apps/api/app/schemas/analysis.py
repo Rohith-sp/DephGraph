@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ServiceOut(BaseModel):
@@ -119,7 +119,7 @@ class PlanStep(BaseModel):
 
 class PlanCreate(BaseModel):
     team_id: int
-    title: str | None = None
+    title: str | None = Field(default=None, max_length=255)
 
 
 class ActionOut(BaseModel):

@@ -25,7 +25,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase | None = None) -> bool:
     specs = {
         "raw_manifests": [
             ([("service_id", 1), ("uploaded_at", -1)], {}),
-            ([("sha256", 1)], {"unique": True}),
+            ([("service_id", 1), ("sha256", 1)], {"unique": True}),
         ],
         "osv_advisories": [([("osv_id", 1)], {"unique": True}), ([("fetched_at", -1)], {})],
         "package_embeddings": [([("package_id", 1)], {"unique": True}), ([("cluster_id", 1)], {})],
@@ -39,6 +39,10 @@ async def ensure_indexes(db: AsyncIOMotorDatabase | None = None) -> bool:
         ],
     }
     try:
+        # replaced the global sha256-only unique index (lost a second service's identical upload)
+        for name, idx in (await db["raw_manifests"].index_information()).items():
+            if idx["key"] == [("sha256", 1)] and idx.get("unique"):
+                await db["raw_manifests"].drop_index(name)
         for name, indexes in specs.items():
             for keys, opts in indexes:
                 await db[name].create_index(keys, **opts)

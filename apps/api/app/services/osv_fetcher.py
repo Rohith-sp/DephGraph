@@ -1,6 +1,7 @@
 """OSV.dev client: querybatch -> per-id details -> vulnerability/affects upserts."""
 
 import asyncio
+from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
 
@@ -23,6 +24,7 @@ OSV_URL = "https://api.osv.dev/v1"
 OSV_ECOSYSTEM = {"pypi": "PyPI", "npm": "npm", "cargo": "crates.io", "go": "Go"}
 BATCH = 1000
 CONCURRENCY = 10
+INSERT_CHUNK = 1000
 _GHSA_SEVERITY = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MODERATE": "MEDIUM", "LOW": "LOW"}
 
 
@@ -100,23 +102,41 @@ def _ts(value: str | None) -> datetime | None:
 
 
 def fixed_in(osv: dict[str, Any], ref: PkgRef) -> str | None:
-    """Lowest 'fixed' event above ref.version among the advisory's matching affected entries."""
+    """Smallest 'fixed' version above ref.version from ECOSYSTEM/SEMVER ranges of matching entries.
+
+    GIT ranges carry commit hashes, and unparseable versions are skipped one by one; there is
+    deliberately no fallback to an arbitrary fix.
+    """
     want = normalize_pypi(ref.name) if ref.ecosystem == "pypi" else ref.name
-    fixes: list[str] = []
+    try:
+        cur = Version(_osv_version(ref))
+    except InvalidVersion:
+        return None
+    above: list[Version] = []
+    raw: dict[Version, str] = {}
     for aff in osv.get("affected", []):
         pkg = aff.get("package", {})
         name = normalize_pypi(pkg.get("name", "")) if ref.ecosystem == "pypi" else pkg.get("name")
         if name != want or pkg.get("ecosystem") != OSV_ECOSYSTEM[ref.ecosystem]:
             continue
-        fixes += [
-            e["fixed"] for r in aff.get("ranges", []) for e in r.get("events", []) if "fixed" in e
-        ]
-    try:
-        cur = Version(_osv_version(ref))
-        above = [f for f in fixes if Version(f) > cur]
-        return min(above, key=Version) if above else None
-    except InvalidVersion:
-        return fixes[0] if fixes else None
+        for rng in aff.get("ranges", []):
+            if rng.get("type") not in ("ECOSYSTEM", "SEMVER"):
+                continue
+            for event in rng.get("events", []):
+                try:
+                    ver = Version(event["fixed"]) if "fixed" in event else None
+                except InvalidVersion:
+                    continue
+                if ver is not None and ver > cur:
+                    above.append(ver)
+                    raw[ver] = event["fixed"]
+    return raw[min(above)] if above else None
+
+
+def _chunks(items: list[dict[str, Any]]) -> Iterator[list[dict[str, Any]]]:
+    """asyncpg caps a statement at 32767 bind params; 1000 rows x <=6 columns stays far below."""
+    for i in range(0, len(items), INSERT_CHUNK):
+        yield items[i : i + INSERT_CHUNK]
 
 
 async def upsert_advisories(
@@ -138,12 +158,14 @@ async def upsert_advisories(
                 "modified_at": _ts(osv.get("modified")),
             }
         )
-    stmt = insert(Vulnerability).values(rows)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["osv_id"],
-        set_={c: stmt.excluded[c] for c in ("severity", "cvss_score", "title", "modified_at")},
-    ).returning(Vulnerability.osv_id, Vulnerability.vuln_id)
-    vuln_ids = {osv_id: vid for osv_id, vid in (await session.execute(stmt)).all()}
+    vuln_ids: dict[str, int] = {}
+    for chunk in _chunks(rows):
+        stmt = insert(Vulnerability).values(chunk)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["osv_id"],
+            set_={c: stmt.excluded[c] for c in ("severity", "cvss_score", "title", "modified_at")},
+        ).returning(Vulnerability.osv_id, Vulnerability.vuln_id)
+        vuln_ids.update((await session.execute(stmt)).all())
 
     affects = {
         (ref.package_id, ref.version, vuln_ids[i]): {
@@ -155,13 +177,14 @@ async def upsert_advisories(
         for ref, ids in hits.items()
         for i in ids
     }
-    ins = insert(Affects).values(list(affects.values()))
-    await session.execute(
-        ins.on_conflict_do_update(
-            index_elements=["package_id", "version_string", "vuln_id"],
-            set_={"fixed_in": ins.excluded.fixed_in},
+    for chunk in _chunks(list(affects.values())):
+        ins = insert(Affects).values(chunk)
+        await session.execute(
+            ins.on_conflict_do_update(
+                index_elements=["package_id", "version_string", "vuln_id"],
+                set_={"fixed_in": ins.excluded.fixed_in},
+            )
         )
-    )
     return len(advisories)
 
 
@@ -177,11 +200,3 @@ async def store_raw(advisories: dict[str, dict[str, Any]]) -> None:
             )
     except PyMongoError as e:
         log.warning("osv_raw_store_failed", error=str(e))
-
-
-async def sync(session: AsyncSession, refs: list[PkgRef]) -> int:
-    """Fetch + upsert advisories for refs (caller commits). Returns advisories written."""
-    hits, advisories = await fetch_advisories(refs)
-    count = await upsert_advisories(session, hits, advisories)
-    await store_raw(advisories)
-    return count

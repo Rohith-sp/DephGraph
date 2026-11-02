@@ -122,6 +122,8 @@ async def recompute() -> int:
                 {"c": cid, "ids": ids},
             )
 
+    # shortcut: Mongo upsert is not atomic with the Postgres commit above; a failure here leaves
+    # stale embeddings until recompute is rerun, which heals it. Upgrade if drift is observed.
     if pkgs:
         await get_mongo()["package_embeddings"].bulk_write(
             [
