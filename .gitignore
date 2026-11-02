@@ -1,0 +1,13 @@
+node_modules
+.venv
+.env.local
+.next
+__pycache__
+.turbo
+coverage
+.coverage
+.pytest_cache
+*.tsbuildinfo
+next-env.d.ts
+apps/web/test-results/
+apps/web/playwright-report/

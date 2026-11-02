@@ -84,19 +84,52 @@ This creates the `dephgraph` database with all tables, constraints and views. Th
 
 ---
 
+## Run locally
+
+Needs Docker, Python 3.12 (with [uv](https://docs.astral.sh/uv/)) and Node 20+.
+
+```bash
+docker compose up -d                       # Postgres 15, Mongo 7, Redis 7
+# .env.local (gitignored): config defaults already match the compose services, so only secrets are needed
+printf 'SUPABASE_JWT_SECRET=dev-secret-at-least-32-characters\nINTERNAL_CRON_SECRET=dev-cron-secret\n' > .env.local
+
+uv venv -p 3.12 apps/api/.venv
+uv pip install -p apps/api/.venv -r apps/api/requirements.txt
+for f in apps/api/migrations/*.sql; do     # 001 -> 006, in order
+  docker compose exec -T postgres psql -U dephgraph -d dephgraph -v ON_ERROR_STOP=1 < "$f"
+done
+apps/api/.venv/bin/python scripts/seed_db.py
+
+cd apps/api && .venv/bin/uvicorn app.main:app --reload   # API on :8000
+```
+
+In a second terminal:
+
+```bash
+npm install
+apps/api/.venv/bin/python scripts/make_dev_token.py     # prints a dev JWT
+# apps/web/.env.local: AUTH_DISABLED=true and DEV_API_TOKEN=<that token>
+npm run dev -w apps/web                                  # dashboard on :3000
+```
+
+Tests: `apps/api/.venv/bin/pytest apps/api/tests/`. Deployment: [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
+---
+
 ## Status
 
-The project is in the **design phase**. The ER model, relational schema, normalization, relational algebra and build plan are done. The application (ingestion pipeline, analysis engine, dashboard and PR gate) will be built in the phases listed in [`DephGraph_BUILD_PRD.md`](DephGraph_BUILD_PRD.md).
+The design phases and the application build (build phases 0 to 7) are done. See [`DephGraph_BUILD_PRD.md`](DephGraph_BUILD_PRD.md) for the plan.
 
 | Phase | Scope | Status |
 |---|---|---|
-| Phase 1: ER model | Chen ER diagram, 14 entities, 16 relationships | Done |
-| Phase 2: Relational model | 7-step ER-to-relational mapping, 23 relations ([`relational-model/`](relational-model/)) | Done |
-| Phase 3a: Normalization | Functional dependencies, minimal cover, 1NF → BCNF, all 23 relations in BCNF ([`normalization/`](normalization/)) | Done |
-| Phase 3b: Relational algebra | Constraints, update violations, 7 queries in relational algebra ([`relational-algebra/`](relational-algebra/)) | Done |
-| Setup | Repo, cloud accounts, CI | Planned |
-| Ingestion | Manifest parsing, OSV and deps.dev sync | Planned |
-| Analysis | Blast radius, set cover, prune, licence propagation | Planned |
-| Dashboard | Next.js UI with interactive dependency graph | Planned |
-| Clustering | Semantic package clusters | Planned |
-| PR gate | GitHub Checks integration | Planned |
+| Design 1: ER model | Chen ER diagram, 14 entities, 16 relationships | Done |
+| Design 2: Relational model | 7-step ER-to-relational mapping, 23 relations ([`relational-model/`](relational-model/)) | Done |
+| Design 3a: Normalization | Functional dependencies, minimal cover, 1NF → BCNF, all 23 relations in BCNF ([`normalization/`](normalization/)) | Done |
+| Design 3b: Relational algebra | Constraints, update violations, 7 queries in relational algebra ([`relational-algebra/`](relational-algebra/)) | Done |
+| Build 0-1: Setup and schema | Monorepo, Postgres schema, RLS, seed data, CI | Done |
+| Build 2: Ingestion | Manifest parsing, OSV and deps.dev sync | Done |
+| Build 3: Analysis | Blast radius, set cover, prune, licence propagation | Done |
+| Build 4: Dashboard | Next.js UI with interactive dependency graph | Done |
+| Build 5: Clustering | Semantic package clusters | Done |
+| Build 6: PR gate | GitHub Checks integration | Done |
+| Build 7: Polish | Rate limiting, structured logging, error envelope, deploy docs ([`docs/DEPLOY.md`](docs/DEPLOY.md)) | Done (cloud deploy not performed) |

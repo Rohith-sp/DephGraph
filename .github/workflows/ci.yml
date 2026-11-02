@@ -1,0 +1,62 @@
+name: CI
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  backend-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: dephgraph_test
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 10s --health-retries 5
+      mongo:
+        image: mongo:7
+        ports: ["27017:27017"]
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: "pip", cache-dependency-path: apps/api/requirements.txt }
+      # CPU wheel avoids the multi-GB CUDA download
+      - run: pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -r apps/api/requirements.txt
+      - name: Apply schema
+        run: |
+          for f in apps/api/migrations/*.sql; do
+            PGPASSWORD=test psql -h localhost -U postgres -d dephgraph_test -v ON_ERROR_STOP=1 -f "$f"
+          done
+      - name: Run tests
+        working-directory: apps/api
+        run: pytest tests/ -v --cov=app
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:test@localhost:5432/dephgraph_test
+          MONGO_URI: mongodb://localhost:27017
+          MONGO_DB_NAME: dephgraph_test
+          REDIS_URL: redis://localhost:6379/0
+          SUPABASE_JWT_SECRET: ci-jwt-secret-at-least-32-characters
+          ENVIRONMENT: test
+          GROQ_API_KEY: test_key
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    env:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: "npm" }
+      - run: npm ci
+      - run: npm run typecheck --workspace=apps/web
+      - run: npm run build --workspace=apps/web

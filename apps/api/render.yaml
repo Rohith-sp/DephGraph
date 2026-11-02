@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: dephgraph-api
+    env: python
+    region: oregon
+    rootDir: apps/api
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_PRIVATE_KEY_BASE64
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: INTERNAL_CRON_SECRET
+        sync: false
+      - key: CORS_ORIGINS  # JSON list, e.g. ["https://dephgraph.vercel.app"]
+        sync: false
+      - key: ENVIRONMENT
+        value: production
+      - key: TRUSTED_PROXY_HOPS  # Render's proxy = 1; see app/limiter.py
+        value: "1"
