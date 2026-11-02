@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import httpx
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -10,7 +11,16 @@ from starlette.exceptions import HTTPException
 
 from app.config import settings
 from app.database import close_all
-from app.routers import health
+from app.models.mongo import ensure_indexes
+from app.routers import (
+    health,
+    ingest,
+    internal,
+    remediation,
+    services,
+    stats,
+    vulnerabilities,
+)
 
 log = structlog.get_logger()
 
@@ -18,6 +28,7 @@ log = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     log.info("startup", environment=settings.environment)
+    await ensure_indexes()
     yield
     await close_all()
 
@@ -47,4 +58,11 @@ async def validation_error(_: Request, exc: RequestValidationError) -> JSONRespo
     return _err(422, msg)
 
 
-app.include_router(health.router)
+@app.exception_handler(httpx.HTTPError)
+async def upstream_error(_: Request, exc: httpx.HTTPError) -> JSONResponse:
+    log.warning("upstream_failed", error=str(exc))
+    return _err(502, "Upstream service unavailable")
+
+
+for r in (health, ingest, services, vulnerabilities, remediation, stats, internal):
+    app.include_router(r.router)

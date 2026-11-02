@@ -1,0 +1,14 @@
+{
+  "name": "demo-react",
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "axios": "~1.4.0",
+    "lodash": ">=4.17.0 <5",
+    "left-pad": "latest"
+  },
+  "devDependencies": {
+    "typescript": "5.1.6",
+    "eslint": "^8.0.0"
+  }
+}
