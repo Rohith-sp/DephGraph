@@ -331,6 +331,7 @@ Q7c ← π package_id ( σ is_copyleft = TRUE (LICENSE) ⋈ PACKAGE_VERSION )  �
 | Q6 | Maintainers covering a cluster | ÷ (division), also × |
 | Q7 | Waived and open exposure | ∩, −, ∪ |
 
-The same questions are written as runnable MySQL in [`../sql/queries.sql`](../sql/queries.sql).
+All seven queries are translated to SQL in [`../sql/queries.sql`](../sql/queries.sql) and run on MySQL
+in Phase 4 ([`../sql/README.md`](../sql/README.md)); every result matches the one worked out above.
 The older signature-query examples remain in [`../er-diagram/schema.sql`](../er-diagram/schema.sql)
 as a compact schema reference.

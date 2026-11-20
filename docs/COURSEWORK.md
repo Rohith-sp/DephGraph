@@ -19,11 +19,14 @@ scripts/mysql.sh run sql/queries.sql
 Do not run either against a database containing data you need to keep. If the course schema and
 seed are already loaded, run only `scripts/mysql.sh run sql/queries.sql`.
 
-[`sql/queries.sql`](../sql/queries.sql) includes the SQL translations Q1–Q7 and examples of nested
-and correlated subqueries, `EXISTS`, `NOT EXISTS`, `IN`, `ALL`, `ANY`, outer joins, `GROUP BY`,
-`HAVING`, views, and a recursive CTE. It intentionally does not alter sample data. Q7 uses the fixed
-reference date 2026-11-02 so its expected waived/open rows remain reproducible after the sample
-waiver expires.
+[`sql/queries.sql`](../sql/queries.sql) holds the SQL translations of Q1–Q7; each prints the result
+expected from [`relational-algebra/README.md`](../relational-algebra/README.md) above its own output.
+[`sql/complex_queries.sql`](../sql/complex_queries.sql) (after [`sql/seed_extra.sql`](../sql/seed_extra.sql))
+covers nested and correlated subqueries, `EXISTS`, `NOT EXISTS`, `IN`, `ALL`, `ANY`, outer joins,
+`GROUP BY`, `HAVING`, views and a recursive CTE; [`sql/README.md`](../sql/README.md) has the outputs.
+[`sql/queries_alt.sql`](../sql/queries_alt.sql) is an alternative formulation of Q1–Q7 plus extra
+examples; it does not alter sample data, and its Q7 uses the fixed reference date 2026-11-02 so its
+expected waived/open rows remain reproducible after the sample waiver expires.
 
 Keep the generated output or screenshots outside source control if desired; the MySQL helper writes
 logs under the gitignored `logs/` directory. Include the command, MySQL version, and any unexpected
@@ -249,7 +252,7 @@ configuring a product that supports it.
 ## Submission evidence checklist
 
 - ER diagram and MySQL Workbench EER screenshot.
-- `sql/queries.sql` output, including Q1–Q7 and the advanced SQL examples.
+- `sql/queries.sql` (Q1–Q7) and `sql/complex_queries.sql` output.
 - `sql/constraint_demos.sql` and transaction rollback output.
 - Two-session lock-wait/deadlock screenshots or captured transcripts, plus a precedence graph for
   each schedule.

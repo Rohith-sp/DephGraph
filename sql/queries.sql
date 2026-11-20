@@ -1,319 +1,298 @@
 -- =====================================================================
--- DephGraph — Phase 4 SQL queries (MySQL 8.4)
+-- DephGraph — Q1-Q7 in SQL (MySQL 8.4)
 --
--- Run after er-diagram/schema.sql and sql/seed.sql:
+-- The seven relational-algebra queries of relational-algebra/README.md,
+-- Part 3, written in SQL. Each query starts with a label row that gives
+-- the question and the result the RA document computed by hand, so the
+-- log shows the expected result right above the real one.
+--
+-- Run on the BASE sample data only (seed.sql, no seed_extra.sql),
+-- because the hand-computed results are for those rows:
+--   scripts/mysql.sh run er-diagram/schema.sql
+--   scripts/mysql.sh run sql/seed.sql
 --   scripts/mysql.sh run sql/queries.sql
+-- Output: logs/queries.log
 --
--- The Q1-Q7 queries use the fixed Phase 2 sample data. Complex-query
--- examples follow. No rows are changed by this file.
+-- The script changes nothing: the one INSERT (Q6) is rolled back.
 -- =====================================================================
 
 USE dephgraph;
 
--- ---------------------------------------------------------------------
--- Q1 — Blast radius: active deployments that reach log4j-core.
--- Expected sample result: payments-svc / PROD / 1 hop, with the
--- spring-boot-starter-log4j2 -> log4j-core path.
--- Recursive upward walk follows "who depends on this version?"
--- ---------------------------------------------------------------------
-WITH RECURSIVE reachable (package_id, version_string, depth, path, visited) AS (
-    SELECT pv.package_id, pv.version_string, 0,
-           CAST(CONCAT(p.package_name, '@', pv.version_string) AS CHAR(2000)),
-           JSON_ARRAY(CONCAT(pv.package_id, ':', pv.version_string))
-    FROM package_version pv
-    JOIN package p ON p.package_id = pv.package_id
-    WHERE p.package_name = 'log4j-core'
+-- =====================================================================
+-- Q1 — Blast radius: which services run a version affected by Log4Shell?
+-- =====================================================================
 
+-- Q1a: direct translation of the RA expression.
+--   V  = the vulnerability, AV = affected versions, PROD = live PROD deployments,
+--   RESOLVES_TO already holds every version a deployment reaches (any depth).
+SELECT 'Q1a: services whose live PROD deployment resolves to a version affected by GHSA-jfh8-c2jp-5v3q' AS query,
+       '{payments-svc}' AS expected;
+SELECT DISTINCT s.service_name
+FROM   vulnerability v
+JOIN   affects       a  ON a.vuln_id = v.vuln_id
+JOIN   resolves_to   rt ON rt.package_id = a.package_id
+                       AND rt.version_string = a.version_string
+JOIN   deployment    d  ON d.service_id = rt.service_id
+                       AND d.deploy_seq = rt.deploy_seq
+JOIN   service       s  ON s.service_id = d.service_id
+WHERE  v.osv_id = 'GHSA-jfh8-c2jp-5v3q'
+  AND  d.environment = 'PROD' AND d.is_active = TRUE;
+
+-- Q1b: the same question WITHOUT trusting the stored closure in RESOLVES_TO.
+--
+-- Basic relational algebra cannot compute a transitive closure: every
+-- extra level of DEPENDS_ON needs one more join, and a chain can be any
+-- length (RA doc: LEVEL0, LEVEL1, LEVEL2, ...). SQL:1999 added recursive
+-- common table expressions. WITH RECURSIVE repeats the recursive part
+-- (one join with depends_on) until it adds no new rows, so it computes
+-- LEVEL0 ∪ LEVEL1 ∪ LEVEL2 ∪ ... for a chain of any depth.
+--
+-- Step 1: walk UP the graph from the affected version ("who depends on me").
+SELECT 'Q1b-1: every package version that reaches log4j-core 2.14.1 through depends_on (recursive CTE)' AS query,
+       'LEVEL0 = {(100, 2.14.1)}, LEVEL1 = {(102, 2.5.0)}, LEVEL2 = empty' AS expected;
+WITH RECURSIVE reaches (package_id, version_string, level, path) AS (
+    -- anchor = LEVEL0: the affected version itself
+    SELECT a.package_id, a.version_string, 0,
+           CAST(CONCAT(p.package_name, '@', a.version_string) AS CHAR(1000))
+    FROM   affects a
+    JOIN   vulnerability v ON v.vuln_id = a.vuln_id
+    JOIN   package p       ON p.package_id = a.package_id
+    WHERE  v.osv_id = 'GHSA-jfh8-c2jp-5v3q'
     UNION ALL
-
-    SELECT d.dependent_package_id, d.dependent_version, r.depth + 1,
-           CONCAT(p2.package_name, '@', d.dependent_version, ' -> ', r.path),
-           JSON_ARRAY_APPEND(
-               r.visited, '$', CONCAT(d.dependent_package_id, ':', d.dependent_version)
-           )
-    FROM reachable r
-    JOIN depends_on d
-      ON d.dependency_package_id = r.package_id
-     AND d.dependency_version = r.version_string
-    JOIN package p2 ON p2.package_id = d.dependent_package_id
-    WHERE r.depth < 15
-      AND NOT JSON_CONTAINS(
-          r.visited,
-          JSON_QUOTE(CONCAT(d.dependent_package_id, ':', d.dependent_version))
-      )
-),
-ranked AS (
-    SELECT s.service_name, d.environment, r.depth, r.path,
-           ROW_NUMBER() OVER (
-               PARTITION BY s.service_id, d.environment
-               ORDER BY r.depth DESC, r.path
-           ) AS path_rank
-    FROM reachable r
-    JOIN resolves_to rt
-      ON rt.package_id = r.package_id
-     AND rt.version_string = r.version_string
-    JOIN deployment d
-      ON d.service_id = rt.service_id
-     AND d.deploy_seq = rt.deploy_seq
-    JOIN service s ON s.service_id = d.service_id
-    WHERE d.is_active = TRUE
+    -- recursive step = LEVEL(n+1): versions that depend on a version in LEVEL(n)
+    SELECT d.dependent_package_id, d.dependent_version, r.level + 1,
+           CONCAT(p.package_name, '@', d.dependent_version, ' -> ', r.path)
+    FROM   reaches r
+    JOIN   depends_on d ON d.dependency_package_id = r.package_id
+                       AND d.dependency_version    = r.version_string
+    JOIN   package p    ON p.package_id = d.dependent_package_id
+    WHERE  r.level < 20                                   -- guard against a cycle
 )
-SELECT service_name, environment, depth AS hops, path AS dependency_path
-FROM ranked
-WHERE path_rank = 1
-ORDER BY FIELD(environment, 'PROD', 'STAGING', 'DEV'), service_name;
+SELECT level, package_id, version_string, path
+FROM   reaches
+ORDER  BY level, package_id;
 
--- ---------------------------------------------------------------------
--- Q2 — Prune: production dependencies never observed executing.
--- Expected sample rows: spring-boot-starter-log4j2 and logback-classic.
--- ---------------------------------------------------------------------
-SELECT s.service_name, p.package_name, rt.version_string, rt.depth
-FROM resolves_to rt
-JOIN deployment d
-  ON d.service_id = rt.service_id AND d.deploy_seq = rt.deploy_seq
-JOIN service s ON s.service_id = d.service_id
-JOIN package p ON p.package_id = rt.package_id
-LEFT JOIN observes o
-  ON o.service_id = rt.service_id
- AND o.deploy_seq = rt.deploy_seq
- AND o.package_id = rt.package_id
- AND o.version_string = rt.version_string
- AND o.is_live = TRUE
-WHERE d.environment = 'PROD'
-  AND d.is_active = TRUE
-  AND o.package_id IS NULL
-ORDER BY s.service_name, rt.depth, p.package_name;
-
--- ---------------------------------------------------------------------
--- Q3 — One greedy remediation step: exposed service and vulnerability
--- coverage per affected package version. MAX(fixed_in) is a useful
--- minimum target for the sample's monotonic version strings; in a
--- general version catalog, compare parsed versions, not strings.
--- Expected sample: log4j-core 2.14.1, 1 service, 2 vulnerabilities.
--- ---------------------------------------------------------------------
-SELECT p.package_name,
-       rt.version_string AS current_version,
-       MAX(a.fixed_in) AS minimum_fix_for_all_listed_vulns,
-       COUNT(DISTINCT s.service_id) AS services_fixed,
-       COUNT(DISTINCT v.vuln_id) AS vulns_cleared
-FROM affects a
-JOIN vulnerability v ON v.vuln_id = a.vuln_id
-JOIN package p ON p.package_id = a.package_id
-JOIN resolves_to rt
-  ON rt.package_id = a.package_id
- AND rt.version_string = a.version_string
-JOIN deployment d
-  ON d.service_id = rt.service_id AND d.deploy_seq = rt.deploy_seq
-JOIN service s ON s.service_id = d.service_id
-WHERE d.environment = 'PROD'
-  AND d.is_active = TRUE
-  AND a.fixed_in IS NOT NULL
-GROUP BY p.package_id, p.package_name, rt.version_string
-ORDER BY services_fixed DESC, vulns_cleared DESC, p.package_name;
-
--- ---------------------------------------------------------------------
--- Q4 — Copyleft license propagation to deployed package versions.
--- Expected sample row: payments-svc / logback-classic / LGPL-2.1-only.
--- ---------------------------------------------------------------------
-SELECT s.service_name, p.package_name, rt.version_string, l.spdx_id, rt.depth
-FROM resolves_to rt
-JOIN deployment d
-  ON d.service_id = rt.service_id AND d.deploy_seq = rt.deploy_seq
-JOIN service s ON s.service_id = d.service_id
-JOIN package p ON p.package_id = rt.package_id
-JOIN package_version pv
-  ON pv.package_id = rt.package_id
- AND pv.version_string = rt.version_string
-JOIN license l ON l.license_id = pv.license_id
-WHERE l.is_copyleft = TRUE
-  AND d.environment = 'PROD'
-  AND d.is_active = TRUE
-ORDER BY s.service_name, rt.depth, p.package_name;
-
--- ---------------------------------------------------------------------
--- Q5 — Cluster redundancy: clusters containing multiple packages.
--- Expected sample: logging, with log4j-core and logback-classic.
--- ---------------------------------------------------------------------
-SELECT cluster_id, cluster_label, member_count, packages
-FROM v_cluster_redundancy
-ORDER BY member_count DESC, cluster_label;
-
--- ---------------------------------------------------------------------
--- Q6 — Division: maintainers who own every package in the logging
--- cluster. Expected sample: no rows.
--- ---------------------------------------------------------------------
-SELECT m.maintainer_id, m.handle
-FROM maintainer m
-WHERE EXISTS (
-    SELECT 1
-    FROM package p
-    JOIN semantic_cluster sc ON sc.cluster_id = p.cluster_id
-    WHERE sc.cluster_label = 'logging'
+-- Step 2: a service is hit if one of its DIRECT dependencies (depth = 0)
+-- is in that set. Only direct rows of RESOLVES_TO are used here; the
+-- recursion found the indirect path itself.
+SELECT 'Q1b-2: services hit, using only direct dependencies (depth 0) plus the recursive CTE' AS query,
+       '{payments-svc}, via spring-boot-starter-log4j2@2.5.0 -> log4j-core@2.14.1' AS expected;
+WITH RECURSIVE reaches (package_id, version_string, level, path) AS (
+    SELECT a.package_id, a.version_string, 0,
+           CAST(CONCAT(p.package_name, '@', a.version_string) AS CHAR(1000))
+    FROM   affects a
+    JOIN   vulnerability v ON v.vuln_id = a.vuln_id
+    JOIN   package p       ON p.package_id = a.package_id
+    WHERE  v.osv_id = 'GHSA-jfh8-c2jp-5v3q'
+    UNION ALL
+    SELECT d.dependent_package_id, d.dependent_version, r.level + 1,
+           CONCAT(p.package_name, '@', d.dependent_version, ' -> ', r.path)
+    FROM   reaches r
+    JOIN   depends_on d ON d.dependency_package_id = r.package_id
+                       AND d.dependency_version    = r.version_string
+    JOIN   package p    ON p.package_id = d.dependent_package_id
+    WHERE  r.level < 20
 )
-AND NOT EXISTS (
-    SELECT 1
-    FROM package p
-    JOIN semantic_cluster sc ON sc.cluster_id = p.cluster_id
-    WHERE sc.cluster_label = 'logging'
-      AND NOT EXISTS (
-          SELECT 1
-          FROM maintained_by mb
-          WHERE mb.package_id = p.package_id
-            AND mb.maintainer_id = m.maintainer_id
-      )
-)
-ORDER BY m.handle;
+SELECT s.service_name, d.environment, r.level AS hops_below_direct_dep, r.path
+FROM   reaches r
+JOIN   resolves_to rt ON rt.package_id = r.package_id
+                     AND rt.version_string = r.version_string
+                     AND rt.depth = 0
+JOIN   deployment d   ON d.service_id = rt.service_id AND d.deploy_seq = rt.deploy_seq
+JOIN   service s      ON s.service_id = d.service_id
+WHERE  d.environment = 'PROD' AND d.is_active = TRUE;
 
--- ---------------------------------------------------------------------
--- Q7a/Q7b — Exposures that are waived vs still open.
--- The fixed reference date keeps the teaching result reproducible.
--- Expected waived: (901, 10); open: (900, 10).
--- ---------------------------------------------------------------------
-WITH exposure AS (
-    SELECT DISTINCT a.vuln_id, rt.service_id
-    FROM resolves_to rt
-    JOIN deployment d
-      ON d.service_id = rt.service_id AND d.deploy_seq = rt.deploy_seq
-    JOIN affects a
-      ON a.package_id = rt.package_id
-     AND a.version_string = rt.version_string
-    WHERE d.environment = 'PROD' AND d.is_active = TRUE
-),
-waived AS (
-    SELECT vuln_id, service_id
-    FROM waived_for
-    WHERE expires_on >= DATE '2026-11-02'
-)
-SELECT 'waived' AS exposure_status, e.vuln_id, e.service_id
-FROM exposure e
-JOIN waived w USING (vuln_id, service_id)
-UNION ALL
-SELECT 'open', e.vuln_id, e.service_id
-FROM exposure e
-WHERE NOT EXISTS (
-    SELECT 1 FROM waived w
-    WHERE w.vuln_id = e.vuln_id AND w.service_id = e.service_id
-)
-ORDER BY exposure_status, vuln_id, service_id;
+-- =====================================================================
+-- Q2 — Prune: which package versions are deployed but never executed?
+-- =====================================================================
+-- RES − LIVE, then join PACKAGE for the name.
 
--- Q7c — Packages requiring review because they are copyleft OR vulnerable.
-SELECT package_id
+SELECT 'Q2a: deployed but never executed, with EXCEPT (set difference)' AS query,
+       '{(10, spring-boot-starter-log4j2, 2.5.0), (10, logback-classic, 1.2.3)}' AS expected;
+SELECT dead.service_id, p.package_name, dead.version_string
 FROM (
-    SELECT DISTINCT pv.package_id
-    FROM package_version pv
-    JOIN license l ON l.license_id = pv.license_id
-    WHERE l.is_copyleft = TRUE
-    UNION
-    SELECT DISTINCT package_id FROM affects
-) AS review_packages
-ORDER BY package_id;
+        SELECT service_id, deploy_seq, package_id, version_string FROM resolves_to      -- RES
+        EXCEPT
+        SELECT service_id, deploy_seq, package_id, version_string FROM observes
+        WHERE  exec_count > 0                                                          -- LIVE
+     ) AS dead
+JOIN package p ON p.package_id = dead.package_id
+ORDER BY dead.service_id, p.package_name DESC;
+
+SELECT 'Q2b: the same with NOT EXISTS (works on any SQL database, also before EXCEPT existed)' AS query,
+       '{(10, spring-boot-starter-log4j2, 2.5.0), (10, logback-classic, 1.2.3)}' AS expected;
+SELECT rt.service_id, p.package_name, rt.version_string
+FROM   resolves_to rt
+JOIN   package p ON p.package_id = rt.package_id
+WHERE  NOT EXISTS (
+         SELECT 1 FROM observes o
+         WHERE  o.service_id = rt.service_id AND o.deploy_seq = rt.deploy_seq
+           AND  o.package_id = rt.package_id AND o.version_string = rt.version_string
+           AND  o.exec_count > 0)
+ORDER BY rt.service_id, p.package_name DESC;
 
 -- =====================================================================
--- Complex SQL patterns (same sample data; read-only)
+-- Q3 — Minimum remediation: which upgrade fixes the most?
+-- =====================================================================
+-- E = PROD ⋈ RESOLVES_TO ⋈ AFFECTS; the ℱ (aggregate) operator becomes
+-- GROUP BY with COUNT(DISTINCT ...). One round of greedy set cover.
+
+SELECT 'Q3: per affected version in live PROD, how many services and vulnerabilities an upgrade fixes' AS query,
+       '{(100, 2.14.1, services = 1, vulns = 2)}' AS expected;
+SELECT rt.package_id, rt.version_string,
+       COUNT(DISTINCT rt.service_id) AS services,
+       COUNT(DISTINCT a.vuln_id)     AS vulns
+FROM   deployment  d
+JOIN   resolves_to rt ON rt.service_id = d.service_id AND rt.deploy_seq = d.deploy_seq
+JOIN   affects     a  ON a.package_id = rt.package_id AND a.version_string = rt.version_string
+WHERE  d.environment = 'PROD' AND d.is_active = TRUE
+GROUP  BY rt.package_id, rt.version_string
+ORDER  BY services DESC, vulns DESC;
+
+-- =====================================================================
+-- Q4 — Licence propagation: which services ship copyleft code?
 -- =====================================================================
 
--- Nested and correlated subquery: packages with at least two known
--- vulnerability records affecting a version.
-SELECT p.package_id, p.package_name
-FROM package p
-WHERE (
-    SELECT COUNT(DISTINCT a.vuln_id)
-    FROM affects a
-    WHERE a.package_id = p.package_id
-) >= 2
-ORDER BY p.package_name;
+SELECT 'Q4: services that resolve to a package version under a copyleft licence' AS query,
+       '{(payments-svc, logback-classic, 1.2.3, LGPL-2.1-only)}' AS expected;
+SELECT DISTINCT s.service_name, p.package_name, pv.version_string, l.spdx_id
+FROM   license         l
+JOIN   package_version pv ON pv.license_id = l.license_id
+JOIN   resolves_to     rt ON rt.package_id = pv.package_id
+                         AND rt.version_string = pv.version_string
+JOIN   service         s  ON s.service_id = rt.service_id
+JOIN   package         p  ON p.package_id = pv.package_id
+WHERE  l.is_copyleft = TRUE;
 
--- EXISTS: services with at least one production vulnerability exposure.
-SELECT s.service_id, s.service_name
-FROM service s
-WHERE EXISTS (
-    SELECT 1
-    FROM deployment d
-    JOIN resolves_to rt
-      ON rt.service_id = d.service_id AND rt.deploy_seq = d.deploy_seq
-    JOIN affects a
-      ON a.package_id = rt.package_id AND a.version_string = rt.version_string
-    WHERE d.service_id = s.service_id
-      AND d.environment = 'PROD'
-      AND d.is_active = TRUE
-)
-ORDER BY s.service_name;
+-- =====================================================================
+-- Q5 — Consolidate: which services use two packages that do the same job?
+-- =====================================================================
+-- Self-join: SP and its renamed copy SP2 (here the aliases sp1 / sp2).
 
--- NOT EXISTS: packages with no affected versions.
-SELECT p.package_id, p.package_name
-FROM package p
-WHERE NOT EXISTS (
-    SELECT 1 FROM affects a WHERE a.package_id = p.package_id
-)
-ORDER BY p.package_name;
+SELECT 'Q5: services that use two different packages from the same semantic cluster (self-join)' AS query,
+       '{(payments-svc, logging)}' AS expected;
+SELECT DISTINCT s.service_name, sc.cluster_label
+FROM  (SELECT DISTINCT rt.service_id, p.package_id, p.cluster_id
+       FROM resolves_to rt JOIN package p ON p.package_id = rt.package_id
+       WHERE p.cluster_id IS NOT NULL) AS sp1
+JOIN  (SELECT DISTINCT rt.service_id, p.package_id, p.cluster_id
+       FROM resolves_to rt JOIN package p ON p.package_id = rt.package_id
+       WHERE p.cluster_id IS NOT NULL) AS sp2
+      ON  sp2.service_id = sp1.service_id
+      AND sp2.cluster_id = sp1.cluster_id
+      AND sp1.package_id < sp2.package_id        -- different packages, each pair once
+JOIN  service          s  ON s.service_id = sp1.service_id
+JOIN  semantic_cluster sc ON sc.cluster_id = sp1.cluster_id;
 
--- IN: vulnerable versions present in an active production deployment.
-SELECT p.package_name, rt.version_string
-FROM resolves_to rt
-JOIN deployment d
-  ON d.service_id = rt.service_id AND d.deploy_seq = rt.deploy_seq
-JOIN package p ON p.package_id = rt.package_id
-WHERE d.environment = 'PROD'
-  AND d.is_active = TRUE
-  AND (rt.package_id, rt.version_string) IN (
-      SELECT package_id, version_string FROM affects
-  )
-ORDER BY p.package_name;
+-- =====================================================================
+-- Q6 — Division: which maintainers maintain EVERY package in the logging cluster?
+-- =====================================================================
+-- SQL has no ÷ operator. Two standard ways to write it:
 
--- ALL: versions published later than every affected version's publish
--- date. This is a date comparison, not a version-string comparison.
-SELECT p.package_name, pv.version_string, pv.published_at
-FROM package_version pv
-JOIN package p ON p.package_id = pv.package_id
-WHERE pv.published_at > ALL (
-    SELECT affected_version.published_at
-    FROM affects a
-    JOIN package_version affected_version
-      ON affected_version.package_id = a.package_id
-     AND affected_version.version_string = a.version_string
-    WHERE affected_version.published_at IS NOT NULL
-)
-ORDER BY pv.published_at, p.package_name, pv.version_string;
+SELECT 'Q6a: division with double NOT EXISTS ("no logging package that this maintainer does not maintain")' AS query,
+       'empty set' AS expected;
+-- An empty result prints nothing in the log, so the query is wrapped in a
+-- count: rows_returned = 0 shows the empty set.
+SELECT COUNT(*) AS rows_returned, IFNULL(GROUP_CONCAT(q.handle), '-') AS handles FROM (
+SELECT m.handle
+FROM   maintainer m
+WHERE  EXISTS (SELECT 1 FROM maintained_by mb WHERE mb.maintainer_id = m.maintainer_id)  -- π A (R)
+  AND  NOT EXISTS (
+         SELECT 1
+         FROM   package p
+         JOIN   semantic_cluster sc ON sc.cluster_id = p.cluster_id
+         WHERE  sc.cluster_label = 'logging'
+           AND  NOT EXISTS (
+                  SELECT 1 FROM maintained_by mb
+                  WHERE  mb.maintainer_id = m.maintainer_id
+                    AND  mb.package_id    = p.package_id))
+) AS q;
 
--- ANY: versions published later than at least one affected version date.
-SELECT p.package_name, pv.version_string, pv.published_at
-FROM package_version pv
-JOIN package p ON p.package_id = pv.package_id
-WHERE pv.published_at > ANY (
-    SELECT affected_version.published_at
-    FROM affects a
-    JOIN package_version affected_version
-      ON affected_version.package_id = a.package_id
-     AND affected_version.version_string = a.version_string
-    WHERE affected_version.published_at IS NOT NULL
-)
-ORDER BY pv.published_at, p.package_name, pv.version_string;
+SELECT 'Q6b: division with GROUP BY ... HAVING COUNT = size of the logging cluster' AS query,
+       'empty set' AS expected;
+SELECT COUNT(*) AS rows_returned, IFNULL(GROUP_CONCAT(q.handle), '-') AS handles FROM (
+SELECT m.handle
+FROM   maintained_by mb
+JOIN   package p          ON p.package_id = mb.package_id
+JOIN   semantic_cluster sc ON sc.cluster_id = p.cluster_id
+JOIN   maintainer m       ON m.maintainer_id = mb.maintainer_id
+WHERE  sc.cluster_label = 'logging'
+GROUP  BY m.maintainer_id, m.handle
+HAVING COUNT(DISTINCT mb.package_id) = (
+         SELECT COUNT(*) FROM package p2
+         JOIN   semantic_cluster sc2 ON sc2.cluster_id = p2.cluster_id
+         WHERE  sc2.cluster_label = 'logging')
+) AS q;
 
--- Outer join: list every team, including teams without a production
--- service. COUNT(service_id), not COUNT(*), keeps empty teams at zero.
-SELECT t.team_name, COUNT(DISTINCT d.service_id) AS production_services
-FROM team t
-LEFT JOIN service s ON s.team_id = t.team_id
-LEFT JOIN deployment d
-  ON d.service_id = s.service_id
- AND d.environment = 'PROD'
- AND d.is_active = TRUE
-GROUP BY t.team_id, t.team_name
-ORDER BY t.team_name;
+-- The RA document's "what if": add MAINTAINED_BY (101, 200), i.e. mdev also
+-- maintains logback-classic. Done inside a transaction and rolled back.
+SELECT 'Q6c: same two queries after adding maintained_by (package 101, maintainer 200), then ROLLBACK' AS query,
+       '{mdev} from both' AS expected;
+START TRANSACTION;
+INSERT INTO maintained_by (package_id, maintainer_id, role, since_date)
+VALUES (101, 200, 'COMMITTER', '2026-11-02');
 
--- GROUP BY / HAVING: packages affected by multiple advisories.
-SELECT p.package_name, COUNT(DISTINCT a.vuln_id) AS advisory_count
-FROM package p
-JOIN affects a ON a.package_id = p.package_id
-GROUP BY p.package_id, p.package_name
-HAVING COUNT(DISTINCT a.vuln_id) > 1
-ORDER BY advisory_count DESC, p.package_name;
+SELECT 'double NOT EXISTS' AS method, m.handle
+FROM   maintainer m
+WHERE  EXISTS (SELECT 1 FROM maintained_by mb WHERE mb.maintainer_id = m.maintainer_id)
+  AND  NOT EXISTS (
+         SELECT 1
+         FROM   package p
+         JOIN   semantic_cluster sc ON sc.cluster_id = p.cluster_id
+         WHERE  sc.cluster_label = 'logging'
+           AND  NOT EXISTS (
+                  SELECT 1 FROM maintained_by mb
+                  WHERE  mb.maintainer_id = m.maintainer_id
+                    AND  mb.package_id    = p.package_id));
 
--- Existing views: derived service exposure and cluster redundancy.
-SELECT service_name, open_vulns, critical_vulns, avg_cvss
-FROM v_service_exposure
-ORDER BY service_name;
+SELECT 'GROUP BY ... HAVING' AS method, m.handle
+FROM   maintained_by mb
+JOIN   package p          ON p.package_id = mb.package_id
+JOIN   semantic_cluster sc ON sc.cluster_id = p.cluster_id
+JOIN   maintainer m       ON m.maintainer_id = mb.maintainer_id
+WHERE  sc.cluster_label = 'logging'
+GROUP  BY m.maintainer_id, m.handle
+HAVING COUNT(DISTINCT mb.package_id) = (
+         SELECT COUNT(*) FROM package p2
+         JOIN   semantic_cluster sc2 ON sc2.cluster_id = p2.cluster_id
+         WHERE  sc2.cluster_label = 'logging');
+ROLLBACK;
 
-SELECT cluster_label, member_count, packages
-FROM v_cluster_redundancy
-ORDER BY cluster_label;
+SELECT 'Q6d: check after ROLLBACK, maintained_by is back to the sample rows' AS query,
+       '2 rows' AS expected;
+SELECT COUNT(*) AS maintained_by_rows FROM maintained_by;
+
+-- =====================================================================
+-- Q7 — Union, intersection and difference: waived and open exposure
+-- =====================================================================
+-- AFF and WAIVED are union-compatible: (vuln_id, service_id) in both.
+-- The waiver date is fixed at '2026-11-02' as in the RA document, not
+-- CURDATE(), so the result does not change when the waiver expires.
+
+SELECT 'Q7a: AFF INTERSECT WAIVED, exposures the team has accepted for now' AS query,
+       '{(901, 10)}' AS expected;
+SELECT a.vuln_id, rt.service_id                                  -- AFF
+FROM   resolves_to rt
+JOIN   affects a ON a.package_id = rt.package_id AND a.version_string = rt.version_string
+INTERSECT
+SELECT vuln_id, service_id FROM waived_for                       -- WAIVED
+WHERE  expires_on >= '2026-11-02';
+
+SELECT 'Q7b: AFF EXCEPT WAIVED, exposures that still need fixing' AS query,
+       '{(900, 10)}' AS expected;
+SELECT a.vuln_id, rt.service_id
+FROM   resolves_to rt
+JOIN   affects a ON a.package_id = rt.package_id AND a.version_string = rt.version_string
+EXCEPT
+SELECT vuln_id, service_id FROM waived_for
+WHERE  expires_on >= '2026-11-02';
+
+SELECT 'Q7c: packages to review because they are copyleft UNION vulnerable' AS query,
+       '{100, 101}' AS expected;
+SELECT pv.package_id
+FROM   package_version pv
+JOIN   license l ON l.license_id = pv.license_id
+WHERE  l.is_copyleft = TRUE
+UNION
+SELECT package_id FROM affects
+ORDER  BY package_id;
