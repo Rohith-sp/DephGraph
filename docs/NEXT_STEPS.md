@@ -21,7 +21,7 @@ There are two tracks:
 | 2. ER → relational mapping | Unit II | [`relational-model/`](../relational-model/) | Done |
 | 3a. Normalization (FDs, minimal cover, 1NF → BCNF) | Unit III | [`normalization/`](../normalization/) | Done |
 | 3b. Constraints and relational algebra | Unit II | [`relational-algebra/`](../relational-algebra/) | Done |
-| MySQL database created from `schema.sql` | — | local MySQL 8.4, database `dephgraph` | Done: 23 tables, 3 views, 26 FKs, 7 CHECKs |
+| MySQL database created from `schema.sql` | — | local MySQL 8.4, database `dephgraph` | Done: 23 tables, 3 views, 26 FKs, 9 CHECKs |
 
 ### Product track
 
@@ -79,12 +79,15 @@ app-only attributes such as `team.slug`, `package.description`, `package_version
 
 All on MySQL with `scripts/run-sql.ps1` (output saved under `logs/`).
 
-1. **Fix the DDL** in `er-diagram/schema.sql`:
-   - `depends_on` primary key → 4 columns (drop `scope`), as in the relational model and normalization documents
-   - add `CHECK (exec_count >= 0)` on `observes` and `CHECK (depth >= 0)` on `resolves_to`
-     (documented as domain rules in Phase 3b, not yet enforced)
-2. **`sql/seed.sql`:** the Phase 2 sample rows (log4j example), plus enough extra rows for the queries
-   to give interesting results.
+1. ✅ **Fix the DDL** in `er-diagram/schema.sql` (done 21 Nov 2026):
+   - `depends_on` primary key → 4 columns (`scope` dropped), as in the relational model and normalization documents
+   - `CHECK (exec_count >= 0)` on `observes` (`chk_exec_count`) and `CHECK (depth >= 0)` on `resolves_to`
+     (`chk_depth`), the Phase 3b domain rules; both verified to reject negative values (MySQL error 3819)
+2. ✅ **`sql/seed.sql`** (done 21 Nov 2026): exactly the Phase 2 sample rows (log4j example), so the
+   hand-checked Phase 3b results hold (checked: Q1, Q2, D2 = 11 cascaded rows, the views). Re-runnable.
+   Any extra rows for the "complex SQL" queries go in a separate file, so they don't change Q1–Q7.
+   Note: the waiver on GHSA-7rjr-3q55-vv33 expires 2026-11-30; after that `v_service_exposure`
+   counts 2 open vulns instead of 1.
 3. **`sql/constraint_demos.sql`:** run the 12 insert/delete/update cases from Phase 3b and capture the
    real MySQL errors (rejected / cascaded / set NULL). Each one must give the result the document claims.
 4. **`sql/queries.sql`:**
@@ -169,12 +172,26 @@ Keep every key and password out of the repo. They go only in each service's dash
 
 The course track runs on a local MySQL 8.4 server, separate from the app's Docker stack.
 
+**Linux / macOS:** MySQL 8.4 runs in its own Docker container (`dephgraph-mysql`, data in the
+`dephgraph_mysql_data` volume, port `127.0.0.1:3306`). The root password is generated on first run and
+kept only in `~/.config/dephgraph/mysql.cnf` (mode 600), outside the repo.
+
+| Command | Use |
+|---|---|
+| `scripts/mysql.sh up` | create or start the container |
+| `scripts/mysql.sh run er-diagram/schema.sql` | run a `.sql` file; output also saved to `logs/schema.log` (gitignored) |
+| `scripts/mysql.sh shell` | interactive `mysql` prompt |
+| `scripts/mysql.sh password` | print the root password, for MySQL Workbench |
+| `scripts/mysql.sh down` | stop the container (data is kept) |
+
+**Windows:**
+
 | File | Use |
 |---|---|
 | `scripts/run-sql.ps1` | `.\scripts\run-sql.ps1 er-diagram\schema.sql` runs any `.sql` file with the saved MySQL login and writes the output to `logs\` (gitignored) |
 | `scripts/verify_mysql_schema.sql` | checks the course database: expects 23 tables, 3 views, 26 foreign keys |
 
-One-time login setup, so no password is ever typed into a script:
+One-time login setup on Windows, so no password is ever typed into a script:
 `mysql_config_editor set --login-path=dephgraph --host=localhost --user=root --password`
 
 ---

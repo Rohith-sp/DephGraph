@@ -529,7 +529,7 @@ PK columns are underlined; FK columns are in italics.
 ### 9. REMEDIATION_PLAN
 | <ins>plan_id</ins> | status | created_at | *team_id* |
 |---|---|---|---|
-| 50 | ACTIVE | 2026-10-01 | 1 |
+| 50 | IN_PROGRESS | 2026-10-01 | 1 |
 | 51 | DRAFT | 2026-10-12 | 2 |
 
 ### 10. DEPLOYMENT

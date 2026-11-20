@@ -147,8 +147,9 @@ CREATE TABLE depends_on (
     dependency_version     VARCHAR(60) NOT NULL,
     scope                  ENUM('runtime','dev','optional','peer') NOT NULL DEFAULT 'runtime',
     is_direct              BOOLEAN NOT NULL DEFAULT TRUE,
+    -- scope is a non-key attribute: one dependency edge has one scope
     PRIMARY KEY (dependent_package_id, dependent_version,
-                 dependency_package_id, dependency_version, scope),
+                 dependency_package_id, dependency_version),
     CONSTRAINT fk_dep_from FOREIGN KEY (dependent_package_id, dependent_version)
         REFERENCES package_version(package_id, version_string) ON DELETE CASCADE,
     CONSTRAINT fk_dep_to   FOREIGN KEY (dependency_package_id, dependency_version)
@@ -172,6 +173,7 @@ CREATE TABLE resolves_to (
     depth          SMALLINT NOT NULL DEFAULT 0,          -- 0 = direct
     resolved_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (service_id, deploy_seq, package_id, version_string),
+    CONSTRAINT chk_depth CHECK (depth >= 0),
     CONSTRAINT fk_rt_deployment FOREIGN KEY (service_id, deploy_seq)
         REFERENCES deployment(service_id, deploy_seq) ON DELETE CASCADE,
     CONSTRAINT fk_rt_version FOREIGN KEY (package_id, version_string)
@@ -214,7 +216,8 @@ CREATE TABLE observes (
     CONSTRAINT fk_obs_version FOREIGN KEY (package_id, version_string)
         REFERENCES package_version(package_id, version_string) ON DELETE CASCADE,
     CONSTRAINT fk_obs_scan FOREIGN KEY (scan_id)
-        REFERENCES scan_run(scan_id) ON DELETE CASCADE
+        REFERENCES scan_run(scan_id) ON DELETE CASCADE,
+    CONSTRAINT chk_exec_count CHECK (exec_count >= 0)
 ) ENGINE=InnoDB;
 
 CREATE INDEX idx_observes_live ON observes(is_live, package_id, version_string);

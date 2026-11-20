@@ -1,5 +1,5 @@
 -- Checks that schema.sql created the full DephGraph schema.
--- Expected: 23 tables, 3 views, 26 foreign keys.
+-- Expected: 23 tables, 3 views, 26 foreign keys, 9 CHECK constraints.
 
 USE dephgraph;
 
