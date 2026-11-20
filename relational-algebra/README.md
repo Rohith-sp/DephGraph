@@ -35,8 +35,8 @@ Every attribute takes values from a fixed domain (data type plus allowed values)
 | RESOLVES_TO.depth | integer ≥ 0 (0 = direct dependency) |
 | `is_*` attributes | {TRUE, FALSE} |
 
-The enumerated domains are enforced in `schema.sql` by `ENUM` types and the CVSS range by a `CHECK`.
-The two "≥ 0" rules are part of the design but are not yet enforced by a `CHECK` in `schema.sql`.
+The enumerated domains are enforced in `schema.sql` by `ENUM` types, the CVSS range by a `CHECK`,
+and the two "≥ 0" rules by the `CHECK`s `chk_exec_count` and `chk_depth`.
 
 Some rules involve more than one attribute of the same row. These are written as `CHECK` constraints
 in `schema.sql`:
@@ -88,7 +88,9 @@ What happens to referencing rows when a referenced row is deleted:
 
 # Part 2 — Update operations and constraint violations
 
-Each operation is applied to the Phase 2 sample data.
+Each operation is applied to the Phase 2 sample data. All 12 cases are run on MySQL in
+[`sql/constraint_demos.sql`](../sql/constraint_demos.sql), each inside a rolled-back transaction;
+MySQL gives the result stated below for every one.
 
 ## 2.1 Insert
 

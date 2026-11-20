@@ -88,8 +88,10 @@ All on MySQL with `scripts/run-sql.ps1` (output saved under `logs/`).
    Any extra rows for the "complex SQL" queries go in a separate file, so they don't change Q1–Q7.
    Note: the waiver on GHSA-7rjr-3q55-vv33 expires 2026-11-30; after that `v_service_exposure`
    counts 2 open vulns instead of 1.
-3. **`sql/constraint_demos.sql`:** run the 12 insert/delete/update cases from Phase 3b and capture the
-   real MySQL errors (rejected / cascaded / set NULL). Each one must give the result the document claims.
+3. ✅ **`sql/constraint_demos.sql`** (done 21 Nov 2026): the 12 Phase 3b cases plus X1–X2 (the new
+   CHECKs), each in a rolled-back transaction. All give the documented result. Run with
+   `scripts/mysql.sh run --force sql/constraint_demos.sql` (errors are expected); evidence in
+   `logs/constraint_demos.log`.
 4. **`sql/queries.sql`:**
    - the 7 relational-algebra queries (Q1–Q7) translated to SQL, with results matching the hand-computed ones
    - the syllabus's "more complex SQL": nested and correlated subqueries, `EXISTS` / `NOT EXISTS`,
