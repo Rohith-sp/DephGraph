@@ -68,8 +68,11 @@ DephGraph/
     └── relational_schema.mmd  # Relational schema diagram (23 relations, PK/FK)
 ├── normalization/
 │   └── README.md              # Phase 3a: FDs, minimal cover, 1NF → BCNF, lossless join
-└── relational-algebra/
-    └── README.md              # Phase 3b: constraints, update violations, queries in relational algebra
+├── relational-algebra/
+│   └── README.md              # Phase 3b: constraints, update violations, queries in relational algebra
+├── sql/                       # Phase 4: seed data, constraint demos, Q1–Q7 and complex SQL on MySQL
+└── transactions/
+    └── README.md              # Phase 5: ACID, schedules, 2PL, deadlocks, isolation levels (with demos)
 ```
 
 ---
@@ -143,6 +146,8 @@ The design phases and the application build (build phases 0 to 7) are done. See 
 | Design 2: Relational model | 7-step ER-to-relational mapping, 23 relations ([`relational-model/`](relational-model/)) | Done |
 | Design 3a: Normalization | Functional dependencies, minimal cover, 1NF → BCNF, all 23 relations in BCNF ([`normalization/`](normalization/)) | Done |
 | Design 3b: Relational algebra | Constraints, update violations, 7 queries in relational algebra ([`relational-algebra/`](relational-algebra/)) | Done |
+| Course 4: SQL | MySQL seed, 12 constraint demos, Q1–Q7 and 25 complex queries ([`sql/`](sql/README.md)) | Done |
+| Course 5: Transactions | ACID, schedules, precedence graphs, 2PL, deadlock and isolation demos ([`transactions/`](transactions/README.md)) | Done |
 | Build 0-1: Setup and schema | Monorepo, Postgres schema, RLS, seed data, CI | Done |
 | Build 2: Ingestion | Manifest parsing, OSV and deps.dev sync | Done |
 | Build 3: Analysis | Blast radius, set cover, prune, licence propagation | Done |

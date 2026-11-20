@@ -1,6 +1,6 @@
 # DephGraph — Where things stand and what is left
 
-*Status as of 21 November 2026.*
+*Status as of 21 November 2026: course Phases 4 and 5 done on Fedora (MySQL 8.4 in Docker).*
 
 There are two tracks:
 
@@ -21,7 +21,9 @@ There are two tracks:
 | 2. ER → relational mapping | Unit II | [`relational-model/`](../relational-model/) | Done |
 | 3a. Normalization (FDs, minimal cover, 1NF → BCNF) | Unit III | [`normalization/`](../normalization/) | Done |
 | 3b. Constraints and relational algebra | Unit II | [`relational-algebra/`](../relational-algebra/) | Done |
-| MySQL database created from `schema.sql` | — | local MySQL 8.4, database `dephgraph` | Done: 23 tables, 3 views, 26 FKs, 9 CHECKs |
+| MySQL database created from `schema.sql` | — | MySQL 8.4 in Docker, database `dephgraph` | Done: 23 tables, 3 views, 26 FKs, 9 CHECKs |
+| 4. SQL: DDL, seed, constraint demos, Q1–Q7, complex SQL | Unit III | [`sql/`](../sql/README.md) | Done (21 Nov 2026) |
+| 5. Transactions, schedules, 2PL, isolation levels | Unit IV | [`transactions/`](../transactions/README.md) | Done (21 Nov 2026) |
 
 ### Product track
 
@@ -98,18 +100,21 @@ Run on the course MySQL database with `scripts/mysql.sh` on Linux/macOS or
    CHECKs), each in a rolled-back transaction. All give the documented result. Run with
    `scripts/mysql.sh run --force sql/constraint_demos.sql` (errors are expected); evidence in
    `logs/constraint_demos.log`.
-4. ✅ **`sql/queries.sql`**:
-   - the 7 relational-algebra queries (Q1–Q7) translated to SQL, with results matching the hand-computed ones
-   - the syllabus's "more complex SQL": nested and correlated subqueries, `EXISTS` / `NOT EXISTS`,
-     `IN`, `ALL`/`ANY`, outer joins, `GROUP BY` / `HAVING`, views, and the recursive blast-radius CTE
-   - validated on MySQL 8.4 with the seeded fixture; schema check returned 23 tables, 3 views,
-     26 FKs, and 9 CHECKs.
-5. **Evidence:** query output is in the local gitignored `logs/queries.log`; keep it or capture
-   Workbench screenshots for the report.
+4. ✅ **`sql/queries.sql`** (done 21 Nov 2026): Q1–Q7 in SQL on the base sample; every result matches
+   the hand-computed one. The "more complex SQL" (25 queries, C1–C25: nested and correlated
+   subqueries, `EXISTS`, `IN`, `ALL`/`ANY`, NULL pitfalls, outer joins, `GROUP BY`/`HAVING`, views,
+   `WITH CHECK OPTION`, recursive CTE) is in `sql/complex_queries.sql`, on extra rows from
+   `sql/seed_extra.sql`, so Q1–Q7 keep matching the document. Write-up with real outputs:
+   [`sql/README.md`](../sql/README.md).
+5. **Evidence:** outputs are pasted into `sql/README.md`; still to do: Workbench screenshots for the report.
 
-### 2.3 Phase 5 — Transactions and concurrency (Unit IV)
+### 2.3 Phase 5 — Transactions and concurrency (Unit IV) ✅ done 21 Nov 2026
 
-The explanation, schedules, ACID mapping, and two-session lock/deadlock instructions are now in
+All four items below are done in [`transactions/README.md`](../transactions/README.md), with real
+MySQL output: `sql/tx_ingest_demo.sql` (atomic ingest) and `scripts/tx_two_sessions.sh` (lock wait,
+deadlock `ERROR 1213`, dirty / non-repeatable reads, lost update). Durability is explained, not demonstrated.
+
+A shorter version of the explanation, schedules, ACID mapping and two-session lock/deadlock instructions is in
 [`docs/COURSEWORK.md`](COURSEWORK.md#phase-5--transactions-acid-and-concurrency). The rollback demo
 was run and verified. Separate MySQL sessions also demonstrated a row-lock wait and an InnoDB
 deadlock (`ERROR 1213`); the winning transaction rolled back without changing sample values. The
@@ -208,6 +213,6 @@ One-time login setup on Windows, so no password is ever typed into a script:
 ## 5. Suggested order
 
 1. Settle 2.1 with your teammate (option A is enough for the course).
-2. Course Phase 4 (SQL), then Phase 5 (transactions), then Phase 6 (NoSQL).
+2. Course Phase 6 (NoSQL). Phases 4 and 5 are done.
 3. Production deploy (3.1). It can run in parallel with step 2 if your teammate takes it on.
 4. CI gaps (3.2) whenever there is a spare hour.
