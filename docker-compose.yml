@@ -8,7 +8,7 @@ services:
     ports: ["${PG_PORT:-5432}:5432"]
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./apps/api/migrations:/docker-entrypoint-initdb.d:ro
+      - ./apps/api/migrations:/docker-entrypoint-initdb.d:ro,z  # z: SELinux label (Fedora); no-op elsewhere
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U dephgraph -d dephgraph"]
       interval: 5s
