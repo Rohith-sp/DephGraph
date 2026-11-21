@@ -88,9 +88,9 @@ What happens to referencing rows when a referenced row is deleted:
 
 # Part 2 — Update operations and constraint violations
 
-Each operation is applied to the Phase 2 sample data. All 12 cases are run on MySQL in
-[`sql/constraint_demos.sql`](../sql/constraint_demos.sql), each inside a rolled-back transaction;
-MySQL gives the result stated below for every one.
+Each operation is applied to the Phase 2 sample data. The 12 cases below are run on MySQL in
+[`sql/constraint_demos.sql`](../sql/constraint_demos.sql), each inside a rolled-back transaction.
+That file also checks the two nonnegative-value CHECK constraints added to the DDL.
 
 ## 2.1 Insert
 
@@ -331,4 +331,6 @@ Q7c ← π package_id ( σ is_copyleft = TRUE (LICENSE) ⋈ PACKAGE_VERSION )  �
 | Q6 | Maintainers covering a cluster | ÷ (division), also × |
 | Q7 | Waived and open exposure | ∩, −, ∪ |
 
-The same questions are written in SQL at the end of [`../er-diagram/schema.sql`](../er-diagram/schema.sql).
+The same questions are written as runnable MySQL in [`../sql/queries.sql`](../sql/queries.sql).
+The older signature-query examples remain in [`../er-diagram/schema.sql`](../er-diagram/schema.sql)
+as a compact schema reference.

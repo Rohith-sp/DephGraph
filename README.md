@@ -150,3 +150,7 @@ The design phases and the application build (build phases 0 to 7) are done. See 
 | Build 5: Clustering | Semantic package clusters | Done |
 | Build 6: PR gate | GitHub Checks integration | Done |
 | Build 7: Polish | Rate limiting, structured logging, error envelope, deploy docs ([`docs/DEPLOY.md`](docs/DEPLOY.md)) | Done (cloud deploy not performed) |
+
+Coursework Phase 4–6 explanations are in [`docs/COURSEWORK.md`](docs/COURSEWORK.md), and the
+executable course SQL is in [`sql/queries.sql`](sql/queries.sql). Live cloud deployment and
+submission-specific screenshots/report-template work remain external steps.

@@ -294,6 +294,28 @@ the gate from judging exactly the new dependencies it most needs to judge.
 
 **Total: 9 + 5 + 6 + 1 + 2 = 23 tables.**
 
+## Course schema and product schema
+
+The ER model and the MySQL schema in this directory are the **coursework logical design and its
+teaching implementation**. The product in `apps/` uses a separate PostgreSQL physical schema. Both
+model the same supply-chain domain, but the product schema has evolved to support its API and
+operational workflows; it is not a byte-for-byte implementation of the coursework schema. Neither
+schema is being presented as a migration of the other.
+
+| Area | Coursework design / MySQL | Product / PostgreSQL | Why they differ |
+|---|---|---|---|
+| Package clustering | `package.cluster_id` | `package_version.cluster_id` | The coursework groups packages; the product assigns clustering output to versions. |
+| Scan ownership | `scan_run` is an independent entity | `scan_run.service_id` associates a scan with a service | Product scans are initiated and reported per service. |
+| PR verdict | `RISK` / `WARN` / `APPROVE`, with reason and observed risk attributes | `PASS` / `ADVISORY` / `BLOCK`, with the stage reached | The product models its gate's operational outcome and pipeline stage. |
+| Remediation action | `action_type`, `target_version`, `est_effort_hrs` | `description`, `status` | The course schema demonstrates the action's domain attributes; the product tracks execution state. |
+| Dependency edge | Role-named `dependent_*` / `dependency_*` columns and `scope` | `dep_*` / `ref_*` columns; directness is represented on resolution rows | The product API uses its own query and ingestion conventions. |
+| Naming and supporting attributes | Names such as `team_name`, `service_name`, `package_name`, `cluster_label`, `handle`; includes coursework contact, criticality and observation attributes | Common `name`, `label`, `username` attributes plus product fields such as `team.slug`, package descriptions, yanked versions and cluster centroids | Each schema retains attributes needed by its own deliverables. |
+
+These are intentional physical-model differences, not claims that the schemas are interchangeable.
+The course queries and sample data target the MySQL schema; the running application targets the
+PostgreSQL migrations and ORM. A viva answer can therefore distinguish the conceptual design from
+the product implementation without implying that one was generated from the other.
+
 ---
 
 ## Signature queries (`schema.sql`, section 9)

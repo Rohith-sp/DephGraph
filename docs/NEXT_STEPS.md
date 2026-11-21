@@ -1,6 +1,6 @@
 # DephGraph — Where things stand and what is left
 
-*Status as of 2 November 2026, after pulling commit `316c028` ("phases done").*
+*Status as of 21 November 2026.*
 
 There are two tracks:
 
@@ -42,7 +42,12 @@ GitHub Actions CI is also green on the app commits.
 
 ## 2. Course track — what is left (do these first)
 
-### 2.1 Decide how the course schema and the app schema relate *(do this before Phase 4)*
+### 2.1 Course and product schema relationship — resolved
+
+Option A was selected: keep the coursework MySQL schema and product PostgreSQL schema separate and
+document their mapping. The explanation is now in
+[`er-diagram/README.md`](../er-diagram/README.md#course-schema-and-product-schema); neither schema
+nor the app migrations were changed.
 
 The two schemas have the same 23 tables and nearly the same keys, but only 3 tables (`affects`,
 `package_alias`, `resolves`) have identical columns. In a viva, *"is this the schema you designed?"* needs
@@ -56,7 +61,7 @@ one clear answer.
 | `scan_run` | independent strong entity, no owner | has `service_id` (scan belongs to a service) |
 | `pr_risk_verdict` | `verdict` RISK/WARN/APPROVE + reason, counts, model | `risk_level` PASS/ADVISORY/BLOCK + `stage_reached` |
 | `remediation_action` | `action_type`, `target_version`, `est_effort_hrs` | `description`, `status` |
-| `depends_on` | `dependent_*` / `dependency_*`, `is_direct`; PK in MySQL also includes `scope` | `dep_*` / `ref_*`; 4-column PK; `is_direct` lives on `resolves_to` |
+| `depends_on` | `dependent_*` / `dependency_*`, `is_direct`; `scope` is non-key and the PK has four columns | `dep_*` / `ref_*`; 4-column PK; `is_direct` lives on `resolves_to` |
 
 **Naming and extra-attribute differences:** `team_name` vs `name`, `service_name` vs `name`,
 `package_name` vs `name`, `cluster_label` vs `label`, `handle` vs `username`; course-only attributes
@@ -77,10 +82,11 @@ app-only attributes such as `team.slug`, `package.description`, `package_version
 
 ### 2.2 Phase 4 — SQL implementation (Unit III, first half)
 
-All on MySQL with `scripts/run-sql.ps1` (output saved under `logs/`).
+Run on the course MySQL database with `scripts/mysql.sh` on Linux/macOS or
+`scripts/run-sql.ps1` on Windows; output is saved under `logs/`.
 
 1. ✅ **Fix the DDL** in `er-diagram/schema.sql` (done 21 Nov 2026):
-   - `depends_on` primary key → 4 columns (`scope` dropped), as in the relational model and normalization documents
+   - `depends_on` primary key → 4 columns (`scope` remains a non-key attribute), as in the relational model and normalization documents
    - `CHECK (exec_count >= 0)` on `observes` (`chk_exec_count`) and `CHECK (depth >= 0)` on `resolves_to`
      (`chk_depth`), the Phase 3b domain rules; both verified to reject negative values (MySQL error 3819)
 2. ✅ **`sql/seed.sql`** (done 21 Nov 2026): exactly the Phase 2 sample rows (log4j example), so the
@@ -92,45 +98,42 @@ All on MySQL with `scripts/run-sql.ps1` (output saved under `logs/`).
    CHECKs), each in a rolled-back transaction. All give the documented result. Run with
    `scripts/mysql.sh run --force sql/constraint_demos.sql` (errors are expected); evidence in
    `logs/constraint_demos.log`.
-4. **`sql/queries.sql`:**
+4. ✅ **`sql/queries.sql`**:
    - the 7 relational-algebra queries (Q1–Q7) translated to SQL, with results matching the hand-computed ones
    - the syllabus's "more complex SQL": nested and correlated subqueries, `EXISTS` / `NOT EXISTS`,
      `IN`, `ALL`/`ANY`, outer joins, `GROUP BY` / `HAVING`, views, and the recursive blast-radius CTE
-5. **Evidence:** keep the `logs/` output (or Workbench screenshots) for the report.
+   - validated on MySQL 8.4 with the seeded fixture; schema check returned 23 tables, 3 views,
+     26 FKs, and 9 CHECKs.
+5. **Evidence:** query output is in the local gitignored `logs/queries.log`; keep it or capture
+   Workbench screenshots for the report.
 
 ### 2.3 Phase 5 — Transactions and concurrency (Unit IV)
 
-1. **Transaction design:** show that ingesting one manifest is a single transaction (all rows or none),
-   with a demo where a mid-way failure rolls everything back.
-2. **ACID:** explain each property with a DephGraph example.
-3. **Schedules and serializability:** two concurrent operations (for example, an OSV sync updating
-   `affects` while a remediation plan is generated), written as schedules; build the precedence graph,
-   test conflict-serializability, show one serial, one serializable and one non-serializable schedule.
-4. **Two-phase locking:** run two MySQL sessions side by side to show lock waits, a deadlock and how
-   InnoDB resolves it; show `SELECT ... FOR UPDATE`, isolation levels, and lock information from
-   `performance_schema.data_locks`.
+The explanation, schedules, ACID mapping, and two-session lock/deadlock instructions are now in
+[`docs/COURSEWORK.md`](COURSEWORK.md#phase-5--transactions-acid-and-concurrency). The rollback demo
+was run and verified. Separate MySQL sessions also demonstrated a row-lock wait and an InnoDB
+deadlock (`ERROR 1213`); the winning transaction rolled back without changing sample values. The
+`performance_schema.data_locks` and `data_lock_waits` queries were also checked while a transaction
+was waiting. Only submission-specific screenshots/transcripts remain; the rollback proof and
+written explanations are complete.
 
 ### 2.4 Phase 6 — NoSQL (Unit V)
 
-The app already uses NoSQL, so this phase can document real code:
+The model and distribution write-up is in
+[`docs/COURSEWORK.md`](COURSEWORK.md#phase-6--nosql). It records four active MongoDB write paths
+and distinguishes the indexed `runtime_samples` collection, which currently has no writer.
 
-1. **Document model:** the app's four MongoDB collections: `raw_manifests`, `osv_advisories`,
-   `package_embeddings` and `review_responses` (the LLM's answers at PR-gate stage 3). Helpers are in
-   `apps/api/app/models/mongo.py`; the embeddings and review responses are written from the services.
-   Explain why each is a document and not a table.
-2. **Key-value model:** the Redis cache (blast-radius results with a 24 h TTL).
-3. **Aggregates:** what one "aggregate" is in each store.
-4. **Distribution:** how MongoDB Atlas (replica set) and Upstash would replicate and shard this data;
-   master-slave vs peer-to-peer, sharding plus replication.
-5. **Big data:** structured vs semi-structured vs unstructured data in DephGraph; where MapReduce /
-   Hadoop would fit at scale.
+No additional NoSQL implementation is required for the coursework; the code-backed explanation is
+complete in `docs/COURSEWORK.md`.
 
 ### 2.5 Report and viva
 
-- Update the synopsis and report with phases 1–6.
-- Collect screenshots: ER diagram, MySQL Workbench EER diagram, query outputs, the running dashboard.
-- Prepare answers for the known traps: why OBSERVES is ternary, why `fixed_in` needs the full key,
-  why basic relational algebra cannot express blast radius, the course-vs-app schema question (2.1).
+- [`docs/COURSEWORK.md`](COURSEWORK.md) now contains report-ready Phase 4–6 explanations and viva
+  checkpoints. No separate synopsis/report template was present in the repository.
+- Transfer the material into the required report template and add screenshots: ER diagram,
+  MySQL Workbench EER diagram, query outputs, and the running dashboard.
+- The known viva topics are summarized in the coursework document: ternary `OBSERVES`, full key in
+  `AFFECTS`, relational-algebra transitive closure, and the course-vs-app schema relationship.
 
 ---
 
