@@ -162,10 +162,14 @@ Keep every key and password out of the repo. They go only in each service's dash
 
 ### 3.2 Smaller gaps
 
+The CI gaps for coverage enforcement and browser testing are now closed in
+`.github/workflows/ci.yml`: backend tests fail below 70% coverage, and a Playwright job provisions
+the test services, applies migrations/seeds the database, starts the API, and runs the existing
+no-Supabase browser suite. Locally, the backend suite passed at 96.31% coverage and the browser suite
+passed its three dashboard tests (the three real-auth tests are intentionally skipped in this mode).
+
 | Gap | Fix |
 |---|---|
-| CI does not enforce the PRD's ≥ 70 % coverage | add `--cov-fail-under=70` to the pytest step in `.github/workflows/ci.yml` |
-| CI does not run the Playwright browser tests | add a job that starts the API and web app and runs `npx playwright test` in the no-Supabase mode described in the README |
 | Tests run natively on Windows (outside Docker) fail unless `PYTHONUTF8=1` is set | in `apps/api/tests/conftest.py`, read migrations with `read_text(encoding="utf-8")` |
 | Duplicate React keys on the service page (`PrunableTable`): a package with two prunable versions got the same key twice | fixed in the commit that added this file (`key = package_id@version`) |
 | React Flow `nodeTypes` warning in development | harmless; can be silenced by memoising, low priority |
