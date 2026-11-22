@@ -1,6 +1,6 @@
 """Ingest: MongoDB is the raw layer, PostgreSQL the system of record (one-way Mongo -> Postgres).
 
-/manifest stores the upload in `raw_manifests` first, then `_project` parses that document,
+/manifest stores the upload in `raw_manifests` first, then `_project_many` parses that document,
 writes the raw OSV advisories to `osv_advisories`, and projects both into Postgres in one
 transaction. /replay/{manifest_id} re-runs the same projection from a stored document.
 """
@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, TypeVar, cast
 
@@ -122,19 +123,26 @@ def _lock_depths(parsed: list[ParsedPackage]) -> dict[tuple[str, str], int]:
     return {k: depth.get(k, 1) for k in deps}
 
 
-async def _record_deployment(
-    session: AsyncSession,
-    service_id: int,
-    environment: str,
-    parsed: list[ParsedPackage],
-    refs: list[PkgRef],
-    locked: bool,
-) -> int:
-    """New deployment + resolves_to: direct deps, then closure over known depends_on edges.
+@dataclass
+class _Group:
+    """One ecosystem's packages in a deployment, from a lockfile or from manifests."""
 
-    A lockfile already lists every resolved package, so its deployment takes exactly that set
-    (depth by BFS over its own edges) and never the global depends_on closure, which mixes in
-    versions other projects resolved.
+    ecosystem: str
+    parsed: list[ParsedPackage]
+    locked: bool
+    refs: list[PkgRef] = field(default_factory=list)
+
+
+async def _record_deployment(
+    session: AsyncSession, service_id: int, environment: str, groups: list[_Group]
+) -> int:
+    """New deployment + resolves_to: each group's packages, then (manifest groups only) the
+    closure over known depends_on edges.
+
+    A lockfile already lists every resolved package, so its group takes exactly that set (depth by
+    BFS over its own edges, edges kept with this deployment) and never the global depends_on
+    closure, which mixes in versions other projects resolved. The deployment is `locked` only when
+    every group came from a lockfile.
     """
     seq = (
         await session.execute(
@@ -143,20 +151,17 @@ async def _record_deployment(
                 "SELECT :s, COALESCE(MAX(deploy_seq), 0) + 1, :env, :locked FROM deployment "
                 "WHERE service_id = :s RETURNING deploy_seq"
             ),
-            {"s": service_id, "env": environment, "locked": locked},
+            {"s": service_id, "env": environment, "locked": all(g.locked for g in groups)},
         )
     ).scalar_one()
-    depth = (
-        _lock_depths(parsed)
-        if locked
-        else {(p.name, p.version): int(not p.is_direct) for p in parsed}
-    )
-    await session.execute(
-        text(
-            "INSERT INTO resolves_to (service_id, deploy_seq, package_id, version_string, depth, "
-            "is_direct) VALUES (:s, :q, :p, :v, :d, :i)"
-        ),
-        [
+    values = []
+    for g in groups:
+        depth = (
+            _lock_depths(g.parsed)
+            if g.locked
+            else {(p.name, p.version): int(not p.is_direct) for p in g.parsed}
+        )
+        values += [
             {
                 "s": service_id,
                 "q": seq,
@@ -165,30 +170,40 @@ async def _record_deployment(
                 "d": depth.get((p.name, p.version), 1),
                 "i": p.is_direct,
             }
-            for p, r in zip(parsed, refs, strict=True)
-        ],
-    )
-    if locked:
-        await _record_edges(session, service_id, seq, parsed, refs)
-        return int(seq)
+            for p, r in zip(g.parsed, g.refs, strict=True)
+        ]
     await session.execute(
-        text("""
-            INSERT INTO resolves_to (service_id, deploy_seq, package_id, version_string, depth,
-                                     is_direct)
-            WITH RECURSIVE c AS (
-              SELECT package_id, version_string, depth FROM resolves_to
-              WHERE service_id = :s AND deploy_seq = :q
-              UNION
-              SELECT d.ref_package_id, d.ref_version_string, c.depth + 1
-              FROM depends_on d
-              JOIN c ON (d.dep_package_id, d.dep_version_string) = (c.package_id, c.version_string)
-              WHERE c.depth < 10)
-            SELECT :s, :q, package_id, version_string, MIN(depth), FALSE FROM c
-            GROUP BY package_id, version_string
-            ON CONFLICT DO NOTHING
-            """),
-        {"s": service_id, "q": seq},
+        text(
+            "INSERT INTO resolves_to (service_id, deploy_seq, package_id, version_string, depth, "
+            "is_direct) VALUES (:s, :q, :p, :v, :d, :i)"
+        ),
+        values,
     )
+    for g in groups:
+        if g.locked:
+            await _record_edges(session, service_id, seq, g.parsed, g.refs)
+    manifest_ecosystems = [g.ecosystem for g in groups if not g.locked]
+    if manifest_ecosystems:
+        await session.execute(
+            text("""
+                INSERT INTO resolves_to (service_id, deploy_seq, package_id, version_string, depth,
+                                         is_direct)
+                WITH RECURSIVE c AS (
+                  SELECT rt.package_id, rt.version_string, rt.depth FROM resolves_to rt
+                  JOIN package p ON p.package_id = rt.package_id
+                  WHERE rt.service_id = :s AND rt.deploy_seq = :q AND p.ecosystem = ANY(:ecos)
+                  UNION
+                  SELECT d.ref_package_id, d.ref_version_string, c.depth + 1
+                  FROM depends_on d
+                  JOIN c ON (d.dep_package_id, d.dep_version_string)
+                          = (c.package_id, c.version_string)
+                  WHERE c.depth < 10)
+                SELECT :s, :q, package_id, version_string, MIN(depth), FALSE FROM c
+                GROUP BY package_id, version_string
+                ON CONFLICT DO NOTHING
+                """),
+            {"s": service_id, "q": seq, "ecos": manifest_ecosystems},
+        )
     return int(seq)
 
 
@@ -279,32 +294,65 @@ async def _fetch_upstream(
 
 def _rekey(real: list[PkgRef], data: dict[PkgRef, T]) -> dict[PkgRef, T]:
     """Fetch results are keyed by placeholder refs (package_id 0); re-key to the DB-backed refs."""
-    by_name = {(r.name, r.version): r for r in real}
-    return {by_name[(k.name, k.version)]: v for k, v in data.items()}
+    by_name = {(r.ecosystem, r.name, r.version): r for r in real}
+    return {by_name[(k.ecosystem, k.name, k.version)]: v for k, v in data.items()}
 
 
-async def _project(session: AsyncSession, doc: dict[str, Any]) -> dict[str, Any]:
-    """One-way projection of a stored raw manifest (Mongo) into Postgres; the only write path.
+def _groups(docs: list[dict[str, Any]]) -> tuple[list[list[ParsedPackage]], list[_Group]]:
+    """Parse every document (ValueError when malformed): (each document's packages, one group per
+    ecosystem). Within an ecosystem a lockfile wins over its sibling manifests.
 
-    parse doc content -> fetch OSV + deps.dev (no transaction open) -> store raw advisories in
+    shortcut: with several lockfiles of one ecosystem only the first (by filename) is used; upgrade
+    to merging them if a repository really keeps two.
+    """
+    pyproject = next(
+        (
+            d["raw_content"]
+            for d in docs
+            if d.get("filename", "").lower().endswith("pyproject.toml")
+        ),
+        None,
+    )
+    per_doc = [
+        parse_manifest(d["ecosystem"], d["raw_content"], d.get("filename", ""), pyproject=pyproject)
+        for d in docs
+    ]
+    by_ecosystem: dict[str, list[tuple[bool, list[ParsedPackage]]]] = {}
+    for d, parsed in zip(docs, per_doc, strict=True):
+        eco = d["ecosystem"]
+        by_ecosystem.setdefault(eco, []).append((is_lockfile(eco, d.get("filename", "")), parsed))
+    groups = []
+    for eco, items in by_ecosystem.items():
+        if locks := [parsed for lock, parsed in items if lock]:
+            groups.append(_Group(eco, locks[0], True))
+        elif merged := list(
+            {p.name: p for _, parsed in reversed(items) for p in reversed(parsed)}.values()
+        ):
+            groups.append(_Group(eco, merged[::-1], False))
+    return per_doc, [g for g in groups if g.parsed]
+
+
+async def _project_many(session: AsyncSession, docs: list[dict[str, Any]]) -> dict[str, Any]:
+    """One-way projection of stored raw manifests (Mongo) of ONE service into Postgres, as a single
+    production (or staging/preview) deployment; the only write path.
+
+    parse the documents -> fetch OSV + deps.dev (no transaction open) -> store raw advisories in
     Mongo -> ONE Postgres transaction (advisory lock, service check, packages, metadata,
-    advisories, deployment + resolves_to closure, scan_run). The manifest document ends up
-    `projected` (with deploy_seq) on commit or `failed` (with the error) on any exception.
+    advisories, deployment + resolves_to, scan_run). Every document ends up `projected` (with
+    deploy_seq) on commit or `failed` (with the error) on any exception.
     """
     started = time.perf_counter()
-    service_id, ecosystem = doc["service_id"], doc["ecosystem"]
-    environment = doc.get("environment", "production")  # documents stored before 010 have none
+    service_id = docs[0]["service_id"]
+    environment = docs[0].get("environment", "production")  # documents stored before 010 have none
     try:
         try:
-            filename = doc.get("filename", "")
-            parsed = parse_manifest(ecosystem, doc["raw_content"], filename)
-            locked = is_lockfile(ecosystem, filename)
+            per_doc, groups = _groups(docs)
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
-        if not parsed:
+        if not groups:
             raise HTTPException(422, "No versioned packages found in manifest")
         hits, advisories, meta = await _fetch_upstream(
-            [PkgRef(0, ecosystem, p.name, p.version) for p in parsed]
+            [PkgRef(0, g.ecosystem, p.name, p.version) for g in groups for p in g.parsed]
         )
         try:  # raw advisories land in Mongo before Postgres derives vulnerability rows
             await osv_fetcher.store_raw(advisories, required=True)
@@ -315,28 +363,45 @@ async def _project(session: AsyncSession, doc: dict[str, Any]) -> dict[str, Any]
             svc = await require_service(
                 session, service_id, None
             )  # deleted since the first check -> 404
-            refs, inserted = await _upsert_packages(session, ecosystem, parsed)
+            inserted = 0
+            for g in groups:
+                g.refs, new = await _upsert_packages(session, g.ecosystem, g.parsed)
+                inserted += new
+            refs = [r for g in groups for r in g.refs]
             await apply_metadata(session, _rekey(refs, meta))
             vulns = await osv_fetcher.upsert_advisories(
                 session, refs, _rekey(refs, hits), advisories
             )
-            seq = await _record_deployment(session, service_id, environment, parsed, refs, locked)
+            seq = await _record_deployment(session, service_id, environment, groups)
             await _record_scan(session, service_id)
     except Exception as e:
-        await _mark(doc["_id"], "failed", error=_error_text(e))
+        for doc in docs:
+            await _mark(doc["_id"], "failed", error=_error_text(e))
         raise
-    packages = [{"name": p.name, "version": p.version, "is_direct": p.is_direct} for p in parsed]
-    await _mark(doc["_id"], "projected", deploy_seq=seq, parsed_packages=packages)
+    for doc, parsed in zip(docs, per_doc, strict=True):
+        packages = [
+            {"name": p.name, "version": p.version, "is_direct": p.is_direct} for p in parsed
+        ]
+        await _mark(doc["_id"], "projected", deploy_seq=seq, parsed_packages=packages)
     # the upserted advisories and package metadata are catalogue data other teams' results use too
     await cache.bump([svc["team_id"]], catalog=True)
     return {
-        "manifest_id": str(doc["_id"]),
+        "manifest_id": str(docs[0]["_id"]),
         "deploy_seq": seq,
-        "packages_parsed": len(parsed),
+        "packages_parsed": sum(len(g.parsed) for g in groups),
         "packages_inserted": inserted,
         "vulns_fetched": vulns,
         "duration_ms": int((time.perf_counter() - started) * 1000),
     }
+
+
+async def ingest_many(session: AsyncSession, bodies: list[IngestRequest]) -> dict[str, Any]:
+    """Store each raw manifest in Mongo, then project them all as ONE deployment of the service."""
+    return await _project_many(session, [await _store_manifest(b) for b in bodies])
+
+
+async def ingest(session: AsyncSession, body: IngestRequest) -> dict[str, Any]:
+    return await ingest_many(session, [body])
 
 
 @router.post("/manifest", response_model=Envelope[IngestResult])
@@ -350,8 +415,7 @@ async def ingest_manifest(
     """
     async with session.begin():
         await require_service(session, body.service_id, member)
-    doc = await _store_manifest(body)
-    return ok(await _project(session, doc))
+    return ok(await ingest(session, body))
 
 
 @router.post("/replay/{manifest_id}", response_model=Envelope[IngestResult])
@@ -374,7 +438,7 @@ async def replay_manifest(
         raise HTTPException(404, "Manifest not found")
     async with session.begin():
         await require_service(session, doc["service_id"], member)
-    return ok(await _project(session, doc))
+    return ok(await _project_many(session, [doc]))
 
 
 @router.post("/scan/{service_id}", response_model=Envelope[ScanResult])

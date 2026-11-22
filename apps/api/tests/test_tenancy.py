@@ -512,8 +512,11 @@ async def test_every_table_has_select_policy_except_private(rls):
         "SELECT 1 FROM pg_policies p WHERE p.schemaname = 'public' AND p.tablename = c.relname)"
     )
     assert sorted(r["relname"] for r in no_policy) == [
+        "alert_issue",
+        "alert_skip",
         "maintainer_email",
         "pr_gate_delivery",
+        "service_import",
         "service_token",
         "team_invite",
     ]

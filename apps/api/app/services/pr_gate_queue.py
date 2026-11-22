@@ -1,4 +1,5 @@
-"""Durable PR-gate deliveries (table pr_gate_delivery, migration 011).
+"""Durable webhook deliveries (table pr_gate_delivery, migration 011): pull_request, push and
+installation_repositories events.
 
 A delivery is stored before it is reviewed, so GitHub redeliveries are no-ops and a failed or
 crashed review is retried by the sweeper. States: `processing` (claimed; next_attempt_at is its
@@ -36,9 +37,9 @@ async def record(delivery_id: str, event: str, payload: dict[str, Any]) -> bool:
         )
 
 
-async def claim() -> tuple[str, dict[str, Any]] | None:
-    """Claim one due delivery (new attempt, fresh lease), or None. SKIP LOCKED: concurrent
-    sweepers never get the same row."""
+async def claim() -> tuple[str, dict[str, Any], str] | None:
+    """Claim one due delivery (new attempt, fresh lease): (id, payload, event), or None.
+    SKIP LOCKED: concurrent sweepers never get the same row."""
     async with SessionLocal() as s, s.begin():
         found = await rows(
             s,
@@ -47,11 +48,11 @@ async def claim() -> tuple[str, dict[str, Any]] | None:
             "WHERE delivery_id = (SELECT delivery_id FROM pr_gate_delivery "
             "WHERE status IN ('pending', 'processing') AND attempts < :max "
             "AND next_attempt_at <= now() ORDER BY next_attempt_at LIMIT 1 FOR UPDATE SKIP LOCKED) "
-            "RETURNING delivery_id, payload",
+            "RETURNING delivery_id, payload, event",
             lease=LEASE_MINUTES,
             max=MAX_ATTEMPTS,
         )
-    return (found[0]["delivery_id"], found[0]["payload"]) if found else None
+    return (found[0]["delivery_id"], found[0]["payload"], found[0]["event"]) if found else None
 
 
 async def done(delivery_id: str) -> None:

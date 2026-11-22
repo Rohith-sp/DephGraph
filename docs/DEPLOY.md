@@ -69,7 +69,7 @@ bundle). One function serves every route, so the 300 s Hobby maximum applies to 
 | `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY_BASE64`, `GITHUB_WEBHOOK_SECRET` | GitHub App; key is the PEM, base64-encoded |
 | `INTERNAL_CRON_SECRET` | long random string; guards `/internal/*` |
 | `CORS_ORIGINS` | JSON list, e.g. `["https://dephgraph.vercel.app"]` |
-| `GITHUB_DISPATCH_TOKEN` | fine-grained token for this repo with **Actions: read and write**; lets `POST /clusters/recompute` start `cluster.yml` |
+| `WEB_URL` | web project URL; alert issues link to its vulnerability page |
 | `GITHUB_REPOSITORY` | `owner/name` of this repo |
 | `ENVIRONMENT` | `production` (JSON logs) |
 
@@ -83,7 +83,7 @@ client's IP and does not forward client-supplied values, so the default `TRUSTED
 raise it only if you add another proxy. `/health` and `/pr-gate/webhook` are exempt.
 
 Vercel cannot run work after a Python response, so clustering and the schedules do not run in the API. Without
-`GITHUB_DISPATCH_TOKEN`/`GITHUB_REPOSITORY`, `POST /clusters/recompute` answers `503`.
+the GitHub App (Actions: write) installed on `GITHUB_REPOSITORY`, `POST /clusters/recompute` answers `503`.
 
 ## 5. Vercel project "web"
 
@@ -105,7 +105,7 @@ answers GitHub `202` at once and forwards the delivery to the API inside Next's 
 up to 300 s). The API reviews the PR synchronously and answers `200` with `{verdict, stage_reached,
 processing_ms, deps}`, which the route only logs; GitHub sees the result as a Check Run.
 
-Deliveries are durable once they reach the API: it stores each `pull_request` delivery (`pr_gate_delivery`, keyed by
+Deliveries are durable once they reach the API: it stores each `pull_request`, `push` and installation delivery (`pr_gate_delivery`, keyed by
 `X-GitHub-Delivery`) before reviewing it. A redelivery of the same id is a no-op (`{"duplicate": true}`), and a review
 that fails or whose function dies is retried with backoff (2, 4, 8, 16 minutes, 5 attempts) by `retry.yml`, which calls
 `POST /internal/pr-gate/retry`. Rows older than 30 days are purged. The one remaining gap is a delivery that never
@@ -170,7 +170,10 @@ workflow), or push any commit. A failed keep-alive step fails the run, and GitHu
 ## Using DephGraph on this repository (dogfooding)
 
 1. Create the GitHub App (webhook URL `https://<web project>/api/webhooks/github`, secret = `GITHUB_WEBHOOK_SECRET`,
-   permissions: Pull requests read, Checks read and write; event: Pull request) and install it on this repository.
+   permissions: Actions read and write, Checks read and write, Contents read, Issues read and write, Metadata read,
+   Pull requests read, account Email addresses read; events: Pull request, Push, Installation,
+   Installation repositories) and install it on this repository. Push and the two installation events import
+   a service's manifests; Issues write opens vulnerability alerts; Actions write dispatches `cluster.yml`.
 2. Register the repository as a service of a team:
    `python scripts/register_service.py --repo https://github.com/Rohith-sp/DephGraph --team <team-slug>`
    (needs `DATABASE_URL`; idempotent; the name defaults to the repository name).

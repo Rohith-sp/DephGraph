@@ -66,6 +66,7 @@ async def test_existing_database_needs_baseline(conn):
     assert await migrate.migrate(conn) == [
         "011_pr_gate_delivery.sql",
         "012_onboarding.sql",
+        "013_alerts.sql",
         "014_deployment_edges.sql",
     ]
     with pytest.raises(migrate.MigrationError, match="already exists"):

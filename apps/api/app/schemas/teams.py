@@ -110,6 +110,9 @@ class ServiceBrief(BaseModel):
     name: str
     repo_url: str | None
     root_path: str
+    # create / change of repo_url or root_path only: how the import of the default branch went
+    # ("imported", "unchanged", "not_installed", "no_repo", "failed"); None = not attempted
+    import_status: str | None = None
 
 
 class TokenCreate(BaseModel):

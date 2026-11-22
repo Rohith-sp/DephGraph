@@ -1,7 +1,6 @@
 import hashlib
 import hmac
 import json
-import re
 import time
 import uuid
 from typing import Annotated, Any
@@ -21,8 +20,14 @@ from app.config import settings
 from app.database import DbSession, SessionLocal
 from app.schemas.analysis import VerdictOut
 from app.schemas.common import BigId, Envelope, ok
-from app.services import cache, github, pr_gate_engine, pr_gate_queue
-from app.services.queries import lock_service, require_service, rows
+from app.services import cache, github, github_import, pr_gate_engine, pr_gate_queue
+from app.services.queries import (
+    REPO_URL_SQL,
+    lock_service,
+    normalize_repo_url,
+    require_service,
+    rows,
+)
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/pr-gate", tags=["pr-gate"])
@@ -34,19 +39,6 @@ def _valid_signature(body: bytes, header: str | None) -> bool:
         return False
     digest = hmac.new(settings.github_webhook_secret.encode(), body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(header.encode(), f"sha256={digest}".encode())
-
-
-_REPO_URL_TAIL = r"(\.git)?/*$"
-# SQL twin of normalize_repo_url (same rules, so stored and payload URLs meet in the middle)
-_REPO_URL_SQL = (
-    "regexp_replace(regexp_replace(lower(btrim(repo_url)), '^http://', 'https://'), "
-    f"'{_REPO_URL_TAIL}', '')"
-)
-
-
-def normalize_repo_url(url: str) -> str:
-    """Lowercase, https, no trailing '/' or '.git': https://GitHub.com/Acme/X.git/ -> .../acme/x"""
-    return re.sub(_REPO_URL_TAIL, "", re.sub(r"^http://", "https://", url.strip().lower()))
 
 
 def _parse(payload: Any) -> tuple[dict[str, Any], int, str, str, str, str]:
@@ -73,7 +65,8 @@ def _failure(e: Exception) -> str:
 # talks to the Next.js route (apps/web/src/app/api/webhooks/github), which acknowledges at once and
 # forwards here inside `after()`; Python on Vercel cannot keep working after its response. The
 # delivery is stored first (pr_gate_queue): a redelivery is a no-op, and a review that fails or
-# crashes is retried by POST /internal/pr-gate/retry.
+# crashes is retried by POST /internal/pr-gate/retry. push (default branch) and
+# installation_repositories deliveries share the queue: they import manifests (github_import).
 @router.post("/webhook")
 async def webhook(
     request: Request,
@@ -85,30 +78,45 @@ async def webhook(
     body = await request.body()  # raw bytes: the HMAC covers exactly what GitHub signed
     if not _valid_signature(body, x_hub_signature_256):
         raise HTTPException(401, "Invalid signature")
-    if x_github_event != "pull_request":
+    if x_github_event is None or x_github_event not in {
+        "pull_request",
+        *github_import.EVENTS,
+    }:
         return ok({"skipped": True})
     try:
         payload = json.loads(body)
-        action = _parse(payload)[3]
+        wanted = (
+            _parse(payload)[3] in ACTIONS
+            if x_github_event == "pull_request"
+            else github_import.wanted(x_github_event, payload)
+        )
     except ValueError:  # includes json.JSONDecodeError
-        raise HTTPException(422, "Malformed pull_request payload") from None
-    if action not in ACTIONS:
+        raise HTTPException(422, f"Malformed {x_github_event} payload") from None
+    if not wanted:
         return ok({"skipped": True})
     delivery = x_github_delivery or uuid.uuid4().hex
     if not await pr_gate_queue.record(delivery, x_github_event, payload):
         return ok({"duplicate": True})
     try:
-        return ok(await attempt(delivery, payload, started))
+        return ok(await attempt(delivery, payload, started, x_github_event))
     except Exception as e:  # noqa: BLE001 -- already recorded for retry; the caller sees a 502
         raise HTTPException(502, _failure(e)) from e
 
 
 async def attempt(
-    delivery_id: str, payload: dict[str, Any], started: float | None = None
+    delivery_id: str,
+    payload: dict[str, Any],
+    started: float | None = None,
+    event: str = "pull_request",
 ) -> dict[str, Any]:
-    """Review a claimed delivery and record the outcome: done, or scheduled for retry (then raises)."""
+    """Handle a claimed delivery (PR review, or a push / App-install import) and record the
+    outcome: done, or scheduled for retry (then raises)."""
     try:
-        result = await process(payload, delivery_id, started or time.monotonic())
+        result = (
+            await process(payload, delivery_id, started or time.monotonic())
+            if event == "pull_request"
+            else await github_import.handle(event, payload)
+        )
     except Exception as e:
         await pr_gate_queue.fail(delivery_id, e)
         raise
@@ -180,17 +188,25 @@ async def _evaluate_and_store(
     async with SessionLocal() as session, session.begin():
         services = await rows(
             session,
-            f"SELECT service_id, name, team_id FROM service WHERE {_REPO_URL_SQL} = :url ORDER BY service_id",
+            f"SELECT service_id, name, team_id, root_path FROM service WHERE {REPO_URL_SQL} = :url ORDER BY service_id",
             url=normalize_repo_url(html_url),
         )
     if not services:
         return None
-    deps, notes = await github.pr_added_deps(client, full_name, number, token)
+    # a monorepo's services each see only the manifests under their root_path ('' = whole repo)
+    changes: dict[str, tuple[list[tuple[str, str, str]], list[str]]] = {}
+    for svc in services:
+        root = svc["root_path"].strip("/")
+        if root not in changes:
+            changes[root] = await github.pr_added_deps(
+                client, full_name, number, token, f"{root}/" if root else ""
+            )
     everything: list[pr_gate_engine.DepVerdict] = []
     deps_out: list[dict[str, Any]] = []
     lines: list[str] = []
     for svc in services:
         sid = svc["service_id"]
+        deps, notes = changes[svc["root_path"].strip("/")]
         # no DB transaction is held across Groq calls: short read tx, then short write tx
         async with SessionLocal() as session:
             async with session.begin():

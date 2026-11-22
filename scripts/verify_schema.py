@@ -1,4 +1,4 @@
-"""Assert schema shape: 28 tables, 5 views, valid FKs, indexes (003 + 008 + 010-012 + 014), RLS, 005/007/009/012/014 columns, migration history."""
+"""Assert schema shape: 31 tables, 5 views, valid FKs, indexes (003 + 008 + 010-012 + 014), RLS, 005/007/009/012/013/014 columns, migration history."""
 import asyncio
 import re
 import sys
@@ -12,8 +12,8 @@ MIGRATIONS = "\n".join(p.read_text() for p in sorted((Path(__file__).parents[1] 
 # Net index set: every CREATE INDEX in the migrations minus the ones a later migration drops (008).
 DROPPED = set(re.findall(r"DROP INDEX (?:IF EXISTS )?(\w+)", MIGRATIONS))
 INDEXES = sorted(set(re.findall(r"CREATE INDEX (?:IF NOT EXISTS )?(\w+)", MIGRATIONS)) - DROPPED)
-PRIVATE = {"maintainer_email", "pr_gate_delivery", "team_invite", "service_token"}  # RLS on, no policy and no grant for `authenticated` (API only)
-COLUMNS = [("semantic_cluster", "keywords"), ("pr_risk_verdict", "reasoning"), ("maintainer", "last_active_at"), ("pr_review", "head_sha"), ("pr_review", "evaluated_at"), ("service", "root_path"), ("service", "github_repo_id"), ("team_member", "email"), ("deployment", "locked")]
+PRIVATE = {"maintainer_email", "pr_gate_delivery", "team_invite", "service_token", "alert_issue", "alert_skip", "service_import"}  # RLS on, no policy and no grant for `authenticated` (API only)
+COLUMNS = [("semantic_cluster", "keywords"), ("pr_risk_verdict", "reasoning"), ("maintainer", "last_active_at"), ("pr_review", "head_sha"), ("pr_review", "evaluated_at"), ("service", "root_path"), ("service", "github_repo_id"), ("team_member", "email"), ("deployment", "locked"), ("team", "alert_min_severity"), ("team", "alerts_enabled")]
 
 
 async def main() -> int:
@@ -45,13 +45,13 @@ async def check(c: asyncpg.Connection) -> int:
     )
 
     checks = [
-        ("Tables", len(tables), 28),
+        ("Tables", len(tables), 31),
         ("Views", len(views), 5),
         ("Indexes", len(idx), len(INDEXES)),
         ("Dropped indexes still present (008)", len(gone), 0),
-        ("Columns from 005/007/009/012/014", sum((t, col) in {(r[0], r[1]) for r in cols} for t, col in COLUMNS), len(COLUMNS)),
-        ("RLS enabled", sum(t["relrowsecurity"] for t in tables), 28),
-        ("SELECT policies", len(pol), 28 - len(PRIVATE)),
+        ("Columns from 005/007/009/012/013/014", sum((t, col) in {(r[0], r[1]) for r in cols} for t, col in COLUMNS), len(COLUMNS)),
+        ("RLS enabled", sum(t["relrowsecurity"] for t in tables), 31),
+        ("SELECT policies", len(pol), 31 - len(PRIVATE)),
         ("Private tables readable by authenticated", len(leaks), 0),
         ("Migrations pending or changed", pending, 0),
     ]

@@ -18,20 +18,25 @@ async def trigger() -> str:
     """ "already_running" when the job holds the lock, else "dispatched"; 503 when not configured."""
     if await get_redis().exists(LOCK_KEY):
         return "already_running"
-    if not (settings.github_dispatch_token and settings.github_repository):
+    if not (github.configured() and settings.github_repository):
         raise HTTPException(
             503,
             "Clustering runs as a scheduled job; trigger it via GitHub Actions "
             "or `python -m app.jobs.cluster` locally",
         )
     async with httpx.AsyncClient(timeout=15) as client:
+        token = await github.repo_token(client, settings.github_repository, {"actions": "write"})
+        if token is None:
+            raise HTTPException(
+                503, f"The GitHub App is not installed on {settings.github_repository}"
+            )
         r = await http.request(
             client,
             "POST",
             f"{github.API}/repos/{settings.github_repository}/actions/workflows/{WORKFLOW}/dispatches",
             headers={
                 **github.HEADERS,
-                "Authorization": f"Bearer {settings.github_dispatch_token}",
+                "Authorization": f"Bearer {token}",
             },
             json={"ref": REF},
         )

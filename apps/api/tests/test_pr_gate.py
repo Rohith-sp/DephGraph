@@ -798,7 +798,11 @@ async def test_monorepo_redundancy_is_judged_per_service(client, auth, reseed):
                 )
             )
         ).scalar_one()
-    files("mhttp")
+    # the new dependency sits under the second service's root_path; service 1 ('' = whole repo) sees it too
+    patch = "@@ -1 +1,2 @@\n flask==2.0.0\n+mhttp==1.0.0\n"
+    respx.get(FILES).respond(
+        200, json=[{"filename": "apps/other/requirements.txt", "patch": patch}]
+    )
     await review(client, auth)
     assert [x["verdict"] for x in await review_rows(client, auth, 1)] == ["ADVISORY"]
     assert [x["verdict"] for x in await review_rows(client, auth, sid)] == ["PASS"]
@@ -969,3 +973,34 @@ async def test_older_delivery_cannot_overwrite_newer_verdicts(client, auth, rese
     await review(client, auth, at("2026-11-22T10:00:03Z", "newest-head"))  # newer still wins
     assert [x["dep_name"] for x in await review_rows(client, auth)] == ["quietpkg2"]
     assert await redis.get(cache.team_key(1)) != gen
+
+
+@respx.mock
+async def test_monorepo_services_only_review_manifests_under_their_root_path(client, auth, reseed):
+    await mkpkg("rootdep", cvss=9.8)
+    await mkpkg("webdep", cvss=9.8)
+    async with SessionLocal() as s, s.begin():
+        web = (
+            await s.execute(
+                text(
+                    "INSERT INTO service (team_id, name, repo_url, root_path) VALUES (1, 'web', "
+                    "'https://github.com/acme/api-gateway', 'web') RETURNING service_id"
+                )
+            )
+        ).scalar_one()
+
+    def patch(name):
+        return f"@@ -1 +1,2 @@\n flask==2.0.0\n+{name}==1.0.0\n"
+
+    respx.get(FILES).respond(
+        200,
+        json=[
+            {"filename": "requirements.txt", "patch": patch("rootdep")},
+            {"filename": "web/requirements.txt", "patch": patch("webdep")},
+        ],
+    )
+    assert (await post(client, payload())).status_code == 200
+    assert [x["dep_name"] for x in await review_rows(client, auth, web)] == ["webdep"]
+    # service 1 has root_path '' = the whole repository
+    both = sorted(x["dep_name"] for x in await review_rows(client, auth, 1))
+    assert both == ["rootdep", "webdep"]
