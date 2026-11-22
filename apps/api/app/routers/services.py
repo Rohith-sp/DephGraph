@@ -4,6 +4,7 @@ from typing import Any
 import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from app.auth import CurrentMember, get_current_user
@@ -199,6 +200,7 @@ async def update_service(
     service_id: BigId, body: ServicePatch, session: DbSession, member: CurrentMember
 ) -> dict[str, Any]:
     changes = body.model_dump(exclude_none=True)
+    moved = "repo_url" in changes or "root_path" in changes
     async with session.begin():
         await _admin_service(session, service_id, member)
     if "repo_url" in changes:  # a new repository is verified like a new registration
@@ -218,10 +220,13 @@ async def update_service(
                 id=service_id,
                 **changes,
             )
+            if moved:  # other files, other manifests: the head commit must import again
+                await session.execute(
+                    text("DELETE FROM service_import WHERE service_id = :id"), {"id": service_id}
+                )
     except IntegrityError:
         raise HTTPException(409, DUPLICATE) from None
     await cache.bump([team_id])
-    moved = "repo_url" in changes or "root_path" in changes  # other files, other manifests
     return ok(
         {**updated[0], "import_status": await _import(session, service_id) if moved else None}
     )

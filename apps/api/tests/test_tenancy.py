@@ -511,15 +511,9 @@ async def test_every_table_has_select_policy_except_private(rls):
         "AND NOT EXISTS ("
         "SELECT 1 FROM pg_policies p WHERE p.schemaname = 'public' AND p.tablename = c.relname)"
     )
-    assert sorted(r["relname"] for r in no_policy) == [
-        "alert_issue",
-        "alert_skip",
-        "maintainer_email",
-        "pr_gate_delivery",
-        "service_import",
-        "service_token",
-        "team_invite",
-    ]
+    from verify_schema import expected  # the migrations name the private tables (REVOKEd)
+
+    assert {r["relname"] for r in no_policy} == expected()["private"]
 
 
 # ---- scripts/add_team_member.py ---------------------------------------------------------------------

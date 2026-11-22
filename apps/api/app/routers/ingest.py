@@ -147,11 +147,16 @@ async def _record_deployment(
     seq = (
         await session.execute(
             text(
-                "INSERT INTO deployment (service_id, deploy_seq, environment, locked) "
-                "SELECT :s, COALESCE(MAX(deploy_seq), 0) + 1, :env, :locked FROM deployment "
-                "WHERE service_id = :s RETURNING deploy_seq"
+                "INSERT INTO deployment (service_id, deploy_seq, environment, locked, "
+                "manifest_ecosystems) SELECT :s, COALESCE(MAX(deploy_seq), 0) + 1, :env, :locked, "
+                "CAST(:mans AS TEXT[]) FROM deployment WHERE service_id = :s RETURNING deploy_seq"
             ),
-            {"s": service_id, "env": environment, "locked": all(g.locked for g in groups)},
+            {
+                "s": service_id,
+                "env": environment,
+                "locked": all(g.locked for g in groups),
+                "mans": [g.ecosystem for g in groups if not g.locked],
+            },
         )
     ).scalar_one()
     values = []
@@ -438,7 +443,18 @@ async def replay_manifest(
         raise HTTPException(404, "Manifest not found")
     async with session.begin():
         await require_service(session, doc["service_id"], member)
-    return ok(await _project_many(session, [doc]))
+    docs = [doc]
+    if doc.get("deploy_seqs"):  # a multi-file import is replayed whole, as one deployment
+        try:
+            docs = [
+                d
+                async for d in raw_manifests()
+                .find({"service_id": doc["service_id"], "deploy_seqs": doc["deploy_seqs"][-1]})
+                .sort("filename", 1)
+            ]
+        except PyMongoError as e:
+            raise _mongo_down(e) from e
+    return ok(await _project_many(session, docs))
 
 
 @router.post("/scan/{service_id}", response_model=Envelope[ScanResult])

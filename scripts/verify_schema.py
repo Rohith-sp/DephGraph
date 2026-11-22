@@ -1,4 +1,11 @@
-"""Assert schema shape: 31 tables, 5 views, valid FKs, indexes (003 + 008 + 010-012 + 014), RLS, 005/007/009/012/013/014 columns, migration history."""
+"""Check the live database against what the migration files declare: tables, columns, views,
+indexes, RLS, policies, private tables, valid FKs and migration history.
+
+Nothing here is a hand-kept list or count: the expected schema is parsed from apps/api/migrations/*.sql
+(CREATE TABLE / ALTER TABLE ADD|DROP COLUMN / CREATE VIEW / CREATE|DROP INDEX / REVOKE), so a new
+migration is checked the moment it exists. Private tables (API only) are the ones a migration REVOKEs
+from the Supabase roles; they must have RLS but no policy and no SELECT grant for `authenticated`.
+"""
 import asyncio
 import re
 import sys
@@ -8,12 +15,106 @@ import asyncpg
 import migrate
 from _db import DSN
 
-MIGRATIONS = "\n".join(p.read_text() for p in sorted((Path(__file__).parents[1] / "apps/api/migrations").glob("*.sql")))
-# Net index set: every CREATE INDEX in the migrations minus the ones a later migration drops (008).
-DROPPED = set(re.findall(r"DROP INDEX (?:IF EXISTS )?(\w+)", MIGRATIONS))
-INDEXES = sorted(set(re.findall(r"CREATE INDEX (?:IF NOT EXISTS )?(\w+)", MIGRATIONS)) - DROPPED)
-PRIVATE = {"maintainer_email", "pr_gate_delivery", "team_invite", "service_token", "alert_issue", "alert_skip", "service_import"}  # RLS on, no policy and no grant for `authenticated` (API only)
-COLUMNS = [("semantic_cluster", "keywords"), ("pr_risk_verdict", "reasoning"), ("maintainer", "last_active_at"), ("pr_review", "head_sha"), ("pr_review", "evaluated_at"), ("service", "root_path"), ("service", "github_repo_id"), ("team_member", "email"), ("deployment", "locked"), ("team", "alert_min_severity"), ("team", "alerts_enabled")]
+MIGRATION_DIR = Path(__file__).parents[1] / "apps/api/migrations"
+TABLE_CONSTRAINT = {"PRIMARY", "UNIQUE", "FOREIGN", "CHECK", "CONSTRAINT", "EXCLUDE", "LIKE"}
+
+
+def _top_level(body: str) -> list[str]:
+    """Split a CREATE TABLE body on the commas that are not inside parentheses."""
+    parts, depth, cur = [], 0, ""
+    for ch in body:
+        depth += ch == "("
+        depth -= ch == ")"
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    return parts + [cur]
+
+
+def expected(sql: str | None = None) -> dict:
+    """The schema the migrations declare: tables -> columns, views, indexes, private tables."""
+    if sql is None:
+        sql = "\n".join(p.read_text() for p in sorted(MIGRATION_DIR.glob("*.sql")))
+    sql = re.sub(r"--[^\n]*", "", sql)
+    columns: dict[str, set[str]] = {}
+    for m in re.finditer(r"CREATE TABLE (?:IF NOT EXISTS )?(\w+)\s*\(", sql):
+        depth, i = 1, m.end()
+        while depth:
+            depth += {"(": 1, ")": -1}.get(sql[i], 0)
+            i += 1
+        first = [re.match(r"\w+", part.strip()) for part in _top_level(sql[m.end() : i - 1])]
+        columns[m[1]] = {w[0] for w in first if w and w[0].upper() not in TABLE_CONSTRAINT}
+    for m in re.finditer(r"ALTER TABLE (\w+)([^;]*);", sql):
+        if m[1] in columns:
+            columns[m[1]] |= set(re.findall(r"ADD COLUMN (?:IF NOT EXISTS )?(\w+)", m[2]))
+            columns[m[1]] -= set(re.findall(r"DROP COLUMN (?:IF EXISTS )?(\w+)", m[2]))
+    dropped = set(re.findall(r"DROP INDEX (?:IF EXISTS )?(\w+)", sql))
+    created = set(re.findall(r"CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?(\w+)", sql))
+    private = {
+        t.strip()
+        for m in re.finditer(r"REVOKE \w+ ON ([\w, ]+?) FROM", sql)
+        for t in m[1].split(",")
+        if t.strip() in columns
+    }
+    return {
+        "columns": columns,
+        "views": set(re.findall(r"CREATE (?:OR REPLACE )?VIEW (\w+)", sql)),
+        "indexes": created - dropped,
+        "dropped": dropped,
+        "private": private,
+    }
+
+
+async def check(c: asyncpg.Connection) -> int:
+    want = expected()
+    tables = {t: set() for t in want["columns"]}
+    have_tables = await c.fetch(
+        "SELECT c.relname, c.relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname <> 'schema_migrations'"  # the runner's ledger
+    )
+    rls = {r["relname"]: r["relrowsecurity"] for r in have_tables}
+    for r in await c.fetch("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'"):
+        if r["table_name"] in tables:
+            tables[r["table_name"]].add(r["column_name"])
+    views = {r[0] for r in await c.fetch("SELECT viewname FROM pg_views WHERE schemaname = 'public'")}
+    indexes = {r[0] for r in await c.fetch("SELECT indexname FROM pg_indexes WHERE schemaname = 'public'")}
+    with_policy = {r[0] for r in await c.fetch("SELECT DISTINCT tablename FROM pg_policies WHERE schemaname = 'public' AND cmd = 'SELECT'")}
+    readable = {
+        r[0]
+        for r in await c.fetch(
+            "SELECT relname FROM pg_class WHERE relname = ANY($1) AND has_table_privilege('authenticated', oid, 'SELECT')",
+            sorted(want["private"]),
+        )
+    }
+    fks = await c.fetch("SELECT conname, convalidated FROM pg_constraint WHERE contype = 'f'")
+    try:
+        pending = [p.name for _, p, _ in (await migrate.state(c))[1]]
+    except migrate.MigrationError as e:  # an applied file was edited
+        pending = [str(e)]
+
+    names = set(want["columns"])
+    public = names - want["private"]
+    column_drift = {
+        t: sorted(want["columns"][t] ^ tables[t]) for t in names & set(rls) if want["columns"][t] != tables[t]
+    }
+    problems = {  # check -> (what was found wrong); empty = fine
+        f"Tables ({len(names)} in migrations)": sorted(names ^ set(rls)),
+        f"Columns of every table ({sum(map(len, want['columns'].values()))})": [f"{t}: {', '.join(d)}" for t, d in sorted(column_drift.items())],
+        f"Views ({len(want['views'])})": sorted(want["views"] - views),
+        f"Indexes ({len(want['indexes'])})": sorted(want["indexes"] - indexes),
+        "Dropped indexes still present": sorted(want["dropped"] & indexes),
+        f"RLS enabled ({len(names)})": sorted(t for t in names if not rls.get(t)),
+        f"SELECT policies on the {len(public)} non-private tables": sorted(public - with_policy),
+        f"Private tables ({len(want['private'])}) without policy or grant": sorted((want["private"] & with_policy) | readable),
+        "Migrations pending or changed": pending,
+    }
+    fk_bad = [f["conname"] for f in fks if not f["convalidated"]]
+    problems[f"FK constraints ({len(fks)}) valid"] = fk_bad or ([] if fks else ["none found"])
+    for name, bad in problems.items():
+        print(f"{'❌' if bad else '✅'} {name}" + (f": {', '.join(bad)}" if bad else ""))
+    return int(any(problems.values()))
 
 
 async def main() -> int:
@@ -24,43 +125,5 @@ async def main() -> int:
         await c.close()
 
 
-async def check(c: asyncpg.Connection) -> int:
-    rows = lambda q, *a: c.fetch(q, *a)  # noqa: E731
-    tables = await rows(
-        "SELECT c.relname, c.relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-        "WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname <> 'schema_migrations'"  # the runner's ledger
-    )
-    views = await rows("SELECT viewname FROM pg_views WHERE schemaname = 'public' AND viewname LIKE 'v\\_%'")
-    fks = await rows("SELECT conname, convalidated FROM pg_constraint WHERE contype = 'f'")
-    idx = await rows("SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname = ANY($1)", INDEXES)
-    pol = await rows("SELECT DISTINCT tablename FROM pg_policies WHERE schemaname = 'public' AND cmd = 'SELECT' AND tablename <> 'schema_migrations'")
-    gone = await rows("SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname = ANY($1)", sorted(DROPPED))
-    leaks = await rows("SELECT relname FROM pg_class WHERE relname = ANY($1) AND has_table_privilege('authenticated', oid, 'SELECT')", sorted(PRIVATE))
-    try:
-        pending = len((await migrate.state(c))[1])
-    except migrate.MigrationError:  # an applied file was edited
-        pending = -1
-    cols = await rows(
-        "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'"
-    )
-
-    checks = [
-        ("Tables", len(tables), 31),
-        ("Views", len(views), 5),
-        ("Indexes", len(idx), len(INDEXES)),
-        ("Dropped indexes still present (008)", len(gone), 0),
-        ("Columns from 005/007/009/012/013/014", sum((t, col) in {(r[0], r[1]) for r in cols} for t, col in COLUMNS), len(COLUMNS)),
-        ("RLS enabled", sum(t["relrowsecurity"] for t in tables), 31),
-        ("SELECT policies", len(pol), 31 - len(PRIVATE)),
-        ("Private tables readable by authenticated", len(leaks), 0),
-        ("Migrations pending or changed", pending, 0),
-    ]
-    ok = all(a == b for _, a, b in checks)
-    fk_ok = bool(fks) and all(f["convalidated"] for f in fks)
-    for name, a, b in checks:
-        print(f"{'✅' if a == b else '❌'} {name}: {a}/{b}")
-    print(f"{'✅' if fk_ok else '❌'} FK constraints: {'all valid' if fk_ok else 'invalid or missing'} ({len(fks)})")
-    return 0 if ok and fk_ok else 1
-
-
-sys.exit(asyncio.run(main()))
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))

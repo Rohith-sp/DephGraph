@@ -39,6 +39,8 @@ class Team(Base):
     team_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(120), unique=True)
     slug: Mapped[str] = mapped_column(String(80), unique=True)
+    alert_min_severity: Mapped[str] = mapped_column(Text, server_default="HIGH")
+    alerts_enabled: Mapped[bool] = mapped_column(Boolean, server_default="false")
     created_at: Mapped[datetime] = _now()
 
 
@@ -139,6 +141,9 @@ class Deployment(Base):
     locked: Mapped[bool] = mapped_column(
         Boolean, server_default="false"
     )  # ingested from a lockfile
+    manifest_ecosystems: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default="{}"
+    )  # ecosystems whose edges come from depends_on (the rest: deployment_edge)
 
 
 class PackageVersion(Base):

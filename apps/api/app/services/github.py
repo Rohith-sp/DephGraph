@@ -41,22 +41,6 @@ def app_jwt() -> str:
     return jwt.encode(claims, pem, algorithm="RS256")
 
 
-async def installation_token(client: httpx.AsyncClient, installation_id: int) -> str | None:
-    """None (logged) when minting fails: public repos still get evaluated, just no Check Run."""
-    try:
-        r = await http.request(
-            client,
-            "POST",
-            f"{API}/app/installations/{installation_id}/access_tokens",
-            headers={**HEADERS, "Authorization": f"Bearer {app_jwt()}"},
-        )
-        r.raise_for_status()
-        return r.json()["token"]
-    except (httpx.HTTPError, jwt.PyJWTError, ValueError, KeyError) as e:
-        log.warning("installation_token_failed", installation=installation_id, error=str(e))
-        return None
-
-
 async def repo_access(client: httpx.AsyncClient, full_name: str) -> tuple[int, int] | None:
     """(installation id, repository id) when the App is installed on `full_name`, else None.
 
@@ -334,6 +318,6 @@ async def repo_token(
     try:
         return await scoped_token(client, installation_id, repo, permissions)
     except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:  # installation removed
+        if e.response.status_code in (404, 422):  # installation removed / repo not selected in it
             return None
         raise

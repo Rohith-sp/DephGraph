@@ -22,11 +22,11 @@ import type { Result } from "@/lib/run";
 function useAction() {
   const router = useRouter();
   const [pending, start] = useTransition();
-  const act = (fn: () => Promise<Result<unknown>>, done: string, then?: (v: unknown) => void) =>
+  const act = (fn: () => Promise<Result<unknown>>, done: string | ((v: unknown) => string), then?: (v: unknown) => void) =>
     start(async () => {
       const r = await fn();
       if (!r.ok) return void toast.error(r.error);
-      toast.success(done);
+      toast.success(typeof done === "function" ? done(r.value) : done);
       then?.(r.value);
       router.refresh();
     });
@@ -123,6 +123,20 @@ export function MemberControls({ teamId, userId, role }: { teamId: number; userI
   );
 }
 
+function importMessage(status: string | null | undefined, repo: string) {
+  switch (status) {
+    case "imported":
+    case "unchanged":
+      return "Service added, dependencies imported";
+    case "not_installed":
+      return `Service added. Install the DephGraph GitHub App on ${repo} to import dependencies`;
+    case "failed":
+      return "Service added. The import failed and will retry on the next push";
+    default:
+      return "Service added";
+  }
+}
+
 export function AddServiceForm({ teams }: { teams: { team_id: number; name: string }[] }) {
   const { pending, act } = useAction();
   return (
@@ -132,10 +146,10 @@ export function AddServiceForm({ teams }: { teams: { team_id: number; name: stri
         e.preventDefault();
         const form = e.currentTarget;
         const f = new FormData(form);
+        const repo = String(f.get("repo"));
         act(
-          () =>
-            addService(Number(f.get("team")), String(f.get("repo")), String(f.get("name")), String(f.get("root"))),
-          "Service added",
+          () => addService(Number(f.get("team")), repo, String(f.get("name")), String(f.get("root"))),
+          (v) => importMessage((v as { import_status?: string | null }).import_status, repo),
           () => form.reset(),
         );
       }}

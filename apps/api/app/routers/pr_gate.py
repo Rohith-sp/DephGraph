@@ -6,6 +6,7 @@ import uuid
 from typing import Annotated, Any
 
 import httpx
+import jwt
 import structlog
 from fastapi import (
     APIRouter,
@@ -32,6 +33,7 @@ from app.services.queries import (
 log = structlog.get_logger()
 router = APIRouter(prefix="/pr-gate", tags=["pr-gate"])
 ACTIONS = {"opened", "synchronize", "reopened"}
+PERMISSIONS = {"contents": "read", "pull_requests": "read", "checks": "write"}
 
 
 def _valid_signature(body: bytes, header: str | None) -> bool:
@@ -124,6 +126,16 @@ async def attempt(
     return result
 
 
+async def _token(client: httpx.AsyncClient, full_name: str, install_id: int) -> str | None:
+    """Token scoped to the repo; None (logged) when minting fails: public repos still get
+    evaluated, just no Check Run."""
+    try:
+        return await github.repo_token(client, full_name, PERMISSIONS, install_id)
+    except (httpx.HTTPError, jwt.PyJWTError, ValueError, KeyError) as e:
+        log.warning("installation_token_failed", installation=install_id, error=str(e))
+        return None
+
+
 async def process(payload: dict[str, Any], delivery_id: str, started: float) -> dict[str, Any]:
     """Evaluate the PR and post the Check Run (neutral when evaluation fails, then re-raise)."""
     pr, number, head_sha, _, full_name, html_url = _parse(payload)
@@ -133,7 +145,7 @@ async def process(payload: dict[str, Any], delivery_id: str, started: float) -> 
     async with httpx.AsyncClient(timeout=15) as client:
         try:
             if github.configured() and install_id:
-                token = await github.installation_token(client, install_id)
+                token = await _token(client, full_name, install_id)
             verdict = await _evaluate_and_store(client, pr, number, full_name, html_url, token)
             if verdict is None:
                 log.info("pr_gate_skipped", reason="repository not registered", **ctx)

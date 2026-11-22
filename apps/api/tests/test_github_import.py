@@ -6,12 +6,13 @@ import json
 import uuid
 from pathlib import Path
 
+import httpx
 import pytest
 import respx
 from sqlalchemy import text
 
 from app.config import settings
-from app.database import SessionLocal
+from app.database import SessionLocal, get_mongo
 from app.services import github, github_import
 from tests.github_app import API, configure_app, installed, not_installed
 from tests.test_pr_gate import SECRET, post
@@ -346,6 +347,109 @@ async def test_all_manifests_become_one_deployment_and_a_lockfile_beats_its_mani
     assert await scalar(edges, q=q) > 0  # pypi came from the lockfile
     locked = "SELECT locked FROM deployment WHERE service_id = 1 AND deploy_seq = :q"
     assert await scalar(locked, q=q) is False  # package.json is a plain manifest
+
+
+async def test_replaying_one_file_replays_the_whole_import(client, auth, reseed):
+    before = await deployments(1)
+    with mock_upstreams() as router:
+        installed(REPO, router=router)
+        head(router)
+        listing(router, "", ["requirements.txt", "package.json"])
+        raw(router, "requirements.txt")
+        raw(router, "package.json", (FIXTURES / "package_react.json").read_text())
+        await post(client, push(), event="push")
+        doc = await get_mongo()["raw_manifests"].find_one(
+            {"service_id": 1, "filename": "requirements.txt"}
+        )
+        r = await client.post(f"/ingest/replay/{doc['_id']}", headers=auth)
+    assert r.status_code == 200, r.text
+    assert await deployments(1) == before + 2
+    ecosystems = await scalar(
+        "SELECT array_agg(DISTINCT p.ecosystem) FROM resolves_to r JOIN package p USING (package_id) "
+        "WHERE r.service_id = 1 AND r.deploy_seq = :q",
+        q=before + 2,
+    )
+    assert sorted(ecosystems) == ["npm", "pypi"]  # not just the replayed requirements.txt
+
+
+async def test_mixed_deployment_takes_depends_on_edges_only_for_manifest_ecosystems(
+    client, auth, reseed
+):
+    with mock_upstreams() as router:
+        installed(REPO, router=router)
+        head(router)
+        listing(router, "", ["uv.lock", "package.json"])
+        raw(router, "uv.lock", (FIXTURES / "uv.lock").read_text())
+        raw(router, "package.json", (FIXTURES / "package_react.json").read_text())
+        await post(client, push(("uv.lock",)), event="push")
+    ids = {
+        n: await scalar(
+            "SELECT package_id FROM package WHERE name = :n AND ecosystem = 'pypi'", n=n
+        )
+        for n in ("flask", "werkzeug")
+    }
+    await run_sql(  # another project resolved werkzeug -> flask: it must not appear here
+        "INSERT INTO depends_on (dep_package_id, dep_version_string, ref_package_id, "
+        "ref_version_string) VALUES (:w, '3.0.1', :f, '3.0.0') ON CONFLICT DO NOTHING",
+        w=ids["werkzeug"],
+        f=ids["flask"],
+    )
+    graph = (await client.get("/services/1/graph", headers=auth)).json()["data"]
+    edges = {(e["source"], e["target"]) for e in graph["edges"]}
+    flask, werk = f"{ids['flask']}@3.0.0", f"{ids['werkzeug']}@3.0.1"
+    assert (flask, werk) in edges and (werk, flask) not in edges
+
+
+async def test_a_moved_service_imports_the_same_commit_again(client, reseed):
+    from tests.test_onboarding import hdr, new_team
+
+    h = hdr(uuid.uuid4())
+    tid = await new_team(client, h)
+    with mock_upstreams() as router:
+        installed("acme/shop", router=router, installation=77)
+        router.get(f"{API}/repos/acme/shop").respond(
+            200, json={"id": 555, "default_branch": "main"}
+        )
+        head_ref = router.get(f"{API}/repos/acme/shop/git/ref/heads/main")
+        head_ref.respond(200, json={"object": {"sha": SHA}})
+        router.get(f"{API}/repos/acme/shop/contents").respond(404)
+        router.get(f"{API}/repos/acme/shop/contents/api").respond(404)
+        body = {"team_id": tid, "repo_url": "https://github.com/acme/shop"}
+        r = await client.post("/services", json=body, headers=h)
+        assert r.json()["data"]["import_status"] == "imported"
+        sid = r.json()["data"]["service_id"]
+        again = await client.patch(f"/services/{sid}", json={"name": "x"}, headers=h)
+        assert again.json()["data"]["import_status"] is None
+        moved = await client.patch(f"/services/{sid}", json={"root_path": "api"}, headers=h)
+        assert moved.json()["data"]["import_status"] == "imported"  # not "unchanged"
+
+
+async def test_reinstall_refreshes_the_installation_id_and_still_matches(client, reseed):
+    await run_sql(
+        "UPDATE service SET github_repo_id = 111, github_installation_id = 4 WHERE service_id = 1"
+    )
+    body = {
+        "action": "added",
+        "installation": {"id": 5},
+        "repositories_added": [{"id": 111, "full_name": REPO}],
+    }
+    with mock_upstreams() as router:
+        installed(REPO, router=router)
+        router.get(f"{API}/repos/{REPO}").respond(200, json={"default_branch": "main"})
+        head(router)
+        listing(router, "", ["requirements.txt"])
+        raw(router, "requirements.txt")
+        r = await post(client, body, event="installation_repositories")
+    assert r.json()["data"] == {"services": 1, "imported": 1}
+    assert await scalar("SELECT github_installation_id FROM service WHERE service_id = 1") == 5
+
+
+@respx.mock
+async def test_token_for_a_repo_outside_the_installation_selection_is_none(monkeypatch):
+
+    respx.post(f"{API}/app/installations/5/access_tokens").respond(422, json={})
+    async with httpx.AsyncClient() as c:
+        assert await github.repo_token(c, REPO, {"contents": "read"}, 5) is None
 
 
 async def test_lockfile_only_import_is_a_locked_deployment(client, reseed):

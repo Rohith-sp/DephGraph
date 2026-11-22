@@ -283,6 +283,17 @@ async def handle(event: str, payload: dict[str, Any]) -> dict[str, Any]:
             added = payload.get(
                 "repositories_added" if event == "installation_repositories" else "repositories"
             )
+            ids = [r["id"] for r in added or [] if r.get("id")]
+            if installation_id and ids:  # a reinstall comes with a new installation id
+                async with session.begin():
+                    await session.execute(
+                        text(
+                            "UPDATE service SET github_installation_id = :i "
+                            "WHERE github_repo_id = ANY(:ids) "
+                            "AND github_installation_id IS DISTINCT FROM :i"
+                        ),
+                        {"i": installation_id, "ids": ids},
+                    )
             results = [
                 await _import_default(session, svc, installation_id)
                 for repo in added or []

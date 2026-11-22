@@ -824,6 +824,20 @@ async def test_failure_posts_neutral_check_run_and_returns_502(
 
 
 @respx.mock
+async def test_pr_gate_token_is_scoped_to_the_repo(client, auth, monkeypatch, reseed):
+    configure_app(monkeypatch)
+    token = respx.post(TOKEN_URL).respond(201, json={"token": "ghs_x"})
+    respx.post(CHECKS).respond(201, json={})
+    files("scopeddep")
+    await mkpkg("scopeddep")
+    await review(client, auth)
+    assert json.loads(token.calls[0].request.content) == {
+        "repositories": ["api-gateway"],
+        "permissions": {"contents": "read", "pull_requests": "read", "checks": "write"},
+    }
+
+
+@respx.mock
 async def test_token_failure_still_evaluates_without_check_run(
     client, auth, monkeypatch, reseed
 ):  # B8

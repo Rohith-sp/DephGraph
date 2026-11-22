@@ -23,10 +23,15 @@ NODES_SQL = """
         WHERE rt.service_id = :s AND rt.deploy_seq = :q
         ORDER BY rt.depth, p.name
         """
+# depends_on edges count for the ecosystems the deployment took from manifests; an unlocked
+# deployment written outside ingest (seeds, manual rows) records none and is all manifest-sourced.
 EDGES_SQL = """
         SELECT d.dep_package_id, d.dep_version_string, d.ref_package_id, d.ref_version_string
         FROM depends_on d
-        JOIN deployment dp ON dp.service_id = :s AND dp.deploy_seq = :q AND NOT dp.locked
+        JOIN deployment dp ON dp.service_id = :s AND dp.deploy_seq = :q
+        JOIN package dpk ON dpk.package_id = d.dep_package_id
+                        AND (dpk.ecosystem = ANY(dp.manifest_ecosystems)
+                             OR (NOT dp.locked AND dp.manifest_ecosystems = '{}'))
         JOIN resolves_to a ON (a.package_id, a.version_string)
                             = (d.dep_package_id, d.dep_version_string)
                           AND a.service_id = :s AND a.deploy_seq = :q

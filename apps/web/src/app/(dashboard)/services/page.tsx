@@ -6,6 +6,8 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { api, getMe } from "@/lib/api";
 import type { Service } from "@/lib/types";
 
+export const maxDuration = 300; // adding a service imports its repository inside the request
+
 export default async function ServicesPage() {
   const [services, me] = await Promise.all([api<Service[]>("/services"), getMe()]);
   const adminTeams = me.teams.filter((t) => t.role === "admin");
