@@ -3,6 +3,8 @@
 This note supplements the ER, relational, normalization, and relational-algebra work. The
 coursework database examples use MySQL 8.4 and `er-diagram/schema.sql`; the running application uses
 the separate PostgreSQL schema described in [the schema mapping](../er-diagram/README.md#course-schema-and-product-schema).
+PostgreSQL is the system of record (team decision, 22 November 2026); the MySQL schema is the
+coursework demonstration of the normalised design.
 
 ## Phase 4 — SQL implementation
 

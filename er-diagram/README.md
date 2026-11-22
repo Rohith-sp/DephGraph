@@ -302,6 +302,12 @@ model the same supply-chain domain, but the product schema has evolved to suppor
 operational workflows; it is not a byte-for-byte implementation of the coursework schema. Neither
 schema is being presented as a migration of the other.
 
+**Team decision (22 November 2026):** PostgreSQL is the system of record for DephGraph. The running
+application, its data and all product features use the PostgreSQL schema in `apps/api/migrations/`.
+The MySQL 8.4 schema stays as the coursework demonstration of the normalised design (Phases 4–5:
+constraint demos, Q1–Q7, complex SQL, transactions). The synopsis said "MySQL 8.0"; the report
+explains this change and uses the table below as the mapping between the two.
+
 | Area | Coursework design / MySQL | Product / PostgreSQL | Why they differ |
 |---|---|---|---|
 | Package clustering | `package.cluster_id` | `package_version.cluster_id` | The coursework groups packages; the product assigns clustering output to versions. |
