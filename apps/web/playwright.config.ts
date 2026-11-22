@@ -6,6 +6,11 @@ import { AUTH_DISABLED, STATE, TEAM2_USER_ID } from "./e2e/credentials";
 // AUTH_DISABLED=true (+ DEV_API_TOKEN) is the CI mode; otherwise real Supabase auth.
 const env = { AUTH_DISABLED: process.env.AUTH_DISABLED ?? "", DEV_API_TOKEN: process.env.DEV_API_TOKEN ?? "" };
 
+// E2E_BASE_URL: run the suite against an already running web server (compose, a deployment) instead
+// of spawning `npm run start`. The API-down (:3100) and team-2 (:3200) servers are still spawned
+// locally, so a build must exist; the browser reaches the main API through that server's own API_URL.
+const baseURL = process.env.E2E_BASE_URL ?? "http://localhost:3000";
+
 // Dev token of the single-team user; only needed (and only valid) in AUTH_DISABLED mode.
 const team2Token = AUTH_DISABLED
   ? execFileSync(
@@ -22,9 +27,11 @@ export default defineConfig({
   workers: 1,
   expect: { timeout: 10_000 },
   reporter: process.env.CI ? "github" : "list",
-  use: { baseURL: "http://localhost:3000", storageState: AUTH_DISABLED ? undefined : STATE },
+  use: { baseURL, storageState: AUTH_DISABLED ? undefined : STATE },
   webServer: [
-    { command: "npm run start", port: 3000, reuseExistingServer: !process.env.CI, env },
+    ...(process.env.E2E_BASE_URL
+      ? []
+      : [{ command: "npm run start", port: 3000, reuseExistingServer: !process.env.CI, env }]),
     // Same build pointed at a closed port: the "API is down" case in errors.spec.ts.
     {
       command: "npx next start -p 3100",

@@ -1,4 +1,3 @@
-import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -28,24 +27,16 @@ from app.routers import (
     stats,
     vulnerabilities,
 )
-from app.services import cluster_engine, pr_gate_engine
+from app.services import pr_gate_engine
 
 configure_logging()
 log = structlog.get_logger()
 
 
-def _log_preload(task: "asyncio.Task[object]") -> None:
-    if not task.cancelled() and (exc := task.exception()):
-        log.error("model_preload_failed", error=str(exc))
-
-
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     log.info("startup", environment=settings.environment)
     await ensure_indexes()
-    if settings.environment == "production":  # load the SBERT model off the event loop
-        app.state.model_task = asyncio.create_task(asyncio.to_thread(cluster_engine.load_model))
-        app.state.model_task.add_done_callback(_log_preload)
     yield
     await pr_gate_engine.close_groq()
     await close_all()

@@ -1,13 +1,15 @@
+import json
 import warnings
 import zlib
 
 import numpy as np
 import pytest
+import respx
 from sqlalchemy import text
 
 from app.config import settings
 from app.database import SessionLocal, get_mongo, get_redis
-from app.services import cluster_engine
+from app.jobs import cluster as cluster_engine
 
 
 def fake_encode(texts: list[str]) -> np.ndarray:
@@ -25,9 +27,18 @@ def fake_model(monkeypatch):
     monkeypatch.setattr(cluster_engine, "encode", fake_encode)
 
 
+@pytest.fixture(autouse=True)
+def keep_clients_open(monkeypatch):
+    """The job closes its clients on exit; the test session shares them."""
+
+    async def noop() -> None:
+        return None
+
+    monkeypatch.setattr(cluster_engine, "close_all", noop)
+
+
 async def test_recompute_replaces_clusters(client, auth, fake_model, reseed):
-    r = await client.post("/clusters/recompute", headers=auth)
-    assert r.status_code == 202 and r.json()["data"]["status"] == "accepted"
+    assert await cluster_engine.main() == 0
     assert await get_redis().get(cluster_engine.LOCK_KEY) is None  # released
 
     clusters = (await client.get("/clusters", headers=auth)).json()["data"]
@@ -57,22 +68,70 @@ async def test_recompute_replaces_clusters(client, auth, fake_model, reseed):
     assert all(x["package_count"] > 1 for x in red.json()["data"])
 
 
-async def test_recompute_lock_held(client, auth, monkeypatch):
+CRON = {"X-Cron-Secret": "test-cron-secret"}
+DISPATCH = "https://api.github.com/repos/acme/dephgraph/actions/workflows/cluster.yml/dispatches"
+
+
+@pytest.fixture
+def dispatch_configured(monkeypatch):
+    monkeypatch.setattr(settings, "github_dispatch_token", "ghp_test")
+    monkeypatch.setattr(settings, "github_repository", "acme/dephgraph")
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "path,headers", [("/clusters/recompute", "auth"), ("/internal/cluster-recompute", CRON)]
+)
+async def test_recompute_dispatches_workflow(client, auth, dispatch_configured, path, headers):
+    route = respx.post(DISPATCH).respond(204)
+    r = await client.post(path, headers=auth if headers == "auth" else headers)
+    assert r.status_code == 202 and r.json() == {"data": {"status": "dispatched"}, "error": None}
+    sent = route.calls[0].request
+    assert sent.headers["authorization"] == "Bearer ghp_test"
+    assert json.loads(sent.content) == {"ref": "main"}
+
+
+@respx.mock
+async def test_recompute_without_dispatch_config_is_503(client, auth):
+    r = await client.post("/clusters/recompute", headers=auth)
+    assert r.status_code == 503 and "GitHub Actions" in r.json()["error"]
+    assert r.json()["data"] is None and not respx.calls
+
+
+@respx.mock
+async def test_recompute_github_rejection_is_502(client, auth, dispatch_configured):
+    respx.post(DISPATCH).respond(404, json={"message": "Not Found"})
+    assert (await client.post("/clusters/recompute", headers=auth)).status_code == 502
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "path,headers", [("/clusters/recompute", "auth"), ("/internal/cluster-recompute", CRON)]
+)
+async def test_recompute_lock_held(client, auth, dispatch_configured, path, headers):
+    await get_redis().set(cluster_engine.LOCK_KEY, "1", ex=60)
+    r = await client.post(path, headers=auth if headers == "auth" else headers)
+    assert r.status_code == 202 and r.json()["data"]["status"] == "already_running"
+    assert not respx.calls  # nothing dispatched while the job runs
+
+
+async def test_job_skips_when_lock_held(monkeypatch):
     async def boom(*_args) -> int:
         raise AssertionError("must not run")
 
     monkeypatch.setattr(cluster_engine, "recompute", boom)
-    await get_redis().set(cluster_engine.LOCK_KEY, "1", ex=60)
-    r = await client.post("/clusters/recompute", headers=auth)
-    assert r.status_code == 202 and r.json()["data"]["status"] == "already_running"
+    await get_redis().set(cluster_engine.LOCK_KEY, "other", ex=60)
+    assert await cluster_engine.main() == 0
+    assert await get_redis().get(cluster_engine.LOCK_KEY) == "other"  # not ours: untouched
 
 
-CRON = {"X-Cron-Secret": "test-cron-secret"}
+async def test_job_failure_exits_1_and_releases_lock(monkeypatch):
+    async def boom(*_args) -> int:
+        raise RuntimeError("model exploded")
 
-
-async def test_internal_recompute_accepted(client, fake_model, reseed):
-    r = await client.post("/internal/cluster-recompute", headers=CRON)
-    assert r.status_code == 202 and r.json()["data"]["status"] == "accepted"
+    monkeypatch.setattr(cluster_engine, "recompute", boom)
+    assert await cluster_engine.main() == 1
+    assert await get_redis().get(cluster_engine.LOCK_KEY) is None
 
 
 @pytest.mark.parametrize("headers", [{}, {"X-Cron-Secret": "wrong"}])
@@ -88,15 +147,6 @@ async def test_internal_recompute_lock_held(client, monkeypatch):
     await get_redis().set(cluster_engine.LOCK_KEY, "1", ex=60)
     r = await client.post("/internal/cluster-recompute", headers=CRON)
     assert r.status_code == 202 and r.json()["data"]["status"] == "already_running"
-
-
-async def test_recompute_failure_releases_lock(client, auth, monkeypatch):
-    async def boom(*_args) -> int:
-        raise RuntimeError("model exploded")
-
-    monkeypatch.setattr(cluster_engine, "recompute", boom)
-    assert (await client.post("/clusters/recompute", headers=auth)).status_code == 202
-    assert await get_redis().get(cluster_engine.LOCK_KEY) is None
 
 
 async def test_release_with_stale_token_keeps_new_lock():
@@ -134,8 +184,7 @@ async def test_recompute_drops_stale_embeddings(client, auth, fake_model, reseed
     await emb.update_one(
         {"package_id": 999_999}, {"$set": {"embedding": [0.0], "cluster_id": 1}}, upsert=True
     )
-    r = await client.post("/clusters/recompute", headers=auth)
-    assert r.status_code == 202
+    assert await cluster_engine.main() == 0
     assert await emb.count_documents({"package_id": 999_999}) == 0
 
 
@@ -182,19 +231,6 @@ async def test_lock_stolen_mid_run_aborts_without_writing(monkeypatch, reseed): 
     assert await _cluster_ids() == before  # no DELETE/INSERT happened
     assert await emb.count_documents({"marker": "baseline"}) == await emb.count_documents({})
     assert await redis.get(cluster_engine.LOCK_KEY) == "run-b"  # B's lock was not released by A
-
-
-async def test_second_start_refused_until_release():
-    from fastapi import BackgroundTasks
-
-    redis = get_redis()
-    tasks = BackgroundTasks()
-    assert await cluster_engine.start(tasks) == "accepted"
-    assert await cluster_engine.start(BackgroundTasks()) == "already_running"
-    token = await redis.get(cluster_engine.LOCK_KEY)
-    await cluster_engine.release(redis, token)
-    assert await cluster_engine.start(BackgroundTasks()) == "accepted"
-    await redis.delete(cluster_engine.LOCK_KEY)
 
 
 def test_top_keywords_survive_empty_vocabulary():  # B14

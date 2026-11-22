@@ -11,11 +11,12 @@ import pytest
 
 from app import auth as auth_module
 from app.database import SessionLocal, engine, get_redis
+from app.jobs import cluster as cluster_engine
 from app.models.mongo import ensure_indexes
 from app.routers.vulnerabilities import MINE, SELECT
 from app.schemas import analysis as schemas
 from app.schemas.common import Envelope, Page
-from app.services import cache, cluster_engine, maintainers
+from app.services import cache, maintainers
 from app.services.queries import PRUNABLE_SQL, open_vuln_rows, rows
 from tests.conftest import TEST_DSN
 from tests.test_clusters import fake_encode

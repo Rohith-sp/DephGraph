@@ -1,8 +1,10 @@
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ROOT = Path(__file__).resolve().parents[3]
+_parents = Path(__file__).resolve().parents
+ROOT = _parents[min(3, len(_parents) - 1)]  # repo root (.env.local); a shallow deploy path has none
 
 
 class Settings(BaseSettings):
@@ -24,11 +26,16 @@ class Settings(BaseSettings):
     )
     github_app_id: str = ""
     github_private_key_base64: str = ""
+    github_dispatch_token: str = ""  # PAT / fine-grained token with Actions: write on the repo
+    github_repository: str = ""  # owner/name; where cluster.yml is dispatched
     environment: str = "development"
     cors_origins: list[str] = ["http://localhost:3000"]
     rate_limit: str = "100/minute"  # per client IP, all routes except /health
-    # Reverse proxies in front of the app (Render = 1). 0 = ignore X-Forwarded-For.
+    # Reverse proxies in front of the app (Vercel overwrites X-Forwarded-For with the client IP = 1).
+    # 0 = ignore X-Forwarded-For.
     trusted_proxy_hops: int = 1
+    # Vercel sets VERCEL=1 in every deployment; true = serverless connection settings.
+    serverless: bool = Field(default=False, validation_alias="VERCEL")
 
 
 settings = Settings()

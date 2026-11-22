@@ -9,12 +9,10 @@ import httpx
 import structlog
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     Header,
     HTTPException,
     Request,
-    Response,
 )
 
 from app.auth import CurrentMember, get_current_user
@@ -50,14 +48,12 @@ def normalize_repo_url(url: str) -> str:
     return re.sub(_REPO_URL_TAIL, "", re.sub(r"^http://", "https://", url.strip().lower()))
 
 
-# PRD §8 asks for a synchronous verdict "under 30s"; GitHub drops a delivery that has not been
-# answered within 10s, so the webhook acknowledges with 202 and the review runs as a background
-# task. Results are read from GET /pr-gate/verdicts/{service_id} and posted as a Check Run.
+# Synchronous, as the PRD asks (verdict < 30s). GitHub drops a delivery unanswered after 10s, so it
+# talks to the Next.js route (apps/web/src/app/api/webhooks/github), which acknowledges at once and
+# forwards here inside `after()`; Python on Vercel cannot keep working after its response.
 @router.post("/webhook")
 async def webhook(
     request: Request,
-    response: Response,
-    tasks: BackgroundTasks,
     x_github_event: Annotated[str | None, Header()] = None,
     x_hub_signature_256: Annotated[str | None, Header()] = None,
     x_github_delivery: Annotated[str | None, Header()] = None,
@@ -79,26 +75,8 @@ async def webhook(
     if action not in ACTIONS:
         return ok({"skipped": True})
     install_id = (payload.get("installation") or {}).get("id")
-    tasks.add_task(
-        _review, pr, number, head_sha, full_name, html_url, install_id, started, x_github_delivery
-    )
-    response.status_code = 202
-    return ok({"accepted": True, "delivery_id": x_github_delivery})
-
-
-async def _review(
-    pr: dict[str, Any],
-    number: int,
-    head_sha: str,
-    full_name: str,
-    html_url: str,
-    install_id: int | None,
-    started: float,
-    delivery_id: str | None,
-) -> None:
-    """Background job with its own sessions; any failure is logged and surfaced as a Check Run."""
+    ctx = {"delivery": x_github_delivery, "repo": full_name, "pr": number}
     token: str | None = None
-    ctx = {"delivery": delivery_id, "repo": full_name, "pr": number}
     async with httpx.AsyncClient(timeout=15) as client:
         try:
             if github.configured() and install_id:
@@ -106,24 +84,31 @@ async def _review(
             verdict = await _evaluate_and_store(client, pr, number, full_name, html_url, token)
             if verdict is None:
                 log.info("pr_gate_skipped", reason="repository not registered", **ctx)
-                return
-            overall, summary = verdict
-            log.info(
-                "pr_gate_done", verdict=overall, ms=int((time.monotonic() - started) * 1000), **ctx
-            )
-        except Exception as e:  # noqa: BLE001 -- background job: log, never lose silently
+                return ok({"skipped": True})
+            overall, stage, summary, deps = verdict
+            ms = int((time.monotonic() - started) * 1000)
+            log.info("pr_gate_done", verdict=overall, ms=ms, **ctx)
+            result = {
+                "pr_number": number,
+                "verdict": overall,
+                "stage_reached": stage,
+                "processing_ms": ms,
+                "deps": deps,
+            }
+        except Exception as e:  # noqa: BLE001 -- surfaced as a neutral Check Run, then a 502
             log.exception("pr_gate_failed", **ctx)
-            overall, summary = (
-                "ADVISORY",
-                f"DephGraph could not evaluate this PR: {type(e).__name__}",
-            )
+            overall, result = "ADVISORY", None
+            summary = f"DephGraph could not evaluate this PR: {type(e).__name__}"
         if not token:
             log.info("check_run_skipped", reason="no installation token", **ctx)
-            return
-        try:
-            await github.post_check_run(client, full_name, head_sha, token, overall, summary)
-        except httpx.HTTPError as e:
-            log.warning("check_run_failed", error=str(e), **ctx)
+        else:
+            try:
+                await github.post_check_run(client, full_name, head_sha, token, overall, summary)
+            except httpx.HTTPError as e:
+                log.warning("check_run_failed", error=str(e), **ctx)
+    if result is None:
+        raise HTTPException(502, summary)
+    return ok(result)
 
 
 async def _evaluate_and_store(
@@ -133,8 +118,9 @@ async def _evaluate_and_store(
     full_name: str,
     html_url: str,
     token: str | None,
-) -> tuple[str, str] | None:
-    """Review the PR for every service registered for the repo; (worst verdict, summary)."""
+) -> tuple[str, int, str, list[dict[str, Any]]] | None:
+    """Review the PR for every service registered for the repo (None when none is):
+    (worst verdict, highest stage, Check Run summary, per-dependency results)."""
     async with SessionLocal() as session, session.begin():
         services = await rows(
             session,
@@ -144,7 +130,9 @@ async def _evaluate_and_store(
     if not services:
         return None
     deps, notes = await github.pr_added_deps(client, full_name, number, token)
-    worst, lines = "PASS", []
+    everything: list[pr_gate_engine.DepVerdict] = []
+    deps_out: list[dict[str, Any]] = []
+    lines: list[str] = []
     for svc in services:
         sid = svc["service_id"]
         # no DB transaction is held across Groq calls: short read tx, then short write tx
@@ -166,11 +154,22 @@ async def _evaluate_and_store(
                 stored = await pr_gate_engine.store_verdicts(session, sid, number, pr, results)
             if stored:
                 await cache.bump()
-        verdict, _ = pr_gate_engine.overall(results)
-        worst = max(worst, verdict, key=pr_gate_engine.RANK.__getitem__)
+        everything += results
+        deps_out += [
+            {
+                "service": svc["name"],
+                "name": d.name,
+                "version": d.version,
+                "verdict": d.verdict,
+                "stage_reached": d.stage_reached,
+                "reasoning": d.reasoning,
+            }
+            for d in results
+        ]
         prefix = f"{svc['name']}: " if len(services) > 1 else ""
         lines += [f"- {prefix}{d.name} {d.version}: {d.verdict} ({d.reasoning})" for d in results]
-    return worst, "\n".join(lines) or "No new dependencies."
+    worst, stage = pr_gate_engine.overall(everything)
+    return worst, stage, "\n".join(lines) or "No new dependencies.", deps_out
 
 
 @router.get(

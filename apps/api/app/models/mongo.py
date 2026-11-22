@@ -1,5 +1,7 @@
 """MongoDB collection helpers + index setup (PRD §6)."""
 
+import asyncio
+
 import structlog
 from pymongo.asynchronous.collection import AsyncCollection
 from pymongo.asynchronous.database import AsyncDatabase
@@ -44,9 +46,13 @@ async def ensure_indexes(db: AsyncDatabase | None = None) -> bool:
         for name, idx in (await db["raw_manifests"].index_information()).items():
             if idx["key"] == [("sha256", 1)] and idx.get("unique"):
                 await db["raw_manifests"].drop_index(name)
-        for name, indexes in specs.items():
-            for keys, opts in indexes:
-                await db[name].create_index(keys, **opts)
+        await asyncio.gather(  # one round trip of latency instead of ten (runs per cold start)
+            *(
+                db[name].create_index(keys, **opts)
+                for name, indexes in specs.items()
+                for keys, opts in indexes
+            )
+        )
     except PyMongoError as e:
         log.warning("mongo_indexes_skipped", error=str(e))
         return False

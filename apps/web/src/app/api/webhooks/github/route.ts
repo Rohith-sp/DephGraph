@@ -1,6 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { after } from "next/server";
 
 export const runtime = "nodejs";
+export const maxDuration = 300; // Hobby maximum; covers the whole after() review
 
 function validSignature(body: string, header: string | null, secret: string): boolean {
   if (!header) return false;
@@ -23,13 +25,17 @@ export async function POST(req: Request) {
     if (v) headers.set(h, v);
   }
   const base = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-  try {
-    const res = await fetch(`${base}/pr-gate/webhook`, { method: "POST", headers, body });
-    return new Response(await res.text(), {
-      status: res.status,
-      headers: { "content-type": res.headers.get("content-type") ?? "application/json" },
-    });
-  } catch {
-    return new Response("upstream unreachable", { status: 502 });
-  }
+  const delivery = req.headers.get("x-github-delivery");
+  // GitHub drops a delivery that is not answered within 10 s, but the review takes up to ~30 s and the
+  // Python function cannot work after its own response. So acknowledge now and let the FastAPI call
+  // finish inside after() (Vercel keeps this function alive for it, up to maxDuration).
+  after(async () => {
+    try {
+      const res = await fetch(`${base}/pr-gate/webhook`, { method: "POST", headers, body });
+      if (!res.ok) console.error("pr-gate webhook failed", { delivery, status: res.status, body: await res.text() });
+    } catch (e) {
+      console.error("pr-gate webhook unreachable", { delivery, error: String(e) });
+    }
+  });
+  return Response.json({ accepted: true, delivery_id: delivery }, { status: 202 });
 }

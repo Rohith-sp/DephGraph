@@ -46,8 +46,8 @@ services:
     build: &api-build
       context: .
       dockerfile: apps/api/Dockerfile
-    image: dephgraph-api
-    pull_policy: build  # never pull: the image only exists locally
+      target: api
+    pull_policy: build  # never pull: images are built locally; no `image:` so names stay per project
     restart: "no"
     command: ["python", "../../scripts/docker_init.py"]
     environment: &api-env
@@ -59,8 +59,6 @@ services:
       INTERNAL_CRON_SECRET: ${INTERNAL_CRON_SECRET:-dev-only-cron-secret}
       CORS_ORIGINS: '["http://localhost:${WEB_PORT:-3000}"]'
       TRUSTED_PROXY_HOPS: "0"
-      # uvicorn reads WEB_CONCURRENCY itself. Keep 1 unless RATE_LIMIT is scaled down by the worker
-      # count: app/limiter.py counts per worker (the SBERT model is also loaded once per worker).
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
       # The web server calls the API from one IP, so every dashboard visitor shares this bucket.
       RATE_LIMIT: ${RATE_LIMIT:-600/minute}
@@ -71,11 +69,25 @@ services:
 
   api:
     build: *api-build
-    image: dephgraph-api
     pull_policy: build
     restart: unless-stopped
     environment: *api-env
     ports: ["127.0.0.1:${API_PORT:-8000}:8000"]
+    depends_on:
+      init: { condition: service_completed_successfully }
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  # One-shot clustering job (needs the ML image, ~2.3 GB): docker compose --profile ml run --rm cluster
+  cluster:
+    profiles: ["ml"]
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: cluster
+    pull_policy: build
+    restart: "no"
+    environment: *api-env
     volumes:
       - hf_cache:/hf-cache
     depends_on:

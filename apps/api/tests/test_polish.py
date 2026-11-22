@@ -6,16 +6,13 @@ import pytest
 from fastapi import Request
 
 from app.config import settings
-from app.limiter import client_ip, storage
+from app.limiter import client_ip
 from app.main import app
 
 
 @pytest.fixture
 def low_limit(monkeypatch):
-    monkeypatch.setattr(settings, "rate_limit", "3/minute")
-    storage.reset()
-    yield
-    storage.reset()
+    monkeypatch.setattr(settings, "rate_limit", "3/minute")  # redis db is flushed per test
 
 
 @pytest.fixture

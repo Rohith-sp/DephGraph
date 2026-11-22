@@ -9,11 +9,10 @@ from types import SimpleNamespace
 import httpx
 import pytest
 import respx
-import structlog.testing
 from pymongo.errors import PyMongoError
 from sqlalchemy import text
 
-from app import auth, main
+from app import auth
 from app.auth import Member
 from app.config import settings
 from app.database import SessionLocal, get_mongo
@@ -146,13 +145,9 @@ async def test_hs256_wrong_secret_wrong_aud_expired_are_401(client):
 
 
 async def test_forged_header_does_not_bypass_rate_limit_500(client, jwks, monkeypatch):
-    from app.limiter import storage
-
     monkeypatch.setattr(settings, "rate_limit", "2/minute")
-    storage.reset()
     h = _forged({"alg": "RS256", "kid": "k1"})
     codes = [(await client.get("/services", headers=h)).status_code for _ in range(3)]
-    storage.reset()
     assert codes == [401, 401, 429]
 
 
@@ -397,19 +392,6 @@ async def test_db_error_marks_raw_sample_doc_failed(monkeypatch, reseed):
 
 
 # A21 / A23 --------------------------------------------------------------------------------------
-async def test_preload_failure_is_logged():
-    import asyncio
-
-    async def fail():
-        raise RuntimeError("no model")
-
-    t = asyncio.create_task(fail())
-    await asyncio.wait([t])
-    with structlog.testing.capture_logs() as logs:
-        main._log_preload(t)
-    assert [(e["event"], e["log_level"]) for e in logs] == [("model_preload_failed", "error")]
-
-
 async def test_overview_no_longer_exposes_unused_copyleft_field(client, auth):
     assert (
         "copyleft_packages"

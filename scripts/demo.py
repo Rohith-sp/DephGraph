@@ -24,7 +24,8 @@ from _db import DSN, settings
 
 API = os.environ.get("API_URL", "http://localhost:8000")
 SB = settings.supabase_url
-FIXTURES = Path(__file__).resolve().parents[1] / "apps/api/tests/fixtures"
+ROOT = Path(__file__).resolve().parents[1]
+FIXTURES = ROOT / "apps/api/tests/fixtures"
 EMAIL, PASSWORD = "demo@dephgraph.local", "demo-password-1"
 # (service, ecosystem, fixture)
 INGEST = [
@@ -149,18 +150,16 @@ async def main(force: bool = False) -> None:
         step("Stats overview")
         print(" ", json.dumps(await get("/stats/overview")))
 
-        step("Cluster recompute (SBERT + UMAP + HDBSCAN)")
+        step("Cluster job (SBERT + UMAP + HDBSCAN; needs apps/api/requirements-ml.txt)")
         before = {c_["cluster_id"] for c_ in await get("/clusters")}
-        r = await c.post("/clusters/recompute")
-        r.raise_for_status()
         t0 = time.monotonic()
-        while time.monotonic() - t0 < 180:
-            await asyncio.sleep(2)
-            clusters = await get("/clusters")
-            if clusters and {c_["cluster_id"] for c_ in clusters} != before:
-                break
-        else:
-            raise SystemExit("cluster recompute did not finish in 180s")
+        job = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "app.jobs.cluster", cwd=ROOT / "apps/api"
+        )
+        if await job.wait():
+            raise SystemExit("cluster job failed (ML dependencies installed? see its log above)")
+        clusters = await get("/clusters")
+        assert {c_["cluster_id"] for c_ in clusters} != before, "cluster job changed nothing"
         print(f"{len(clusters)} clusters in {time.monotonic() - t0:.0f}s")
         for cl in clusters[:6]:
             print(
@@ -205,18 +204,10 @@ async def main(force: bool = False) -> None:
                 "limit? retry later)"
             )
         else:
-            print(f"webhook -> {r.status_code} {r.json()['data']} (review runs in the background)")
-            sid = svc["checkout-web"]["service_id"]
-            deadline = time.monotonic() + 90
-            while True:
-                mine = [v for v in await get(f"/pr-gate/verdicts/{sid}") if v["pr_number"] == PR_NUMBER]
-                if mine or time.monotonic() > deadline:
-                    break
-                await asyncio.sleep(2)
-            if not mine:
-                print("  no verdict after 90s (GitHub rate limit? check the API log)")
-            for v in mine:
-                print(f"  {v['dep_name']}: {v['verdict']} (stage {v['stage_reached']}) - {v['reasoning']}")
+            data = r.json()["data"]
+            print(f"webhook -> {r.status_code} {data['verdict']} (stage {data['stage_reached']}, {data['processing_ms']} ms)")
+            for d in data["deps"]:
+                print(f"  {d['name']}: {d['verdict']} (stage {d['stage_reached']}) - {d['reasoning']}")
 
 
 if __name__ == "__main__":

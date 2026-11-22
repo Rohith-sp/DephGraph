@@ -1,7 +1,12 @@
-"""Semantic clustering: SBERT -> UMAP 2D -> HDBSCAN -> c-TF-IDF labels (PRD §9 phase 5)."""
+"""Semantic clustering job: SBERT -> UMAP 2D -> HDBSCAN -> c-TF-IDF labels (PRD §9 phase 5).
+
+Run as `python -m app.jobs.cluster` (GitHub Actions, `docker compose --profile ml run --rm cluster`).
+Needs requirements-ml.txt; the API never imports this module.
+"""
 
 import asyncio
 import json
+import sys
 import threading
 import uuid
 from collections.abc import Awaitable, Callable
@@ -10,20 +15,20 @@ from typing import Any
 
 import numpy as np
 import structlog
-from fastapi import BackgroundTasks
 from pymongo import UpdateOne
 from sklearn.feature_extraction.text import CountVectorizer
 from sqlalchemy import text
 
-from app.database import SessionLocal, get_mongo, get_redis
+from app.database import SessionLocal, close_all, get_mongo, get_redis
+from app.observability import configure_logging
 from app.services import cache
+from app.services.cluster_trigger import LOCK_KEY
 from app.services.queries import rows
 
 log = structlog.get_logger()
 
 MODEL_NAME = "all-MiniLM-L6-v2"
 MIN_CLUSTER_SIZE = 5
-LOCK_KEY = "dephgraph:lock:cluster_recompute"
 LOCK_TTL = 900
 
 _model: Any = None
@@ -196,24 +201,35 @@ async def renew(redis: Any, token: str) -> bool:
     return bool(await redis.eval(_RENEW, 1, LOCK_KEY, token, LOCK_TTL))
 
 
-async def run_guarded(redis: Any, token: str) -> None:
-    """Background entry: lock already held by the caller; always logs, always releases."""
+async def run_guarded(redis: Any, token: str) -> bool:
+    """Lock already held by the caller; always logs, always releases. True when the run completed."""
+    ok = False
     try:
         await recompute(lambda: renew(redis, token))
+        ok = True
     except LockLost:
         log.warning("cluster_recompute_lock_lost")
-    except Exception:  # noqa: BLE001 -- background job: log and swallow so the lock is released
+    except Exception:  # noqa: BLE001 -- job boundary: log, then release the lock below
         log.exception("cluster_recompute_failed")
     finally:
         await cache.bump()  # a failed run may already have committed the Postgres half
         await release(redis, token)
+    return ok
 
 
-async def start(tasks: BackgroundTasks) -> str:
-    """Take the lock and schedule a guarded recompute; returns the status string."""
+async def main() -> int:
+    """Exit code: 0 = done or another run holds the lock, 1 = failed."""
+    configure_logging()
     redis = get_redis()
     token = uuid.uuid4().hex
-    if not await redis.set(LOCK_KEY, token, nx=True, ex=LOCK_TTL):
-        return "already_running"
-    tasks.add_task(run_guarded, redis, token)
-    return "accepted"
+    try:
+        if not await redis.set(LOCK_KEY, token, nx=True, ex=LOCK_TTL):
+            log.info("cluster_recompute_already_running")
+            return 0
+        return 0 if await run_guarded(redis, token) else 1
+    finally:
+        await close_all()
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))

@@ -53,7 +53,7 @@ Everything the synopsis promised, except deployment, is built and tested
 | Maintainer abandonment scoring | `maintainer.last_active_at`; `v_abandonment` = single-maintainer + inactivity (same idea as the MySQL view); registry sync `POST /internal/maintainers-sync` | `migrations/007_maintainer_activity.sql`, `services/maintainers.py` |
 | MongoDB raw layer, one-way projection | Ingest stores the raw manifest and advisories in Mongo first, then projects into Postgres; `POST /ingest/replay/{manifest_id}` | `routers/ingest.py`, `services/osv_fetcher.py` |
 | PR gate redundancy signal | Stage 2 flags a dependency that does the same job as one the service already uses (same cluster, same ecosystem); offline gate runner | `services/pr_gate_engine.py`, `scripts/pr_gate_dry_run.py` |
-| Semantic clustering target | Demo data seed; clustering skips packages without a description | `scripts/seed_demo_extra.py`, `services/cluster_engine.py` |
+| Semantic clustering target | Demo data seed; clustering skips packages without a description | `scripts/seed_demo_extra.py`, `jobs/cluster.py` |
 
 Verified on the local stack: 8 clusters from the 97 described packages (617 packages in total), a
 520-node service graph served in about 0.06 s, a live ingest that pulled 43 advisories from OSV.dev,
@@ -166,16 +166,16 @@ Full instructions are in [`DEPLOY.md`](DEPLOY.md). In order:
 
 | # | Step | Who |
 |---|---|---|
-| 1 | Create accounts: Supabase, MongoDB Atlas (M0), Upstash, Render, Vercel, Groq, cron-job.org | you (sign-ups need your own login) |
-| 2 | **Supabase:** run migrations 001–009 in order, then the seed; copy URL, anon key, JWT secret, pooled `DATABASE_URL` | you, with help |
+| 1 | Create accounts: Supabase, MongoDB Atlas (M0), Upstash, Vercel, Groq | you (sign-ups need your own login) |
+| 2 | **Supabase:** run migrations 001–010 in order, then the seed; copy URL, anon key, JWT secret, pooled `DATABASE_URL` | you, with help |
 | 3 | **Security first:** turn off open sign-up in Supabase Auth, or add team scoping. RLS currently lets any signed-in user read everything | you |
 | 4 | **MongoDB Atlas:** create the M0 cluster and a database user; copy the SRV string | you |
 | 5 | **Upstash:** create a Redis database; copy the `rediss://` URL | you |
-| 6 | **Render:** Blueprint from `apps/api/render.yaml`; set the secret variables listed in DEPLOY.md | you, with help |
+| 6 | **Vercel (API):** import the repo, root `apps/api`; set the variables listed in DEPLOY.md | you, with help |
 | 7 | **Vercel:** import the repo, root `apps/web`; set the variables; `AUTH_DISABLED` must stay unset | you, with help |
 | 8 | **GitHub App** for the PR gate: `checks:write`, webhook to the Vercel route; app id, private key, webhook secret | you |
 | 9 | **Groq** API key (PR gate stage 3) | you |
-| 10 | **cron-job.org:** 3 jobs (daily OSV sync, weekly cluster recompute, 10-minute health ping) | you |
+| 10 | **GitHub Actions secrets** for `cron.yml` and `cluster.yml` (DEPLOY.md section 6) | you |
 | 11 | **Smoke test:** run the PRD phase 7 checks against the live URLs | together |
 
 Keep every key and password out of the repo. They go only in each service's dashboard or a local

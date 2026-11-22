@@ -3,7 +3,6 @@ import base64
 import hashlib
 import hmac
 import json
-import time
 from decimal import Decimal as D
 
 import httpx
@@ -111,9 +110,9 @@ async def review_rows(client, auth, service_id=1) -> list[dict]:
 
 
 async def review(client, auth, body=None, **kw) -> dict:
-    """POST the webhook, assert the 202 ack, then read PR 7's stored verdicts (the real result)."""
+    """POST the webhook, assert the 200 verdict, then read PR 7's stored verdicts."""
     r = await post(client, body or payload(), **kw)
-    assert r.status_code == 202 and r.json()["data"]["accepted"] is True, r.text
+    assert r.status_code == 200 and r.json()["data"]["pr_number"] == 7, r.text
     stored = await review_rows(client, auth)
     return {
         "verdict": max((x["verdict"] for x in stored), key=pr_gate_engine.RANK.get, default="PASS"),
@@ -191,7 +190,7 @@ async def test_non_pr_event_and_action_skipped(client):
 @respx.mock
 async def test_unknown_repo_is_acked_and_never_fetched(client, auth):
     r = await post(client, payload(repo="https://github.com/other/thing"))
-    assert r.status_code == 202
+    assert r.status_code == 200 and r.json()["data"] == {"skipped": True}
     assert not respx.calls  # no registered service: GitHub is never called
     assert await review_rows(client, auth) == []
 
@@ -202,17 +201,16 @@ async def test_malformed_payload_422(client):
 
 @respx.mock
 async def test_spec_phase6_block_and_persist(client, auth, reseed):
-    """PRD Phase 6 snippet, adapted: GitHub's 10s limit means 202 + background work (see router)."""
+    """PRD Phase 6 snippet: the webhook answers 200 with the verdict itself."""
     await mkpkg("evilcrit", cvss=9.8)
     files("evilcrit")
-    started = time.monotonic()
     r = await post(client, payload(), headers_extra={"X-GitHub-Delivery": "d-1"})
-    assert r.status_code == 202
-    assert r.json() == {"data": {"accepted": True, "delivery_id": "d-1"}, "error": None}
-    data = await review(client, auth)  # background work has finished: read the stored result
+    assert r.status_code == 200
+    data = r.json()["data"]
     assert data["verdict"] in ["PASS", "ADVISORY", "BLOCK"] and data["verdict"] == "BLOCK"
     assert data["stage_reached"] in [1, 2, 3]
-    assert time.monotonic() - started < 30
+    assert 0 <= data["processing_ms"] < 30_000
+    assert await review_rows(client, auth)  # and the verdict is persisted
     assert [d["name"] for d in data["deps"]] == ["evilcrit"]
     assert data["deps"][0]["stage_reached"] == 2 and "CVSS" in data["deps"][0]["reasoning"]
 
@@ -807,13 +805,15 @@ async def test_monorepo_redundancy_is_judged_per_service(client, auth, reseed):
 
 
 @respx.mock
-async def test_background_failure_posts_neutral_check_run(client, auth, monkeypatch, reseed):  # B2
+async def test_failure_posts_neutral_check_run_and_returns_502(
+    client, auth, monkeypatch, reseed
+):  # B2
     configure_app(monkeypatch)
     respx.post(TOKEN_URL).respond(201, json={"token": "ghs_x"})
     respx.get(FILES).respond(500)
     check = respx.post(CHECKS).respond(201, json={})
     r = await post(client, payload())
-    assert r.status_code == 202  # GitHub's delivery is acknowledged regardless
+    assert r.status_code == 502 and "could not evaluate" in r.json()["error"]
     sent = json.loads(check.calls[0].request.content)
     assert sent["conclusion"] == "neutral" and "could not evaluate" in sent["output"]["summary"]
     assert await review_rows(client, auth) == []

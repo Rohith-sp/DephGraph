@@ -1,0 +1,10 @@
+# Clustering job (app/jobs/cluster.py): GitHub Actions + `docker compose --profile ml`.
+# Install torch from the CPU index first (the default wheel drags in ~2.5 GB of CUDA):
+#   pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+-r requirements.txt
+sentence-transformers==3.3.1
+umap-learn==0.5.7
+hdbscan==0.8.39
+numpy==2.1.3
+scikit-learn==1.5.2
+torch==2.5.1

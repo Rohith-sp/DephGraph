@@ -1,14 +1,14 @@
 import json
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pymongo.errors import PyMongoError
 
 from app.auth import CurrentMember, get_current_user
 from app.database import DbSession, get_mongo
 from app.schemas.analysis import ClusterOut, RedundancyOut
 from app.schemas.common import Envelope, ok
-from app.services import cluster_engine
+from app.services import cluster_trigger
 from app.services.cache import cached_json
 from app.services.queries import MY_SERVICES, json_rows, team_params
 
@@ -64,5 +64,5 @@ async def redundancy(request: Request, session: DbSession, member: CurrentMember
 
 
 @router.post("/recompute", status_code=202)
-async def recompute(tasks: BackgroundTasks) -> dict[str, object]:
-    return ok({"status": await cluster_engine.start(tasks)})
+async def recompute() -> dict[str, object]:
+    return ok({"status": await cluster_trigger.trigger()})

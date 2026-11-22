@@ -20,7 +20,7 @@ docker run --rm --network dephgraph_default -v "$PWD:/srv/dephgraph:z" -w /srv/d
   -e DATABASE_URL=postgresql+asyncpg://dephgraph:dephgraph@postgres:5432/dephgraph \
   dephgraph-api python scripts/seed_demo_extra.py
 T=$(docker exec dephgraph-web-1 cat /shared/dev_token)
-curl -s -X POST -H "Authorization: Bearer $T" localhost:8000/clusters/recompute   # ~1 min
+docker compose --profile ml run --rm cluster   # ~1 min (builds the ~2.3 GB ML image the first time)
 ```
 
 An older volume only has the migrations that existed when it was created (through 009 today). Apply each newer file once, e.g.:

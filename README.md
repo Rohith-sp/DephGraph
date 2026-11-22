@@ -43,9 +43,9 @@ The full ER diagrams, the relational mapping and the SQL schema are in [`er-diag
 | Backend | FastAPI, SQLAlchemy 2 (async), Pydantic v2 |
 | Primary database | PostgreSQL (Supabase); MySQL 8 schema for the DBMS coursework |
 | Document store and cache | MongoDB Atlas, Upstash Redis |
-| Clustering | sentence-transformers, UMAP, HDBSCAN |
+| Clustering | sentence-transformers, UMAP, HDBSCAN (a batch job: `apps/api/app/jobs/cluster.py`) |
 | PR gate LLM | Groq (LLaMA 3.1 70B) |
-| Hosting | Vercel (frontend), Render (API), cron-job.org (scheduled syncs) |
+| Hosting | Vercel Hobby (frontend and API, Mumbai), GitHub Actions (clustering and scheduled syncs); see [docs/DEPLOY.md](docs/DEPLOY.md) |
 
 ---
 
@@ -90,9 +90,10 @@ This creates the `dephgraph` database with all tables, constraints and views. Th
 
 ```bash
 docker compose up -d --build --wait   # postgres, mongo, redis, init (seeds an empty DB + mints a dev token), api :8000, web :3000
+docker compose --profile ml run --rm cluster   # optional: the clustering job (ML image, about 2.3 GB)
 ```
 
-Ports bind to 127.0.0.1 and can be moved with `PG_PORT`, `MONGO_PORT`, `REDIS_PORT`, `API_PORT`, `WEB_PORT`; `RATE_LIMIT` (default `600/minute`, shared by all dashboard visitors) and `WEB_CONCURRENCY` (default 1) tune the API. Data lives in named volumes: `docker compose down` keeps it, `down -v` wipes it (the next `up` reseeds). The web container runs without Supabase (`AUTH_DISABLED`) using the token written by `init`; do not expose it beyond localhost.
+Ports bind to 127.0.0.1 and can be moved with `PG_PORT`, `MONGO_PORT`, `REDIS_PORT`, `API_PORT`, `WEB_PORT`; `RATE_LIMIT` (default `600/minute`, shared by all dashboard visitors) and `WEB_CONCURRENCY` (default 1) tune the API. The API image is slim (no torch); clustering runs only through the `ml` profile job above. Data lives in named volumes: `docker compose down` keeps it, `down -v` wipes it (the next `up` reseeds). The web container runs without Supabase (`AUTH_DISABLED`) using the token written by `init`; do not expose it beyond localhost.
 
 ---
 
@@ -107,7 +108,7 @@ docker compose up -d postgres mongo redis  # databases only (the full stack incl
 [ -f .env.local ] || printf 'SUPABASE_JWT_SECRET=dev-only-jwt-secret-change-me-0123456789\nINTERNAL_CRON_SECRET=dev-only-cron-secret\n' > .env.local
 
 uv venv -p 3.12 apps/api/.venv
-uv pip install -p apps/api/.venv -r apps/api/requirements.txt
+uv pip install -p apps/api/.venv -r apps/api/requirements.txt   # slim API; tests: add -r apps/api/requirements-dev.txt -r apps/api/requirements-ml.txt (CPU torch first, see that file)
 apps/api/.venv/bin/python scripts/seed_db.py
 
 cd apps/api && .venv/bin/uvicorn app.main:app --reload   # API on :8000
@@ -127,9 +128,10 @@ API notes:
 - `GET /remediation/plan/{team_id}` steps carry `plan_id`, `action_seq`, `action_status` (null without a saved plan), so the UI restores saved progress after a reload.
 - Tenancy: every read and write is limited to the caller's teams (`team_member`; others get 404, a user with no team gets empty lists). `GET /me` returns the caller's teams. Add people with `python scripts/add_team_member.py --team-slug platform --user-id <uuid> | --email <addr>`; the dev token's user is a member of every seeded team (`make_dev_token.py --user-id` mints a token for any other user).
 - Only a service's latest `production` deployment is analysed; `POST /ingest/manifest` takes `environment` (`production` default, `staging`, `preview`) and non-production ingests never change risk numbers.
-- `POST /pr-gate/webhook` answers `202 {accepted, delivery_id}` and reviews in the background. Read results with `GET /pr-gate/verdicts/{service_id}` (and the Check Run on GitHub).
+- `POST /pr-gate/webhook` reviews synchronously and answers `200 {pr_number, verdict, stage_reached, processing_ms, deps}` (a failed review is a `502` plus a neutral Check Run). On Vercel, GitHub talks to the web route `/api/webhooks/github`, which acknowledges at once and forwards inside `after()`. Stored verdicts: `GET /pr-gate/verdicts/{service_id}`.
+- Clustering is a job, not an API task: `python -m app.jobs.cluster` (needs `requirements-ml.txt`) or the `cluster.yml` workflow. `POST /clusters/recompute` and `/internal/cluster-recompute` dispatch that workflow (`GITHUB_DISPATCH_TOKEN`, `GITHUB_REPOSITORY`) and answer `202 {"status": "dispatched" | "already_running"}`, or `503` when not configured.
 - Ids must be positive and in range, else `422`. Vulnerability timestamps use `+00:00`, not `Z`.
-- Latency: read endpoints are cached in Redis under a generation counter (any write bumps it). Rate-limit counters are per worker, so keep `WEB_CONCURRENCY=1` unless you scale `RATE_LIMIT` down.
+- Latency: read endpoints are cached in Redis under a generation counter (any write bumps it). Rate-limit counters live in Redis (in-memory fallback when Redis errors); team memberships are cached for 60 s per data generation.
 
 ### Supabase locally (real auth)
 

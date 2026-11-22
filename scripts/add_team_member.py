@@ -15,6 +15,9 @@ import asyncpg
 import httpx
 from _db import DSN, settings
 
+from app.database import close_all
+from app.services import cache
+
 
 async def user_id_for_email(email: str) -> uuid.UUID:
     key = settings.supabase_service_role_key
@@ -55,6 +58,7 @@ async def add_member(
         "ON CONFLICT (team_id, user_id) DO UPDATE SET role = EXCLUDED.role",
         [(teams[s], user_id, role) for s in slugs],
     )
+    await cache.bump()  # the API caches memberships per data generation
 
 
 async def main() -> None:
@@ -71,6 +75,7 @@ async def main() -> None:
         await add_member(conn, a.team_slug, user_id, a.role)
     finally:
         await conn.close()
+    await close_all()
     print(f"{user_id} is {a.role} of {', '.join(a.team_slug)}")
 
 

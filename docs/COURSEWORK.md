@@ -235,7 +235,7 @@ Indexes are created at startup by `ensure_indexes()` in `apps/api/app/models/mon
 |---|---|---|---|---|
 | `raw_manifests` | Raw uploaded manifest, kept before anything reaches Postgres | `routers/ingest.py`: `_store_manifest` (upsert, status `received`), `_mark` (`projected` / `failed`) | `service_id`, `sha256`, `ecosystem`, `filename`, `raw_content`, `uploaded_at`, `status`, `deploy_seqs`, `parsed_packages`, `error` | `(service_id, uploaded_at desc)`; **unique** `(service_id, sha256)` |
 | `osv_advisories` | Verbatim OSV advisory JSON | `services/osv_fetcher.py`: `store_raw` (`replace_one`, upsert) | `osv_id`, `raw_osv`, `fetched_at` | **unique** `osv_id`; `fetched_at desc` |
-| `package_embeddings` | Derived vector per package, for clustering and the 2-D map | `services/cluster_engine.py`: recompute `bulk_write` of `UpdateOne` upserts | `package_id`, `embedding` (384 floats), `umap_2d`, `cluster_id` | **unique** `package_id`; `cluster_id` |
+| `package_embeddings` | Derived vector per package, for clustering and the 2-D map | `jobs/cluster.py`: recompute `bulk_write` of `UpdateOne` upserts | `package_id`, `embedding` (384 floats), `umap_2d`, `cluster_id` | **unique** `package_id`; `cluster_id` |
 | `runtime_samples` | Raw runtime-agent batch (which packages executed) | `services/runtime.py`: `_store_raw` (insert, status `pending`), `_mark_raw` (`projected` / `rejected`) | `service_id`, `deploy_seq`, `captured_at`, `received_at`, `complete`, `samples[]`, `status`, `scan_id` | `(service_id, scan_id)`; **TTL** `captured_at`, 90 days |
 | `review_responses` | Audit log of the PR-gate Stage 3 model call | `services/pr_gate_engine.py`: `stage3` (`insert_one`, skipped if `store_response=False`) | `service_id`, `pr_number`, `dep_name`, `model`, `prompt`, `response`, `responded_at` | `(service_id, pr_number)`; **TTL** `responded_at`, 30 days |
 
@@ -305,7 +305,7 @@ Blast-radius cache (`services/blast_radius.py`): a reader reads the generation f
 does `INCR` on the generation and deletes old keys. A reader that started before an invalidation
 writes to the old generation, which nobody reads, so it cannot bring back stale data.
 
-Recompute lock (`services/cluster_engine.py`): acquired with `SET key token NX EX 900`, so only one
+Recompute lock (`jobs/cluster.py`): acquired with `SET key token NX EX 900`, so only one
 recompute runs at a time. Release is a Lua script: delete only if the stored token is still ours,
 so a run that outlives its TTL cannot free a newer holder's lock.
 

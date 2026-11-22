@@ -1,7 +1,7 @@
 # DephGraph — Claude Code Root Instructions
 
 ## Stack
-Turborepo monorepo. `apps/web` = Next.js 15 (Vercel). `apps/api` = FastAPI (Render).
+Turborepo monorepo. `apps/web` = Next.js 15 (Vercel). `apps/api` = FastAPI (Vercel Python Function). Clustering = GitHub Actions job.
 DBs: Supabase PostgreSQL + MongoDB Atlas M0 + Upstash Redis.
 
 ## Non-negotiable Rules

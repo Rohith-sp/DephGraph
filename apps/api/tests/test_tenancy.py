@@ -520,6 +520,9 @@ async def test_add_member_is_idempotent_and_updates_role(rls):
     conn, _ = rls
     user = uuid.UUID(int=77)
     try:
+        before = await get_redis().get(cache.GEN_KEY)
+        await add_member(conn, ["platform"], user)
+        assert await get_redis().get(cache.GEN_KEY) != before  # cached memberships are invalidated
         for role in ("member", "member", "admin"):
             await add_member(conn, ["platform", "data"], user, role)
         got = await conn.fetch(

@@ -1,3 +1,4 @@
+import json
 import time
 import uuid
 from dataclasses import dataclass
@@ -5,13 +6,17 @@ from typing import Annotated, Any
 
 import httpx
 import jwt
+import structlog
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from redis.exceptions import RedisError
 from sqlalchemy import text
 
 from app.config import settings
-from app.database import SessionLocal
+from app.database import DbSession, get_redis
+from app.services.cache import GEN_KEY
 
+log = structlog.get_logger()
 bearer = HTTPBearer(auto_error=False)
 
 
@@ -102,18 +107,42 @@ class Member:
         return "teams:" + ",".join(map(str, sorted(self.team_ids)))
 
 
-async def current_member(claims: Annotated[dict[str, Any], Depends(get_current_user)]) -> Member:
-    """Teams of the authenticated user, from team_member (empty set = no team, not an error)."""
+MEMBER_TTL = 60  # seconds; bounds staleness when a membership changes without a cache bump
+
+
+async def current_member(
+    claims: Annotated[dict[str, Any], Depends(get_current_user)], session: DbSession
+) -> Member:
+    """Teams of the authenticated user, from team_member (empty set = no team, not an error).
+
+    Cached in Redis per data generation, so scripts/add_team_member.py (which bumps it) takes effect
+    at once. On a miss the lookup runs on the request's own session in a short transaction of its
+    own, so the handler later opens its `session.begin()` on the same, already-pooled connection.
+    """
     try:
         user_id = uuid.UUID(str(claims.get("sub")))
     except ValueError:
         raise HTTPException(401, "Invalid token") from None
-    # own session: the handler's session must stay free for its `session.begin()` blocks
-    async with SessionLocal() as session:
+    redis = get_redis()
+    key: str | None = None
+    try:
+        key = f"dephgraph:member:{user_id}:{await redis.get(GEN_KEY) or 0}"  # generation BEFORE db
+        if (hit := await redis.get(key)) is not None:
+            return Member(user_id, frozenset(json.loads(hit)))
+    except (RedisError, OSError) as e:
+        log.warning("member_cache_read_failed", error=str(e))
+        key = None
+    async with session.begin():
         found = await session.execute(
             text("SELECT team_id FROM team_member WHERE user_id = :u"), {"u": user_id}
         )
-        return Member(user_id, frozenset(found.scalars()))
+        team_ids = sorted(found.scalars())
+    if key:
+        try:
+            await redis.set(key, json.dumps(team_ids), ex=MEMBER_TTL)
+        except (RedisError, OSError) as e:
+            log.warning("member_cache_write_failed", error=str(e))
+    return Member(user_id, frozenset(team_ids))
 
 
 CurrentMember = Annotated[Member, Depends(current_member)]

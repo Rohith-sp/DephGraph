@@ -1,14 +1,14 @@
 import hmac
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from app.config import settings
 from app.database import DbSession
 from app.schemas.analysis import SyncOut
 from app.schemas.common import Envelope, ok
-from app.services import cache, cluster_engine, maintainers, osv_fetcher
+from app.services import cache, cluster_trigger, maintainers, osv_fetcher
 from app.services.manifest_parser import PkgRef
 from app.services.queries import LATEST, rows
 
@@ -48,9 +48,9 @@ async def osv_sync(session: DbSession) -> dict[str, object]:
 
 
 @router.post("/cluster-recompute", status_code=202)
-async def cluster_recompute(tasks: BackgroundTasks) -> dict[str, object]:
-    """Cron: same lock + background job as POST /clusters/recompute, cron-secret auth."""
-    return ok({"status": await cluster_engine.start(tasks)})
+async def cluster_recompute() -> dict[str, object]:
+    """Same as POST /clusters/recompute, cron-secret auth."""
+    return ok({"status": await cluster_trigger.trigger()})
 
 
 class MaintainerSyncOut(BaseModel):

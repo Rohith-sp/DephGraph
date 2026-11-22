@@ -1,0 +1,34 @@
+name: Cron
+# Scheduled syncs: call the deployed API's /internal routes (Vercel Hobby crons are daily-only and
+# have no secret header). Clustering has its own workflow (cluster.yml).
+on:
+  schedule:
+    - cron: "23 2 * * *" # osv-sync, daily
+    - cron: "41 3 * * 1" # maintainers-sync, weekly (Monday)
+  workflow_dispatch:
+    inputs:
+      job:
+        description: Which sync to run
+        type: choice
+        options: [osv-sync, maintainers-sync]
+        default: osv-sync
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      API_BASE_URL: ${{ secrets.API_BASE_URL }}
+      INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
+      ENDPOINT: ${{ github.event.schedule == '41 3 * * 1' && 'maintainers-sync' || inputs.job || 'osv-sync' }}
+    steps:
+      - run: |
+          if [ -z "$API_BASE_URL" ] || [ -z "$INTERNAL_CRON_SECRET" ]; then
+            echo "::notice::API_BASE_URL or INTERNAL_CRON_SECRET secret is not set; skipping $ENDPOINT."
+            exit 0
+          fi
+          curl --fail-with-body --silent --show-error --max-time 290 -X POST \
+            -H "X-Cron-Secret: $INTERNAL_CRON_SECRET" "${API_BASE_URL%/}/internal/$ENDPOINT"

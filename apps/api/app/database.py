@@ -10,11 +10,24 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.config import settings
 
 # All clients connect lazily: the app boots even if Mongo/Redis are down.
-# No pool_pre_ping (a ping round trip per checkout): connections idle past POOL_RECYCLE are replaced
-# on checkout, and when one still dies SQLAlchemy invalidates the pool so only that request fails.
+# Connections idle past POOL_RECYCLE are replaced on checkout, and when one still dies SQLAlchemy
+# invalidates the pool so only that request fails. Serverless (Vercel): instances are reused but can
+# be frozen between requests, so pre-ping each checkout, and DATABASE_URL points at Supabase's
+# transaction pooler (:6543), which cannot hold asyncpg's prepared statements.
 POOL_RECYCLE = 300
-engine = create_async_engine(
-    settings.database_url, pool_size=10, max_overflow=5, pool_recycle=POOL_RECYCLE
+engine = (
+    create_async_engine(
+        settings.database_url,
+        pool_size=3,
+        max_overflow=2,
+        pool_recycle=POOL_RECYCLE,
+        pool_pre_ping=True,
+        connect_args={"statement_cache_size": 0, "prepared_statement_cache_size": 0},
+    )
+    if settings.serverless
+    else create_async_engine(
+        settings.database_url, pool_size=10, max_overflow=5, pool_recycle=POOL_RECYCLE
+    )
 )
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 mongo_client: AsyncMongoClient = AsyncMongoClient(settings.mongo_uri, serverSelectionTimeoutMS=2000)

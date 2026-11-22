@@ -1,0 +1,6 @@
+# Tests: the suite also covers the clustering job, so install requirements-ml.txt as well.
+-r requirements.txt
+pytest==8.3.3
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+respx==0.21.1
