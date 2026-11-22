@@ -22,14 +22,19 @@ jobs:
       MONGO_URI: ${{ secrets.MONGO_URI }}
       MONGO_DB_NAME: ${{ secrets.MONGO_DB_NAME || 'dephgraph' }}
       REDIS_URL: ${{ secrets.REDIS_URL }}
-      ENVIRONMENT: production
+      FORK: ${{ github.event.repository.fork }}
     steps:
       - name: Check secrets
         id: cfg
         run: |
           if [ -z "$DATABASE_URL" ] || [ -z "$MONGO_URI" ] || [ -z "$REDIS_URL" ]; then
-            echo "::notice::DATABASE_URL, MONGO_URI or REDIS_URL secret is not set; skipping clustering."
-            echo "run=false" >> "$GITHUB_OUTPUT"
+            if [ "$FORK" = "true" ]; then
+              echo "::notice::secrets not set on a fork; skipping clustering."
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::DATABASE_URL, MONGO_URI or REDIS_URL secret is not set"
+            exit 1
           else
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi

@@ -2782,7 +2782,7 @@ export interface operations {
         parameters: {
             query?: {
                 severity?: ("CRITICAL" | "HIGH" | "MEDIUM" | "LOW") | null;
-                ecosystem?: ("npm" | "pypi" | "cargo" | "go" | "maven" | "nuget") | null;
+                ecosystem?: ("npm" | "pypi" | "cargo" | "go") | null;
                 q?: string | null;
                 sort?: "cvss_score" | "published_at";
                 order?: "asc" | "desc";

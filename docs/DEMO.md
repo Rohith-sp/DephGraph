@@ -2,7 +2,7 @@
 
 Two parts: **A. the database course work on MySQL** (what is graded), then **B. the running
 application on PostgreSQL + MongoDB + Redis**, ending with one live pipeline run. Every command is run
-from the repo root. Expected outputs are what we saw on 22 November 2026.
+from the repo root. Expected outputs are shapes, not fixed numbers: counts depend on seed data and live OSV / registry data.
 
 ## 0. Setup (30 minutes before)
 
@@ -60,7 +60,7 @@ Optional: `scripts/tx_two_sessions.sh lostupdate` (plain SELECT loses an update,
 | Services → api-gateway | dependency graph (React Flow); blast radius with the shortest path to each vulnerable package (recursive closure + BFS, cached in Redis 24 h) |
 | Vulnerabilities | OSV advisories with CVSS and affected services |
 | Remediation → team Platform | greedy set cover: each step = one upgrade, with cumulative coverage % |
-| Clusters | NLP: SBERT embeddings → UMAP → HDBSCAN → c-TF-IDF labels; 8 clusters; redundancy = a service using 2+ packages of one cluster |
+| Clusters | NLP: SBERT embeddings → UMAP → HDBSCAN → c-TF-IDF labels; cluster count depends on the data; redundancy = a service using 2+ packages of one cluster |
 
 ### B2. Live pipeline (second terminal)
 
@@ -70,7 +70,7 @@ Optional: `scripts/tx_two_sessions.sh lostupdate` (plain SELECT loses an update,
    python3 -c "import json;print(json.dumps({'service_id':1,'ecosystem':'pypi','filename':'requirements.txt','content':open('apps/api/tests/fixtures/requirements_flask.txt').read()}))" > /tmp/ing.json
    curl -s -X POST -H "$H" -H 'Content-Type: application/json' -d @/tmp/ing.json localhost:8000/ingest/manifest
    ```
-   Expected: `{"data":{"manifest_id":"…","deploy_seq":N,"packages_parsed":8,…,"vulns_fetched":43,…}}`
+   Expected: `{"data":{"manifest_id":"…","deploy_seq":N,"packages_parsed":8,…,"vulns_fetched":N,…}}`
    (needs internet: live OSV.dev). Say: raw file stored in MongoDB, advisories stored raw, then one
    PostgreSQL transaction with an advisory lock writes packages, vulnerabilities, the deployment and
    its closure.

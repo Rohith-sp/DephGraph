@@ -1,6 +1,7 @@
 import type { Severity } from "@/lib/types";
 
-export const ECOSYSTEMS = ["pypi", "npm", "maven", "go", "cargo", "nuget"];
+// Must equal the backend parser set (osv_fetcher.OSV_ECOSYSTEM); apps/api/tests/test_parity.py asserts it.
+export const ECOSYSTEMS = ["pypi", "npm", "go", "cargo"];
 
 export const SEVERITIES: Severity[] = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
 

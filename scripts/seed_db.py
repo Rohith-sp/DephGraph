@@ -5,7 +5,7 @@ import random
 from datetime import datetime, timedelta, timezone
 
 import asyncpg
-from _db import DEV_USER_ID, DSN
+from _db import DEV_USER_ID, DSN, refuse_non_local
 
 rng = random.Random(42)
 NOW = datetime(2026, 11, 1, tzinfo=timezone.utc)
@@ -358,4 +358,5 @@ async def main(dsn: str = DSN) -> None:
 
 
 if __name__ == "__main__":
+    refuse_non_local()
     asyncio.run(main())
