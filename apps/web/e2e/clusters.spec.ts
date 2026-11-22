@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { apiData, TOKEN } from "./api";
 
 type Member = { x: number | null; y: number | null };
-type Cluster = { cluster_id: number; label: string; members: Member[] };
+type Cluster = { cluster_id: number; label: string; embeddings_available: boolean; members: Member[] };
 
 test.skip(!TOKEN, "needs DEV_API_TOKEN");
 
@@ -17,8 +17,10 @@ test("legend lists every cluster; scatter shows when coordinates exist, else an 
 
   if (members.some((m) => m.x != null && m.y != null)) {
     await expect(page.getByRole("img", { name: "Package clusters, 2D projection" })).toBeVisible();
+  } else if (clusters.some((c) => !c.embeddings_available)) {
+    await expect(page.getByText("Cluster coordinates are unavailable")).toBeVisible();
   } else {
-    await expect(page.getByText("No 2D projection yet.")).toBeVisible();
+    await expect(page.getByText("No 2D projection has been computed")).toBeVisible();
   }
 });
 
