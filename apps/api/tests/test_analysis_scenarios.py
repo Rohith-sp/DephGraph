@@ -259,6 +259,6 @@ async def test_blast_radius_path_and_cache_generation(client, auth, reseed):
     assert again["cached"] is False  # generation moved on
     # a reader that computed before the bump writes to its OLD generation: never served
     await get_redis().set(
-        f"{cache.PREFIX}0:blast_radius:{sid}", '{"service_id": 0, "poison": true}'
+        f"{cache.PREFIX}0:blast_radius:v2:{sid}", '{"service_id": 0, "poison": true}'
     )
     assert "poison" not in (await client.get(f"/blast-radius/{sid}", headers=auth)).json()["data"]

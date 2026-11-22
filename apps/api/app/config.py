@@ -14,6 +14,7 @@ DEV_SECRETS = {
     "your-random-webhook-secret",
 }
 MIN_SECRET_LEN = 32
+USER_AGENT = "DephGraph/1.0"  # outbound registry calls; generic on purpose
 
 
 def _is_local(url: str) -> bool:
@@ -76,6 +77,8 @@ class Settings(BaseSettings):
     # inside the gate; False = never go online, such dependencies are reported as unverified.
     gate_live_lookup: bool = True
     gate_osv_max_age_hours: int = 48
+    # Live lookups one PR may trigger; deps beyond the cap are reported "could not verify".
+    gate_max_live_lookups: int = 200
     # Transitive-closure depth cap for manifest-sourced deployments; a deployment that hits it is
     # flagged truncated (the graph and blast radius are partial).
     max_transitive_depth: int = 10

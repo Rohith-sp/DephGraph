@@ -213,15 +213,18 @@ async def _evaluate_and_store(
             changes[root] = await github.pr_added_deps(
                 client, full_name, number, token, f"{root}/" if root else ""
             )
+    # no DB transaction is held across network calls: one live lookup of what the DB cannot vouch
+    # for, deduped over all services of the PR
+    unverified = await pr_gate_engine.refresh_stale(
+        sorted({d for deps, _ in changes.values() for d in deps})
+    )
     everything: list[pr_gate_engine.DepVerdict] = []
     deps_out: list[dict[str, Any]] = []
     lines: list[str] = []
     for svc in services:
         sid = svc["service_id"]
         deps, notes = changes[svc["root_path"].strip("/")]
-        # no DB transaction is held across network calls: live lookups of what the DB cannot
-        # vouch for, then a short read tx, Groq, and a short write tx
-        unverified = await pr_gate_engine.refresh_stale(deps)
+        # short read tx, Groq (no tx held), then a short write tx
         async with SessionLocal() as session:
             async with session.begin():
                 results = await pr_gate_engine.evaluate_all(session, deps, sid, unverified)

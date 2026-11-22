@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import USER_AGENT
 from app.models.sql import License
 from app.services.http import request
 from app.services.manifest_parser import PkgRef
@@ -66,7 +67,7 @@ async def fetch_metadata(refs: list[PkgRef]) -> dict[PkgRef, Metadata]:
         async with sem:
             return ref, await _fetch_one(client, ref)
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(timeout=15, headers={"User-Agent": USER_AGENT}) as client:
         results = await asyncio.gather(*(bounded(r) for r in refs))
     return {ref: m for ref, m in results if m is not None}
 
@@ -89,7 +90,8 @@ async def apply_metadata(session: AsyncSession, meta: dict[PkgRef, Metadata]) ->
     await session.execute(
         text(
             "UPDATE package_version SET license_id = COALESCE(:lic, license_id), "
-            "published_at = COALESCE(:pub, published_at), is_yanked = :yanked "
+            "published_at = COALESCE(:pub, published_at), is_yanked = :yanked, "
+            "deps_dev_checked_at = now() "
             "WHERE package_id = :pid AND version_string = :ver"
         ),
         [

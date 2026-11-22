@@ -29,7 +29,6 @@ from decimal import Decimal
 from hashlib import sha256
 from typing import Any
 
-import httpx
 import structlog
 from groq import APIError, AsyncGroq, RateLimitError
 from pymongo.errors import PyMongoError
@@ -40,7 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import SessionLocal, get_mongo, get_redis
 from app.services import http, osv_fetcher
-from app.services.deps_dev_client import apply_metadata, fetch_metadata
+from app.services.deps_dev_client import SYSTEM, apply_metadata, fetch_metadata
 from app.services.manifest_parser import ParsedPackage, PkgRef
 from app.services.packages import upsert_packages
 from app.services.queries import rows
@@ -55,7 +54,8 @@ GROQ_TIMEOUT = 8  # seconds per request
 GROQ_CONCURRENCY = 3
 STAGE3_BUDGET = 15  # seconds for all Stage 3 calls together (runs in a background task)
 PROMPT_CACHE_TTL = 604800  # PRD: Redis `prompts`, 7 days
-LIVE_BUDGET = 20  # seconds for the live OSV + deps.dev lookups of one PR (verdict < 30 s)
+LIVE_BUDGET = 20  # seconds per side (OSV, deps.dev) for the live lookups of one PR (verdict < 30 s)
+RAW_STORE_TIMEOUT = 5  # seconds for the best-effort Mongo raw advisory write
 Dep = tuple[str, str, str]  # (ecosystem, name, version)
 
 
@@ -194,7 +194,8 @@ def _stale_sql() -> str:
         "LEFT JOIN package_version pv ON pv.package_id = p.package_id AND pv.version_string = q.ver "
         "WHERE pv.osv_checked_at IS NULL "
         "OR pv.osv_checked_at < now() - make_interval(hours => :h) "
-        "OR pv.license_id IS NULL OR pv.published_at IS NULL"
+        "OR ((pv.license_id IS NULL OR pv.published_at IS NULL) AND (pv.deps_dev_checked_at IS NULL "
+        "OR pv.deps_dev_checked_at < now() - make_interval(hours => :h)))"
     )
 
 
@@ -203,8 +204,8 @@ async def refresh_stale(deps: list[Dep]) -> dict[Dep, str]:
 
     Stale = version unknown, OSV not queried within settings.gate_osv_max_age_hours, or license /
     publish date missing. Returns {dep: why} for those that remain unverified (lookup disabled or
-    failed); never raises for network errors. deps.dev being down only leaves the license and
-    publish date unknown, which `evaluate` reports.
+    failed, unsupported ecosystem, over settings.gate_max_live_lookups, or not storable); never
+    raises. License / publish date deps.dev lacks are re-asked only after the same max-age TTL.
     """
     uniq = sorted(set(deps))
     if not uniq:
@@ -225,35 +226,66 @@ async def refresh_stale(deps: list[Dep]) -> dict[Dep, str]:
         return {}
     if not settings.gate_live_lookup:
         return {d: "live lookup is disabled and the stored data is missing or old" for d in stale}
-    refs = [PkgRef(0, *d) for d in stale]
-    try:
-        async with asyncio.timeout(LIVE_BUDGET):
-            hits, advisories = await osv_fetcher.fetch_advisories(refs)
-            meta = await fetch_metadata(refs)
-    except (httpx.HTTPError, ValueError, KeyError, TimeoutError) as e:
-        log.warning("gate_live_lookup_failed", error=str(e) or type(e).__name__)
-        return {d: f"OSV lookup failed ({type(e).__name__})" for d in stale}
-    await osv_fetcher.store_raw(advisories)  # best effort, like the cron paths
+    why: dict[Dep, str] = {}
+    ok = [d for d in stale if d[0] in osv_fetcher.OSV_ECOSYSTEM and d[0] in SYSTEM]
+    for d in stale:
+        if d not in ok:
+            why[d] = "unsupported ecosystem"
+    for d in ok[settings.gate_max_live_lookups :]:
+        why[d] = "lookup cap reached"
+    ok = ok[: settings.gate_max_live_lookups]
+    if not ok:
+        return why
+    refs = [PkgRef(0, *d) for d in ok]
+    # each side keeps its own result: a stall or failure on one only marks that side unverified
+    (osv, osv_err), (meta, dd_err) = await asyncio.gather(
+        _live("OSV", osv_fetcher.fetch_advisories(refs)),
+        _live("deps.dev", fetch_metadata(refs)),
+    )
+    hits, advisories = osv if osv else ({}, {})
+    if advisories:
+        try:  # best effort like the cron paths; the verdict does not depend on Mongo
+            await asyncio.wait_for(osv_fetcher.store_raw(advisories), RAW_STORE_TIMEOUT)
+        except Exception as e:
+            log.warning("gate_raw_store_failed", error=str(e) or type(e).__name__)
     by_eco = defaultdict(list)
-    for eco, name, ver in stale:
+    for eco, name, ver in ok:
         by_eco[eco].append(ParsedPackage(name, ver))
-    async with SessionLocal() as session, session.begin():
-        real = [
-            r
-            for eco, parsed in sorted(by_eco.items())
-            for r in (await upsert_packages(session, eco, parsed))[0]
-        ]
-        key = {(r.ecosystem, r.name, r.version): r for r in real}
-        await apply_metadata(
-            session, {key[(k.ecosystem, k.name, k.version)]: m for k, m in meta.items()}
-        )
-        await osv_fetcher.upsert_advisories(
-            session,
-            real,
-            {key[(k.ecosystem, k.name, k.version)]: v for k, v in hits.items()},
-            advisories,
-        )
-    return {}
+    store_err = None
+    try:
+        async with SessionLocal() as session, session.begin():
+            real = [
+                r
+                for eco, parsed in sorted(by_eco.items())
+                for r in (await upsert_packages(session, eco, parsed))[0]
+            ]
+            key = {(r.ecosystem, r.name, r.version): r for r in real}
+            await apply_metadata(
+                session, {key[(k.ecosystem, k.name, k.version)]: m for k, m in (meta or {}).items()}
+            )
+            if osv:  # never project a failed OSV side: absent hits would delete affects rows
+                await osv_fetcher.upsert_advisories(
+                    session,
+                    real,
+                    {key[(k.ecosystem, k.name, k.version)]: v for k, v in hits.items()},
+                    advisories,
+                )
+    except Exception as e:
+        log.warning("gate_store_failed", error=type(e).__name__)
+        store_err = "could not store lookup result"
+    for d in ok:
+        if reasons := [r for r in (osv_err, dd_err, store_err) if r]:
+            why[d] = "; ".join(reasons)
+    return why
+
+
+async def _live(side: str, call: Any) -> tuple[Any, str | None]:
+    """(result, None) or (None, why): never raises, bounded by LIVE_BUDGET."""
+    try:
+        return await asyncio.wait_for(call, LIVE_BUDGET), None
+    except Exception as e:
+        log.warning("gate_live_lookup_failed", side=side, error=str(e) or type(e).__name__)
+        return None, f"{side} lookup failed ({type(e).__name__})"
 
 
 async def _redundancy(
@@ -415,15 +447,14 @@ async def _ask_groq(prompt: str) -> str:
     raise AssertionError("unreachable")
 
 
-def _redundancy_only(dep: DepVerdict) -> bool:
-    """Only the redundancy signal fired: advisory by nature, an LLM must not escalate it to BLOCK."""
+def _soft_only(dep: DepVerdict) -> bool:
+    """Only redundancy / unverified findings: advisory by nature, an LLM must not escalate them."""
     f = dep.facts
     return bool(
-        f.get("redundancy")
+        (f.get("redundancy") or f.get("unverified"))
         and not f.get("vulns")
         and not f.get("copyleft")
         and (f.get("abandonment") or 0) < settings.gate_advisory_abandonment
-        and not f.get("unverified")
     )
 
 
@@ -449,8 +480,8 @@ async def stage3(
     Whenever the review does not happen the reasoning says why ("LLM review skipped (...)")."""
     if not settings.groq_api_key:
         return _skipped(dep, "no GROQ_API_KEY configured")
-    if _redundancy_only(dep):
-        return _skipped(dep, "redundancy-only finding, advisory by nature")
+    if _soft_only(dep):
+        return _skipped(dep, "redundancy / unverified-only finding, advisory by nature")
     prompt = build_prompt(dep)
     key = f"dephgraph:prompts:{sha256(prompt.encode()).hexdigest()}"
     raw = await _cached_reply(key)

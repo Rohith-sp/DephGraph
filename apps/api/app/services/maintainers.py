@@ -38,6 +38,7 @@ from sqlalchemy import delete, func, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import USER_AGENT
 from app.models.sql import MaintainedBy, Maintainer, Package
 from app.services.http import request
 from app.services.queries import chunks
@@ -47,7 +48,6 @@ log = structlog.get_logger()
 NPM_URL = "https://registry.npmjs.org"
 PYPI_URL = "https://pypi.org/pypi"
 CRATES_URL = "https://crates.io/api/v1/crates"
-USER_AGENT = "dephgraph-course-project (maintainer abandonment scoring)"
 CONCURRENCY = 8
 SUPPORTED = ("npm", "pypi", "cargo")
 DESCRIPTION_MAX = 1000

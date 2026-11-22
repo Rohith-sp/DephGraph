@@ -107,7 +107,7 @@ async def service_graph(
             f'"truncated":{json.dumps(truncated)}}}'
         )
 
-    return await cached_json(request, build, member)
+    return await cached_json(request, build, member, ver="v2:")  # v1 entries lack `truncated`
 
 
 @router.get("/{service_id}/prunable", response_model=Envelope[list[PrunableOut]])

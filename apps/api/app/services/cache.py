@@ -119,13 +119,17 @@ async def read_through(
 
 
 async def cached_json(
-    request: Request, build: Callable[[], Awaitable[str]], member: "Member | None"
+    request: Request,
+    build: Callable[[], Awaitable[str]],
+    member: "Member | None",
+    ver: str = "",
 ) -> Response:
     """Envelope response cached per caller teams + path + query; `build` returns the JSON of `data`.
 
     Pass the caller for anything derived from team data, so one tenant's payload is never served
     to another; None for the catalogue (same for everyone). `build` also runs the authorization
-    check: a 404 raised there is never cached.
+    check: a 404 raised there is never cached. `ver` ("v2:") invalidates entries of an older
+    payload shape.
     """
 
     async def envelope() -> str:
@@ -133,7 +137,7 @@ async def cached_json(
 
     scope = member.scope if member else "shared"
     body, _ = await read_through(
-        f"{scope}:{request.url.path}?{request.url.query}",
+        f"{ver}{scope}:{request.url.path}?{request.url.query}",
         envelope,
         member.team_ids if member else (),
     )

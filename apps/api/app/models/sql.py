@@ -169,6 +169,9 @@ class PackageVersion(Base):
     osv_checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )  # last OSV query for this version; NULL = never (migration 016)
+    deps_dev_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )  # last successful deps.dev lookup; NULL = never (migration 017)
 
 
 class RemediationAction(Base):

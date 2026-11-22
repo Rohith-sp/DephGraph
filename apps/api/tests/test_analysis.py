@@ -74,7 +74,7 @@ async def test_blast_radius_and_cache(client, auth):
     assert d["total_vulns"] == len(
         {v["vuln_id"] for x in d["vulnerable_packages"] for v in x["vulns"]}
     )
-    assert [k async for k in get_redis().scan_iter(f"{cache.PREFIX}*:blast_radius:1")]
+    assert [k async for k in get_redis().scan_iter(f"{cache.PREFIX}*:blast_radius:v2:1")]
 
     again = (await client.get("/blast-radius/1", headers=auth)).json()["data"]
     assert again["cached"] is True

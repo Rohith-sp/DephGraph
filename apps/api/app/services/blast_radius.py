@@ -151,5 +151,5 @@ async def get_blast_radius(
     async def build() -> str:
         return json.dumps(await compute(session, service_id))
 
-    body, hit = await cache.read_through(f"blast_radius:{service_id}", build, teams)
+    body, hit = await cache.read_through(f"blast_radius:v2:{service_id}", build, teams)
     return {**json.loads(body), "cached": hit}

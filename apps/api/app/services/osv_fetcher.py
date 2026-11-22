@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import USER_AGENT
 from app.models.mongo import osv_advisories
 from app.models.sql import Affects, Vulnerability
 from app.services.http import request
@@ -39,7 +40,7 @@ async def fetch_advisories(
 ) -> tuple[dict[PkgRef, list[str]], dict[str, dict[str, Any]]]:
     """Return ({ref: [osv_id]}, {osv_id: raw advisory}). Raises httpx.HTTPError if OSV is down."""
     hits: dict[PkgRef, list[str]] = {}
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, headers={"User-Agent": USER_AGENT}) as client:
         pending: list[tuple[PkgRef, str | None]] = [(r, None) for r in refs]
         for _ in range(MAX_PAGES + 1):
             if not pending:

@@ -120,7 +120,7 @@ async def test_fetch_one_per_registry():
         assert await maintainers.fetch_one(c, "go", "github.com/x/y") is None  # skipped, no call
     assert npm.called
     ua = owners.calls.last.request.headers["User-Agent"]
-    assert ua.startswith("dephgraph-course-project") and "@" not in ua  # generic, no personal info
+    assert ua == "DephGraph/1.0" and "@" not in ua  # generic, no personal info
 
 
 @respx.mock

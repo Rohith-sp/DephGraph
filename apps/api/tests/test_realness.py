@@ -236,3 +236,125 @@ async def test_clusters_say_when_embeddings_are_unavailable(client, auth, monkey
     monkeypatch.setattr(clusters_router, "get_mongo", broken)
     got = (await client.get("/clusters", headers=auth)).json()["data"]
     assert got and all(c["embeddings_available"] is False for c in got)
+
+
+# ---- live lookup hardening ---------------------------------------------------------------------
+
+
+async def affects_count(name="flask") -> int:
+    async with SessionLocal() as s:
+        return (
+            await s.execute(
+                text(
+                    "SELECT count(*) FROM affects a JOIN package p USING (package_id) "
+                    "WHERE p.name = :n AND a.version_string = '9.9.9'"
+                ),
+                {"n": name},
+            )
+        ).scalar_one()
+
+
+@respx.mock
+async def test_unsupported_ecosystem_does_not_poison_the_batch(monkeypatch, reseed):
+    monkeypatch.setattr(settings, "gate_live_lookup", True)
+    odd = ("maven", "x", "1")
+    with mock_upstreams():
+        out = await pr_gate_engine.refresh_stale([odd, DEP])
+    assert out == {odd: "unsupported ecosystem"} and await affects_count() == 1
+
+
+@respx.mock
+async def test_live_lookup_cap_reports_the_rest_and_keeps_the_finished(monkeypatch, reseed):
+    monkeypatch.setattr(settings, "gate_live_lookup", True)
+    monkeypatch.setattr(settings, "gate_max_live_lookups", 1)
+    other = ("pypi", "zzz", "1.0.0")
+    with mock_upstreams():
+        out = await pr_gate_engine.refresh_stale([DEP, other])
+    assert out == {other: "lookup cap reached"} and await affects_count() == 1
+
+
+@respx.mock
+async def test_deps_dev_stall_keeps_osv_results(monkeypatch, reseed):
+    monkeypatch.setattr(settings, "gate_live_lookup", True)
+
+    async def stall(refs):
+        raise TimeoutError
+
+    monkeypatch.setattr(pr_gate_engine, "fetch_metadata", stall)
+    with mock_upstreams():
+        out = await pr_gate_engine.refresh_stale([DEP])
+    assert out == {DEP: "deps.dev lookup failed (TimeoutError)"}
+    assert await affects_count() == 1  # OSV side stored
+
+
+@respx.mock
+async def test_any_osv_error_fails_closed_without_touching_affects(monkeypatch, reseed):
+    monkeypatch.setattr(settings, "gate_live_lookup", True)
+    with mock_upstreams():
+        await pr_gate_engine.refresh_stale([DEP])
+    async with SessionLocal() as s, s.begin():
+        await s.execute(text("UPDATE package_version SET osv_checked_at = NULL"))
+
+    async def boom(refs):
+        raise RuntimeError("bad")
+
+    monkeypatch.setattr(pr_gate_engine.osv_fetcher, "fetch_advisories", boom)
+    with mock_upstreams():
+        out = await pr_gate_engine.refresh_stale([DEP])
+    assert out == {DEP: "OSV lookup failed (RuntimeError)"} and await affects_count() == 1
+
+
+@respx.mock
+async def test_unstorable_lookup_is_unverified_not_raised(monkeypatch, reseed):
+    monkeypatch.setattr(settings, "gate_live_lookup", True)
+
+    async def boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(pr_gate_engine, "upsert_packages", boom)
+    with mock_upstreams():
+        out = await pr_gate_engine.refresh_stale([DEP])
+    assert out == {DEP: "could not store lookup result"}
+
+
+@respx.mock
+async def test_slow_mongo_does_not_delay_or_change_the_verdict(monkeypatch, reseed):
+    monkeypatch.setattr(settings, "gate_live_lookup", True)
+    monkeypatch.setattr(pr_gate_engine, "RAW_STORE_TIMEOUT", 0.05)
+
+    async def slow(advisories):
+        await pr_gate_engine.asyncio.sleep(5)
+
+    monkeypatch.setattr(pr_gate_engine.osv_fetcher, "store_raw", slow)
+    with mock_upstreams():
+        d = await gate()
+    assert d.verdict == "BLOCK" and "CVSS 9.8" in d.reasoning
+
+
+@respx.mock
+async def test_stage3_skips_unverified_only_findings(monkeypatch, reseed):
+    monkeypatch.setattr(settings, "groq_api_key", "k")
+    route = respx.post("https://api.groq.com/openai/v1/chat/completions").respond(
+        200, json={"choices": [{"message": {"content": '{"verdict":"BLOCK","reasoning":"x"}'}}]}
+    )
+    d = await gate(("pypi", "never-heard-of-it", "1.0.0"))
+    await pr_gate_engine.refine([d], 1, 1, store_responses=False)
+    assert d.verdict == "ADVISORY" and d.stage_reached == 2 and not route.called
+    assert "LLM review skipped" in d.reasoning
+
+
+@respx.mock
+async def test_deps_dev_gap_is_re_asked_only_after_the_ttl(monkeypatch, reseed):
+    monkeypatch.setattr(settings, "gate_live_lookup", True)
+    respx.post("https://api.osv.dev/v1/querybatch").respond(200, json={"results": [{}]})
+    dd = respx.get(url__regex=r"https://api\.deps\.dev/.*").respond(200, json={})
+    dep = ("pypi", "nolicense", "1.0.0")
+    await pr_gate_engine.refresh_stale([dep])
+    await pr_gate_engine.refresh_stale([dep])  # license/published_at still NULL, but checked
+    assert dd.call_count == 1
+    async with SessionLocal() as s, s.begin():
+        await s.execute(
+            text("UPDATE package_version SET deps_dev_checked_at = now() - interval '100 hours'")
+        )
+    await pr_gate_engine.refresh_stale([dep])
+    assert dd.call_count == 2
