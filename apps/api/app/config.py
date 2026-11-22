@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     github_webhook_secret: str = ""
     internal_cron_secret: str = ""
     groq_api_key: str = ""
-    groq_model: str = "llama-3.1-70b-versatile"
+    groq_model: str = "openai/gpt-oss-120b"  # llama-3.x ids were retired by Groq (checked 22 Nov 2026)
     github_app_id: str = ""
     github_private_key_base64: str = ""
     environment: str = "development"

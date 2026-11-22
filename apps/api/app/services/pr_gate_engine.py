@@ -260,7 +260,7 @@ async def _ask_groq(prompt: str) -> str:
                 model=settings.groq_model,
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
-                max_tokens=200,
+                max_tokens=1024,  # gpt-oss spends tokens on reasoning before the JSON answer
             )
             return resp.choices[0].message.content or ""
         except RateLimitError:
