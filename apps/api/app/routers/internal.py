@@ -44,9 +44,9 @@ async def osv_sync(session: DbSession) -> dict[str, object]:
         PkgRef(r["package_id"], r["ecosystem"], r["name"], r["version"]) for r in found
     ]
     hits, advisories = await osv_fetcher.fetch_advisories(refs) if refs else ({}, {})
+    await osv_fetcher.store_raw(advisories)  # raw layer first (best-effort on the cron path)
     async with session.begin():
         vulns = await osv_fetcher.upsert_advisories(session, hits, advisories)
-    await osv_fetcher.store_raw(advisories)
     await blast_radius.invalidate()
     return ok({"packages_scanned": len(refs), "vulns_fetched": vulns})
 
