@@ -20,10 +20,11 @@ and *"which single upgrade fixes the most services?"*.
 | `er_chen.mmd` | Conceptual Chen-notation diagram (entities, attributes, relationships) | [mermaid.live](https://mermaid.live) |
 | `er_chen.drawio` | Editable Chen diagram, full detail | [app.diagrams.net](https://app.diagrams.net) → *Open from device* |
 | `er_chen_overview.drawio` | Editable Chen diagram, entities and relationships only | [app.diagrams.net](https://app.diagrams.net) |
-| `images/er_diagram_full.png` | Rendered relational diagram with data types | any image viewer |
-| `images/er_diagram_compact.png` | Rendered key-only diagram (PK/FK links) | any image viewer |
-| `images/er_diagram_dbdiagram_full.png` | dbdiagram.io render, all columns with types | any image viewer |
-| `images/er_diagram_dbdiagram_keys.png` | dbdiagram.io render, keys only | any image viewer |
+| `images/er_diagram_full.png` | **Older design (before 1 Nov 2026 fixes)**: Rendered relational diagram with data types | any image viewer |
+| `images/er_diagram_compact.png` | Crow's-foot diagram of the current design, all columns (regenerated 22 Nov 2026 from `er_crowsfoot.mmd`) | any image viewer |
+| `images/er_chen.png` | Chen diagram of the current design (rendered 22 Nov 2026 from `er_chen.mmd`) | any image viewer |
+| `images/er_diagram_dbdiagram_full.png` | **Older design (before 1 Nov 2026 fixes)**: dbdiagram.io render, all columns with types | any image viewer |
+| `images/er_diagram_dbdiagram_keys.png` | **Older design (before 1 Nov 2026 fixes)**: dbdiagram.io render, keys only | any image viewer |
 
 ---
 
