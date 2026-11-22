@@ -43,6 +43,21 @@ class Settings(BaseSettings):
     trusted_proxy_hops: int = 1
     # Vercel sets VERCEL=1 in every deployment; true = serverless connection settings.
     serverless: bool = Field(default=False, validation_alias="VERCEL")
+    # PR gate thresholds (PRD section 8). CVSS bands follow the CVSS v3 ratings used everywhere else
+    # (>= 9 CRITICAL, >= 7 HIGH): BLOCK on CRITICAL, ADVISORY on HIGH. Abandonment is 0-100.
+    gate_block_cvss: float = 9.0
+    gate_advisory_cvss: float = 7.0
+    gate_block_abandonment: int = 80
+    gate_advisory_abandonment: int = 40
+    # Dependencies OSV was not queried for within this many hours are asked live (OSV + deps.dev)
+    # inside the gate; False = never go online, such dependencies are reported as unverified.
+    gate_live_lookup: bool = True
+    gate_osv_max_age_hours: int = 48
+    # Transitive-closure depth cap for manifest-sourced deployments; a deployment that hits it is
+    # flagged truncated (the graph and blast radius are partial).
+    max_transitive_depth: int = 10
+    # Packages one maintainers-sync run asks the registries about (least recently synced first).
+    registry_sync_batch: int = 2000
 
     @model_validator(mode="after")
     def production_needs_org_admins(self) -> "Settings":

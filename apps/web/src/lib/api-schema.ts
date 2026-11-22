@@ -211,7 +211,8 @@ export interface paths {
         put?: never;
         /**
          * Maintainers Sync
-         * @description Cron: refresh maintainers + last activity (npm, PyPI, crates.io) for every package.
+         * @description Cron: refresh descriptions, maintainers + last activity (npm, PyPI, crates.io) for the
+         *     registry_sync_batch least recently synced packages (the rest follow on later runs).
          *
          *     Feeds v_abandonment (migration 007). Go/maven/nuget are skipped (no keyless registry data).
          *     Registry calls run outside the transaction, bounded by maintainers.CONCURRENCY.
@@ -738,6 +739,11 @@ export interface components {
             service_id: number;
             /** Total Vulns */
             total_vulns: number;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
             /** Vulnerable Packages */
             vulnerable_packages: components["schemas"]["VulnerablePackage"][];
         };
@@ -758,6 +764,11 @@ export interface components {
         ClusterOut: {
             /** Cluster Id */
             cluster_id: number;
+            /**
+             * Embeddings Available
+             * @default true
+             */
+            embeddings_available: boolean;
             /** Keywords */
             keywords: string[];
             /** Label */
@@ -1007,6 +1018,11 @@ export interface components {
             /** Nodes */
             nodes: components["schemas"]["GraphNode"][];
             service: components["schemas"]["GraphService"];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
         };
         /** GraphService */
         GraphService: {

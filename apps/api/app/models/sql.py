@@ -69,6 +69,9 @@ class Package(Base):
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _now()
+    registry_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )  # last maintainers-sync attempt (migration 016)
 
 
 class Maintainer(Base):
@@ -144,6 +147,9 @@ class Deployment(Base):
     manifest_ecosystems: Mapped[list[str]] = mapped_column(
         ARRAY(Text), server_default="{}"
     )  # ecosystems whose edges come from depends_on (the rest: deployment_edge)
+    closure_truncated: Mapped[bool] = mapped_column(
+        Boolean, server_default="false"
+    )  # transitive closure stopped at the depth cap (migration 016)
 
 
 class PackageVersion(Base):
@@ -160,6 +166,9 @@ class PackageVersion(Base):
     )
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_yanked: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    osv_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )  # last OSV query for this version; NULL = never (migration 016)
 
 
 class RemediationAction(Base):

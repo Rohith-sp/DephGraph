@@ -219,10 +219,12 @@ async def _evaluate_and_store(
     for svc in services:
         sid = svc["service_id"]
         deps, notes = changes[svc["root_path"].strip("/")]
-        # no DB transaction is held across Groq calls: short read tx, then short write tx
+        # no DB transaction is held across network calls: live lookups of what the DB cannot
+        # vouch for, then a short read tx, Groq, and a short write tx
+        unverified = await pr_gate_engine.refresh_stale(deps)
         async with SessionLocal() as session:
             async with session.begin():
-                results = await pr_gate_engine.evaluate_all(session, deps, sid)
+                results = await pr_gate_engine.evaluate_all(session, deps, sid, unverified)
             await pr_gate_engine.refine(results, sid, number)
             # fail closed: manifests we could not read make the PR at least ADVISORY
             results += [

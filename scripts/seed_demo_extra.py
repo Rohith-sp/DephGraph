@@ -172,9 +172,9 @@ async def main(dsn: str = DSN) -> None:
             )
             sid = await c.fetchval("SELECT service_id FROM service WHERE team_id=$1 AND name=$2", team, name)
             await c.execute(
-                "INSERT INTO deployment (service_id, deploy_seq, environment, deployed_at) "
-                "VALUES ($1, 1, 'production', $2) ON CONFLICT DO NOTHING",
-                sid, ts(10),
+                "INSERT INTO deployment (service_id, deploy_seq, environment, deployed_at, "
+                "manifest_ecosystems) VALUES ($1, 1, 'production', $2, $3) ON CONFLICT DO NOTHING",
+                sid, ts(10), sorted({by_name[p][0] for p in pkgs}),
             )
             await c.executemany(
                 "INSERT INTO resolves_to (service_id, deploy_seq, package_id, version_string, depth, is_direct) "
@@ -217,8 +217,9 @@ async def main(dsn: str = DSN) -> None:
         )
         sid = await c.fetchval("SELECT service_id FROM service WHERE team_id=1 AND name='monolith-demo'")
         await c.execute(
-            "INSERT INTO deployment (service_id, deploy_seq, environment, deployed_at) "
-            "VALUES ($1, 1, 'production', $2) ON CONFLICT DO NOTHING",
+            "INSERT INTO deployment (service_id, deploy_seq, environment, deployed_at, "
+            "manifest_ecosystems) VALUES ($1, 1, 'production', $2, ARRAY['npm']) "
+            "ON CONFLICT DO NOTHING",
             sid, ts(5),
         )
         # BFS min depth from direct deps (nodes 1..8)

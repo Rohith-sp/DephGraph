@@ -24,6 +24,12 @@ export default async function ServiceDetailPage({ params }: { params: Promise<{ 
   return (
     <>
       <h1>{graph.service.name}</h1>
+      {graph.truncated && (
+        <p role="status" className="rounded-xl border border-line-strong p-3 text-fg2">
+          Partial graph: the dependency tree was cut at the depth limit, so deeper packages and their
+          vulnerabilities are not shown.
+        </p>
+      )}
       <DependencyGraph graph={graph} />
       <section aria-labelledby="prunable-h" className="space-y-3">
         <h2 id="prunable-h">

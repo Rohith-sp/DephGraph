@@ -148,8 +148,9 @@ async def mkpkg(name: str, age: float = 0, yanked: bool = False) -> int:
         ).scalar_one()
         await s.execute(
             text(
-                "INSERT INTO package_version (package_id, version_string, published_at, is_yanked) "
-                "VALUES (:p, '1.0.0', now() - make_interval(secs => :age), :y)"
+                "INSERT INTO package_version (package_id, version_string, license_id, published_at, "
+                "is_yanked, osv_checked_at) "
+                "VALUES (:p, '1.0.0', 1, now() - make_interval(secs => :age), :y, now())"
             ),
             {"p": pid, "age": age, "y": yanked},
         )

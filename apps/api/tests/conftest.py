@@ -37,6 +37,7 @@ settings.redis_url = (
 settings.supabase_jwt_secret = "test-jwt-secret-at-least-32-characters"
 settings.internal_cron_secret = "test-cron-secret"
 settings.rate_limit = "1000000/minute"  # test_polish lowers it per test
+settings.gate_live_lookup = False  # no test reaches OSV / deps.dev; live tests are opt-in (live)
 
 sys.path.insert(0, str(ROOT / "scripts"))
 import migrate  # noqa: E402
@@ -50,10 +51,22 @@ from app.services import cache, http  # noqa: E402
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """One session event loop for every async test: the app's engine/clients are module globals."""
+    """One session event loop for every async test: the app's engine/clients are module globals.
+    Tests marked `live` use the real internet and run only with DEPHGRAPH_LIVE=1."""
+    live_off = pytest.mark.skip(reason="live network test: set DEPHGRAPH_LIVE=1")
     for item in items:
+        if "live" in item.keywords and os.environ.get("DEPHGRAPH_LIVE") != "1":
+            item.add_marker(live_off)
         if pytest_asyncio.is_async_test(item):
             item.add_marker(pytest.mark.asyncio(loop_scope="session"), append=False)
+
+
+async def seed() -> None:
+    """Seed data stands for versions the OSV sync has already checked (the gate trusts those)."""
+    await seed_db.main(TEST_DSN)
+    conn = await asyncpg.connect(TEST_DSN)
+    await conn.execute("UPDATE package_version SET osv_checked_at = now()")
+    await conn.close()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -65,7 +78,7 @@ async def database():
     conn = await asyncpg.connect(TEST_DSN)
     await migrate.migrate(conn)
     await conn.close()
-    await seed_db.main(TEST_DSN)
+    await seed()
     try:
         await get_mongo().client.drop_database(TEST_DB)
         await ensure_indexes()
@@ -94,7 +107,7 @@ async def clean_stores(monkeypatch):
 async def reseed():
     """Use in tests that mutate Postgres: restores seed data afterwards."""
     yield
-    await seed_db.main(TEST_DSN)
+    await seed()
 
 
 @pytest.fixture

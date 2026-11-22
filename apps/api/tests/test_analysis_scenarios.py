@@ -94,7 +94,10 @@ async def mkservice(s, team_id: int, name: str) -> int:
         )
     ).scalar_one()
     await s.execute(
-        text("INSERT INTO deployment (service_id, deploy_seq) VALUES (:s, 1)"),
+        text(
+            "INSERT INTO deployment (service_id, deploy_seq, manifest_ecosystems) "
+            "VALUES (:s, 1, ARRAY['pypi', 'npm'])"
+        ),
         {"s": sid},
     )
     return sid
