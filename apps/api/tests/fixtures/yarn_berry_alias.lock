@@ -1,0 +1,25 @@
+__metadata:
+  version: 6
+  cacheKey: 8
+
+"app@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "app@workspace:."
+  dependencies:
+    wrap: "npm:string-width@^4.2.0"
+  languageName: unknown
+  linkType: soft
+
+"wrap@npm:string-width@^4.2.0, string-width@npm:^4.2.0":
+  version: 4.2.3
+  resolution: "string-width@npm:4.2.3"
+  dependencies:
+    emoji-regex: ^8.0.0
+  languageName: node
+  linkType: hard
+
+"emoji-regex@npm:^8.0.0":
+  version: 8.0.0
+  resolution: "emoji-regex@npm:8.0.0"
+  languageName: node
+  linkType: hard

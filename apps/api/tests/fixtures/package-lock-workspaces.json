@@ -1,0 +1,12 @@
+{
+  "name": "mono",
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "mono", "workspaces": ["packages/*"]},
+    "packages/web": {"name": "web", "version": "1.0.0", "dependencies": {"express": "^4.18.0"}},
+    "node_modules/web": {"resolved": "packages/web", "link": true},
+    "node_modules/express": {"version": "4.18.2", "resolved": "https://registry.npmjs.org/express/-/express-4.18.2.tgz"},
+    "node_modules/forked": {"version": "1.0.0", "resolved": "git+ssh://git@github.com/acme/forked.git#abc"},
+    "node_modules/tarball": {"version": "2.0.0", "resolved": "file:../tarball.tgz"}
+  }
+}

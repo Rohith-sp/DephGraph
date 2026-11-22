@@ -1,0 +1,15 @@
+[project]
+name = "svc"
+dependencies = ["flask>=2.0,<3", "requests[socks]==2.31.0", "unversioned"]
+
+[project.optional-dependencies]
+extra = ["pytest==8.0.0"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+django = "^4.2.1"
+celery = { version = "~5.3", extras = ["redis"] }
+mylib = { path = "../mylib" }
+
+[tool.poetry.group.dev.dependencies]
+black = "^24.0"

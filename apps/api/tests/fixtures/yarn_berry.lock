@@ -1,0 +1,23 @@
+__metadata:
+  version: 6
+  cacheKey: 8
+
+"app@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "app@workspace:."
+  dependencies:
+    lodash: ^4.17.21
+  languageName: unknown
+  linkType: soft
+
+"lodash@npm:^4.17.21":
+  version: 4.17.21
+  resolution: "lodash@npm:4.17.21"
+  languageName: node
+  linkType: hard
+
+"@babel/helper@npm:^7.0.0, @babel/helper@npm:^7.1.0":
+  version: 7.2.0
+  resolution: "@babel/helper@npm:7.2.0"
+  languageName: node
+  linkType: hard

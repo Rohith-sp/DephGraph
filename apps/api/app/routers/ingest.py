@@ -8,6 +8,7 @@ transaction. /replay/{manifest_id} re-runs the same projection from a stored doc
 import asyncio
 import hashlib
 import time
+from collections import deque
 from datetime import UTC, datetime
 from typing import Any, TypeVar, cast
 
@@ -24,12 +25,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import CurrentMember, get_current_user
 from app.database import DbSession
 from app.models.mongo import raw_manifests
-from app.models.sql import Package, PackageVersion
+from app.models.sql import DeploymentEdge, Package, PackageVersion
 from app.schemas.common import BigId, Envelope, ok
 from app.schemas.ingest import IngestRequest, IngestResult, ScanResult
 from app.services import cache, osv_fetcher
 from app.services.deps_dev_client import Metadata, apply_metadata, fetch_metadata
-from app.services.manifest_parser import ParsedPackage, PkgRef, parse_manifest
+from app.services.manifest_parser import (
+    ParsedPackage,
+    PkgRef,
+    is_lockfile,
+    parse_manifest,
+)
 from app.services.queries import chunks, latest_seq, lock_service, require_service, rows
 
 log = structlog.get_logger()
@@ -67,24 +73,84 @@ async def _upsert_packages(
     return refs, inserted
 
 
+async def _record_edges(
+    session: AsyncSession,
+    service_id: int,
+    seq: int,
+    parsed: list[ParsedPackage],
+    refs: list[PkgRef],
+) -> None:
+    """The lockfile's edges, stored with this deployment only (never in the global depends_on)."""
+    ids = {(r.name, r.version): r.package_id for r in refs}
+    edges = sorted(
+        {
+            (ids[p.name, p.version], p.version, ids[d], d[1])
+            for p in parsed
+            for d in p.deps
+            if d in ids
+        }
+    )
+    for chunk in chunks(edges):
+        await session.execute(
+            insert(DeploymentEdge).values(
+                [
+                    {
+                        "service_id": service_id,
+                        "deploy_seq": seq,
+                        "dep_package_id": a,
+                        "dep_version_string": av,
+                        "ref_package_id": b,
+                        "ref_version_string": bv,
+                    }
+                    for a, av, b, bv in chunk
+                ]
+            )
+        )
+
+
+def _lock_depths(parsed: list[ParsedPackage]) -> dict[tuple[str, str], int]:
+    """Shallowest depth of each package from the direct ones; unreachable ones count as 1."""
+    deps = {(p.name, p.version): p.deps for p in parsed}
+    depth = {k: 0 for k, p in zip(deps, parsed, strict=True) if p.is_direct}
+    queue = deque(depth)
+    while queue:
+        cur = queue.popleft()
+        for nxt in deps[cur]:
+            if nxt in deps and nxt not in depth:
+                depth[nxt] = depth[cur] + 1
+                queue.append(nxt)
+    return {k: depth.get(k, 1) for k in deps}
+
+
 async def _record_deployment(
     session: AsyncSession,
     service_id: int,
     environment: str,
     parsed: list[ParsedPackage],
     refs: list[PkgRef],
+    locked: bool,
 ) -> int:
-    """New deployment + resolves_to: direct deps, then closure over known depends_on edges."""
+    """New deployment + resolves_to: direct deps, then closure over known depends_on edges.
+
+    A lockfile already lists every resolved package, so its deployment takes exactly that set
+    (depth by BFS over its own edges) and never the global depends_on closure, which mixes in
+    versions other projects resolved.
+    """
     seq = (
         await session.execute(
             text(
-                "INSERT INTO deployment (service_id, deploy_seq, environment) "
-                "SELECT :s, COALESCE(MAX(deploy_seq), 0) + 1, :env FROM deployment "
+                "INSERT INTO deployment (service_id, deploy_seq, environment, locked) "
+                "SELECT :s, COALESCE(MAX(deploy_seq), 0) + 1, :env, :locked FROM deployment "
                 "WHERE service_id = :s RETURNING deploy_seq"
             ),
-            {"s": service_id, "env": environment},
+            {"s": service_id, "env": environment, "locked": locked},
         )
     ).scalar_one()
+    depth = (
+        _lock_depths(parsed)
+        if locked
+        else {(p.name, p.version): int(not p.is_direct) for p in parsed}
+    )
     await session.execute(
         text(
             "INSERT INTO resolves_to (service_id, deploy_seq, package_id, version_string, depth, "
@@ -96,12 +162,15 @@ async def _record_deployment(
                 "q": seq,
                 "p": r.package_id,
                 "v": r.version,
-                "d": 0 if p.is_direct else 1,
+                "d": depth.get((p.name, p.version), 1),
                 "i": p.is_direct,
             }
             for p, r in zip(parsed, refs, strict=True)
         ],
     )
+    if locked:
+        await _record_edges(session, service_id, seq, parsed, refs)
+        return int(seq)
     await session.execute(
         text("""
             INSERT INTO resolves_to (service_id, deploy_seq, package_id, version_string, depth,
@@ -227,7 +296,9 @@ async def _project(session: AsyncSession, doc: dict[str, Any]) -> dict[str, Any]
     environment = doc.get("environment", "production")  # documents stored before 010 have none
     try:
         try:
-            parsed = parse_manifest(ecosystem, doc["raw_content"])
+            filename = doc.get("filename", "")
+            parsed = parse_manifest(ecosystem, doc["raw_content"], filename)
+            locked = is_lockfile(ecosystem, filename)
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
         if not parsed:
@@ -249,12 +320,13 @@ async def _project(session: AsyncSession, doc: dict[str, Any]) -> dict[str, Any]
             vulns = await osv_fetcher.upsert_advisories(
                 session, refs, _rekey(refs, hits), advisories
             )
-            seq = await _record_deployment(session, service_id, environment, parsed, refs)
+            seq = await _record_deployment(session, service_id, environment, parsed, refs, locked)
             await _record_scan(session, service_id)
     except Exception as e:
         await _mark(doc["_id"], "failed", error=_error_text(e))
         raise
-    await _mark(doc["_id"], "projected", deploy_seq=seq, parsed_packages=[vars(p) for p in parsed])
+    packages = [{"name": p.name, "version": p.version, "is_direct": p.is_direct} for p in parsed]
+    await _mark(doc["_id"], "projected", deploy_seq=seq, parsed_packages=packages)
     # the upserted advisories and package metadata are catalogue data other teams' results use too
     await cache.bump([svc["team_id"]], catalog=True)
     return {

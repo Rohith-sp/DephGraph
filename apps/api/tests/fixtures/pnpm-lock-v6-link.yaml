@@ -1,0 +1,27 @@
+lockfileVersion: '6.0'
+dependencies:
+  react:
+    specifier: ^18.2.0
+    version: 18.2.0
+  local-lib:
+    specifier: link:../lib
+    version: link:../lib
+packages:
+  /react@18.2.0:
+    resolution: {integrity: sha512-x}
+    dependencies:
+      loose-envify: 1.4.0
+    optionalDependencies:
+      fsevents: 2.3.3
+    dev: false
+  /loose-envify@1.4.0:
+    resolution: {integrity: sha512-y}
+    dev: false
+  /fsevents@2.3.3:
+    resolution: {integrity: sha512-f}
+    dev: false
+    optional: true
+  file:../lib:
+    resolution: {directory: ../lib, type: directory}
+    name: local-lib
+    dev: false

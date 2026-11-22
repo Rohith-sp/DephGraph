@@ -665,7 +665,7 @@ async def test_missing_patch_is_advisory_not_pass(client, auth, reseed):  # B1
 
 
 @pytest.mark.parametrize(
-    "name", ["pyproject.toml", "backend/poetry.lock", "web/package-lock.json", "Cargo.lock"]
+    "name", ["Pipfile", "backend/Pipfile.lock", "web/npm-shrinkwrap.json", "go.sum"]
 )
 @respx.mock
 async def test_unparsed_manifests_are_advisory(client, auth, reseed, name):  # B1
@@ -714,7 +714,7 @@ async def test_synchronize_redelivery_replaces_verdicts_and_notes(client, auth, 
         200,
         json=[
             {"filename": "requirements.txt", "patch": req_patch("syncdep==1.0.0")},
-            {"filename": "pyproject.toml", "patch": "@@ -1 +1 @@\n+x\n"},
+            {"filename": "go.sum", "patch": "@@ -1 +1 @@\n+x\n"},
         ],
     )
     first = await review(client, auth)

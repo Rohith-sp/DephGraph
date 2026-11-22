@@ -1,0 +1,24 @@
+lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      react:
+        specifier: ^18.2.0
+        version: 18.2.0
+    devDependencies:
+      vitest:
+        specifier: ^1.0.0
+        version: 1.0.0
+packages:
+  react@18.2.0:
+    resolution: {integrity: sha512-x}
+  loose-envify@1.4.0:
+    resolution: {integrity: sha512-y}
+  vitest@1.0.0:
+    resolution: {integrity: sha512-z}
+snapshots:
+  react@18.2.0:
+    dependencies:
+      loose-envify: 1.4.0
+  loose-envify@1.4.0: {}
+  vitest@1.0.0: {}

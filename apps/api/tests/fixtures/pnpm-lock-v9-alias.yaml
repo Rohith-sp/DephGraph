@@ -1,0 +1,28 @@
+lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      strip:
+        specifier: npm:strip-ansi@^7.0.0
+        version: strip-ansi@7.1.0
+      react:
+        specifier: ^18.2.0
+        version: 18.2.0
+packages:
+  strip-ansi@7.1.0:
+    resolution: {integrity: sha512-a}
+  ansi-regex@6.0.1:
+    resolution: {integrity: sha512-b}
+  react@18.2.0:
+    resolution: {integrity: sha512-c}
+  fsevents@2.3.3:
+    resolution: {integrity: sha512-d}
+snapshots:
+  strip-ansi@7.1.0:
+    dependencies:
+      regex: ansi-regex@6.0.1
+  ansi-regex@6.0.1: {}
+  react@18.2.0:
+    optionalDependencies:
+      fsevents: 2.3.3
+  fsevents@2.3.3: {}

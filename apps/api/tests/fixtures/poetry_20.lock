@@ -1,0 +1,28 @@
+[[package]]
+name = "django"
+version = "4.2.1"
+description = "A high-level Python web framework"
+optional = false
+python-versions = ">=3.8"
+
+[package.dependencies]
+asgiref = ">=3.6.0,<4"
+
+[[package]]
+name = "asgiref"
+version = "3.7.0"
+description = "ASGI specs"
+optional = false
+python-versions = ">=3.7"
+
+[[package]]
+name = "black"
+version = "24.1.0"
+description = "The uncompromising code formatter."
+optional = false
+python-versions = ">=3.8"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "abc"
