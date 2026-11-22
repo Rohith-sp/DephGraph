@@ -212,7 +212,7 @@ async def run_guarded(redis: Any, token: str) -> bool:
     except Exception:  # noqa: BLE001 -- job boundary: log, then release the lock below
         log.exception("cluster_recompute_failed")
     finally:
-        await cache.bump()  # a failed run may already have committed the Postgres half
+        await cache.bump(catalog=True)  # a failed run may already have committed the Postgres half
         await release(redis, token)
     return ok
 

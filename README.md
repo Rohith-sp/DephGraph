@@ -102,13 +102,15 @@ Ports bind to 127.0.0.1 and can be moved with `PG_PORT`, `MONGO_PORT`, `REDIS_PO
 Needs Docker, Python 3.12 (with [uv](https://docs.astral.sh/uv/)) and Node 22+.
 
 ```bash
-docker compose up -d postgres mongo redis  # databases only (the full stack incl. api/web is plain `docker compose up -d`; don't mix it with the steps below, ports clash); first start applies every file in apps/api/migrations
-# (to re-apply migrations: docker compose down -v, which wipes all local data)
+docker compose up -d postgres mongo redis  # databases only (the full stack incl. api/web is plain `docker compose up -d`; don't mix it with the steps below, ports clash)
+# Schema changes go through scripts/migrate.py (below); the full-stack `init` service runs it too.
+# A volume created before the runner existed has no history: apps/api/.venv/bin/python scripts/migrate.py --baseline <last applied version, e.g. 010>
 # .env.local (gitignored): defaults already match the compose services, so only secrets are needed; never overwrites an existing file
 [ -f .env.local ] || printf 'SUPABASE_JWT_SECRET=dev-only-jwt-secret-change-me-0123456789\nINTERNAL_CRON_SECRET=dev-only-cron-secret\n' > .env.local
 
 uv venv -p 3.12 apps/api/.venv
 uv pip install -p apps/api/.venv -r apps/api/requirements.txt   # slim API; tests: add -r apps/api/requirements-dev.txt -r apps/api/requirements-ml.txt (CPU torch first, see that file)
+apps/api/.venv/bin/python scripts/migrate.py   # applies pending apps/api/migrations/*.sql, each once; --status / --dry-run
 apps/api/.venv/bin/python scripts/seed_db.py
 
 cd apps/api && .venv/bin/uvicorn app.main:app --reload   # API on :8000
@@ -139,7 +141,7 @@ Runs the full product against a local Supabase stack (Postgres, Auth, Studio, Ma
 sign-in. Needs the [Supabase CLI](https://supabase.com/docs/guides/local-development); ports 55320-55329.
 
 ```bash
-supabase start        # applies apps/api/migrations via the supabase/migrations symlink
+supabase start        # applies apps/api/migrations via the supabase/migrations symlink (the CLI keeps its own history: do not run scripts/migrate.py on that database)
 supabase status -o env  # keys for .env.local: SUPABASE_URL=http://127.0.0.1:55321, SUPABASE_ANON_KEY,
                         # SUPABASE_SERVICE_ROLE_KEY, SUPABASE_JWT_SECRET, DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:55322/postgres
                         # apps/web/.env.local: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY (leave AUTH_DISABLED unset)

@@ -37,19 +37,19 @@ def runtime_samples() -> AsyncCollection:
 
 async def _resolve_seq(
     session: AsyncSession, service_id: int, requested: int | None, member: Member | None
-) -> int:
-    """The deployment the samples belong to: 404 unknown service/deployment, 409 none at all.
+) -> tuple[int, int]:
+    """(deploy_seq, team_id) the samples belong to: 404 unknown service/deployment, 409 none at all.
 
     Without an explicit `requested` seq, samples go to the latest production deployment.
     """
-    await require_service(session, service_id, member)
+    team_id = (await require_service(session, service_id, member))["team_id"]
     if requested is None:
         seq = await latest_seq(session, service_id)
         if seq is None:
             raise HTTPException(
                 409, "Service has no production deployment; ingest a manifest first"
             )
-        return seq
+        return seq, team_id
     found = await rows(
         session,
         "SELECT 1 FROM deployment WHERE service_id = :s AND deploy_seq = :q",
@@ -58,7 +58,7 @@ async def _resolve_seq(
     )
     if not found:
         raise HTTPException(404, "Deployment not found")
-    return requested
+    return requested, team_id
 
 
 def _aggregate(body: RuntimeSamplesRequest) -> dict[Key, int]:
@@ -176,7 +176,7 @@ async def record_samples(
     A rejected batch (404/409 after the raw insert) stays in Mongo with status 'rejected'.
     """
     async with session.begin():  # fast fail before writing anything
-        seq = await _resolve_seq(session, body.service_id, body.deploy_seq, member)
+        seq, team_id = await _resolve_seq(session, body.service_id, body.deploy_seq, member)
     captured = body.captured_at or datetime.now(UTC)
     totals = _aggregate(body)
     doc_id = await _store_raw(body, seq, captured)
@@ -191,7 +191,7 @@ async def record_samples(
     except Exception as e:  # DB error: do not leave the raw doc `pending` forever
         await _mark_raw(doc_id, {"status": "failed", "error": f"{type(e).__name__}: {e}"[:1000]})
         raise
-    await cache.bump()
+    await cache.bump([team_id])
     skipped = [s for s in body.samples if (s.name, s.version) not in matched]
     distinct_skipped = list(dict.fromkeys((s.name, s.version) for s in skipped))
     await _mark_raw(

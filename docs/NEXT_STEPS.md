@@ -58,9 +58,8 @@ Everything the synopsis promised, except deployment, is built and tested
 Verified on the local stack: 8 clusters from the 97 described packages (617 packages in total), a
 520-node service graph served in about 0.06 s, a live ingest that pulled 43 advisories from OSV.dev,
 a runtime batch and a replay. `scripts/test_api.sh` runs the backend tests in Docker with an isolated
-test database. Note: the compose Postgres volume predates migration 007; apply it once with
-`docker exec -i dephgraph-postgres-1 psql -U dephgraph dephgraph < apps/api/migrations/007_maintainer_activity.sql`
-(a fresh volume applies all migrations automatically).
+test database. Migrations are applied by `scripts/migrate.py` (compose `init` runs it); a volume that predates the
+runner needs `scripts/migrate.py --baseline <last applied version>` once.
 
 ## 2. Course track — what is left (do these first)
 

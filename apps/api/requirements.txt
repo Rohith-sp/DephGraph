@@ -30,6 +30,9 @@ cvss==3.6
 # Auth
 pyjwt[crypto]==2.15.1
 
+# Error reporting (initialised only when SENTRY_DSN is set)
+sentry-sdk[fastapi]==2.74.0
+
 # Logging & rate limiting
 structlog==24.4.0
 limits==5.8.0  # per-IP rate limit (app/limiter.py)

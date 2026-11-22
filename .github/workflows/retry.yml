@@ -1,0 +1,31 @@
+name: PR-gate retry
+# Sweeps stored PR-gate deliveries that failed or whose worker died (POST /internal/pr-gate/retry),
+# and purges finished ones after 30 days. Runs every 10 minutes; on a private repository that is
+# roughly 4,300 Actions minutes a month, over the 2,000 free ones, so lower the frequency there.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: pr-gate-retry
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      API_BASE_URL: ${{ secrets.API_BASE_URL }}
+      INTERNAL_CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
+    steps:
+      - run: |
+          if [ -z "$API_BASE_URL" ] || [ -z "$INTERNAL_CRON_SECRET" ]; then
+            echo "::notice::API_BASE_URL or INTERNAL_CRON_SECRET secret is not set; skipping."
+            exit 0
+          fi
+          curl --fail-with-body --silent --show-error --max-time 290 -X POST \
+            -H "X-Cron-Secret: $INTERNAL_CRON_SECRET" "${API_BASE_URL%/}/internal/pr-gate/retry"

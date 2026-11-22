@@ -81,24 +81,25 @@ async def test_rate_limit_falls_back_to_memory_when_redis_is_down(client, monkey
 
 async def test_membership_is_cached_until_the_generation_bumps(client, auth, reseed):
     assert (await client.get("/services", headers=auth)).status_code == 200
-    key = f"dephgraph:member:{DEV_USER}:0"
-    assert json.loads(await get_redis().get(key)) == [1, 2, 3]
+    key = f"dephgraph:member:{DEV_USER}"
+    assert json.loads(await get_redis().get(key)) == [0, [1, 2, 3]]  # [generation, teams]
     assert 0 < await get_redis().ttl(key) <= auth_module.MEMBER_TTL
 
     async with SessionLocal() as s, s.begin():
         await s.execute(
             text("DELETE FROM team_member WHERE user_id = :u AND team_id = 3"), {"u": DEV_USER}
         )
-    assert json.loads(await get_redis().get(key)) == [1, 2, 3]  # still served from the cache
-    await cache.bump()  # what scripts/add_team_member.py does
-    assert await get_redis().get(f"dephgraph:member:{DEV_USER}:1") is None
+    cache.members.clear()  # the in-process copy expired; Redis still has the old teams
     assert (await client.get("/services", headers=auth)).status_code == 200
-    assert json.loads(await get_redis().get(f"dephgraph:member:{DEV_USER}:1")) == [1, 2]
+    assert json.loads(await get_redis().get(key)) == [0, [1, 2, 3]]
+    await cache.bump(memberships=True)  # what scripts/add_team_member.py does
+    assert (await client.get("/services", headers=auth)).status_code == 200
+    assert json.loads(await get_redis().get(key)) == [1, [1, 2]]
 
 
 async def test_membership_falls_back_to_the_database_when_redis_is_down(client, auth, monkeypatch):
     class Down:
-        async def get(self, *_a):
+        async def mget(self, *_a):
             raise RedisConnectionError("down")
 
     monkeypatch.setattr(auth_module, "get_redis", lambda: Down())

@@ -39,13 +39,14 @@ settings.internal_cron_secret = "test-cron-secret"
 settings.rate_limit = "1000000/minute"  # test_polish lowers it per test
 
 sys.path.insert(0, str(ROOT / "scripts"))
+import migrate  # noqa: E402
 import seed_db  # noqa: E402
 from _db import DEV_USER_ID  # noqa: E402
 
 from app.database import get_mongo, get_redis  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models.mongo import ensure_indexes  # noqa: E402
-from app.services import http  # noqa: E402
+from app.services import cache, http  # noqa: E402
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -62,8 +63,7 @@ async def database():
     await admin.execute(f"CREATE DATABASE {TEST_DB}")
     await admin.close()
     conn = await asyncpg.connect(TEST_DSN)
-    for sql in sorted((ROOT / "apps/api/migrations").glob("*.sql")):
-        await conn.execute(sql.read_text())
+    await migrate.migrate(conn)
     await conn.close()
     await seed_db.main(TEST_DSN)
     try:
@@ -80,6 +80,8 @@ DEV_USER = uuid.UUID(DEV_USER_ID)  # member of every seeded team
 @pytest.fixture(autouse=True)
 async def clean_stores(monkeypatch):
     monkeypatch.setattr(http, "BACKOFF", 0)
+    cache.generations.clear()  # in-process copies of what flushdb drops below
+    cache.members.clear()
     try:
         await get_redis().flushdb()
         for name in ("raw_manifests", "osv_advisories"):

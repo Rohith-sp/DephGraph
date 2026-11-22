@@ -1,6 +1,7 @@
 name: Cron
 # Scheduled syncs: call the deployed API's /internal routes (Vercel Hobby crons are daily-only and
-# have no secret header). Clustering has its own workflow (cluster.yml).
+# have no secret header). Clustering has its own workflow (cluster.yml), PR-gate retries theirs (retry.yml).
+# Every run also pings Postgres, Atlas and Redis (/internal/keepalive) so the free tiers never go idle.
 on:
   schedule:
     - cron: "23 2 * * *" # osv-sync, daily
@@ -32,3 +33,8 @@ jobs:
           fi
           curl --fail-with-body --silent --show-error --max-time 290 -X POST \
             -H "X-Cron-Secret: $INTERNAL_CRON_SECRET" "${API_BASE_URL%/}/internal/$ENDPOINT"
+      - name: Keep free tiers awake
+        if: ${{ always() && env.API_BASE_URL != '' && env.INTERNAL_CRON_SECRET != '' }}
+        run: |
+          curl --fail-with-body --silent --show-error --max-time 60 -X POST \
+            -H "X-Cron-Secret: $INTERNAL_CRON_SECRET" "${API_BASE_URL%/}/internal/keepalive"

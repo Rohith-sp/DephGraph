@@ -8,7 +8,6 @@ services:
     ports: ["127.0.0.1:${PG_PORT:-5432}:5432"]
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./apps/api/migrations:/docker-entrypoint-initdb.d:ro,z  # z: SELinux label (Fedora); no-op elsewhere
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U dephgraph -d dephgraph"]
@@ -41,7 +40,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # One-shot: seed an empty DB (schema comes from the initdb mount above) and mint the dev token.
+  # One-shot: apply pending migrations (scripts/migrate.py), seed an empty DB, mint the dev token.
   init:
     build: &api-build
       context: .

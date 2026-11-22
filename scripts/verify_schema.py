@@ -1,17 +1,18 @@
-"""Assert schema shape: 24 tables, 5 views, valid FKs, indexes (003 + 008 + 010), RLS, 005/007/009 columns."""
+"""Assert schema shape: 25 tables, 5 views, valid FKs, indexes (003 + 008 + 010/011), RLS, 005/007/009 columns, migration history."""
 import asyncio
 import re
 import sys
 from pathlib import Path
 
 import asyncpg
+import migrate
 from _db import DSN
 
 MIGRATIONS = "\n".join(p.read_text() for p in sorted((Path(__file__).parents[1] / "apps/api/migrations").glob("*.sql")))
 # Net index set: every CREATE INDEX in the migrations minus the ones a later migration drops (008).
 DROPPED = set(re.findall(r"DROP INDEX (?:IF EXISTS )?(\w+)", MIGRATIONS))
 INDEXES = sorted(set(re.findall(r"CREATE INDEX (?:IF NOT EXISTS )?(\w+)", MIGRATIONS)) - DROPPED)
-PRIVATE = {"maintainer_email"}  # PII: RLS on, no policy and no grant for `authenticated` (API only)
+PRIVATE = {"maintainer_email", "pr_gate_delivery"}  # RLS on, no policy and no grant for `authenticated` (API only)
 COLUMNS = [("semantic_cluster", "keywords"), ("pr_risk_verdict", "reasoning"), ("maintainer", "last_active_at"), ("pr_review", "head_sha"), ("pr_review", "evaluated_at")]
 
 
@@ -27,27 +28,32 @@ async def check(c: asyncpg.Connection) -> int:
     rows = lambda q, *a: c.fetch(q, *a)  # noqa: E731
     tables = await rows(
         "SELECT c.relname, c.relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-        "WHERE n.nspname = 'public' AND c.relkind = 'r'"
+        "WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname <> 'schema_migrations'"  # the runner's ledger
     )
     views = await rows("SELECT viewname FROM pg_views WHERE schemaname = 'public' AND viewname LIKE 'v\\_%'")
     fks = await rows("SELECT conname, convalidated FROM pg_constraint WHERE contype = 'f'")
     idx = await rows("SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname = ANY($1)", INDEXES)
-    pol = await rows("SELECT DISTINCT tablename FROM pg_policies WHERE schemaname = 'public' AND cmd = 'SELECT'")
+    pol = await rows("SELECT DISTINCT tablename FROM pg_policies WHERE schemaname = 'public' AND cmd = 'SELECT' AND tablename <> 'schema_migrations'")
     gone = await rows("SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname = ANY($1)", sorted(DROPPED))
     leaks = await rows("SELECT relname FROM pg_class WHERE relname = ANY($1) AND has_table_privilege('authenticated', oid, 'SELECT')", sorted(PRIVATE))
+    try:
+        pending = len((await migrate.state(c))[1])
+    except migrate.MigrationError:  # an applied file was edited
+        pending = -1
     cols = await rows(
         "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'"
     )
 
     checks = [
-        ("Tables", len(tables), 24),
+        ("Tables", len(tables), 25),
         ("Views", len(views), 5),
         ("Indexes", len(idx), len(INDEXES)),
         ("Dropped indexes still present (008)", len(gone), 0),
         ("Columns from 005/007/009", sum((t, col) in {(r[0], r[1]) for r in cols} for t, col in COLUMNS), len(COLUMNS)),
-        ("RLS enabled", sum(t["relrowsecurity"] for t in tables), 24),
-        ("SELECT policies", len(pol), 24 - len(PRIVATE)),
+        ("RLS enabled", sum(t["relrowsecurity"] for t in tables), 25),
+        ("SELECT policies", len(pol), 25 - len(PRIVATE)),
         ("Private tables readable by authenticated", len(leaks), 0),
+        ("Migrations pending or changed", pending, 0),
     ]
     ok = all(a == b for _, a, b in checks)
     fk_ok = bool(fks) and all(f["convalidated"] for f in fks)

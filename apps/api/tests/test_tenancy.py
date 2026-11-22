@@ -507,10 +507,11 @@ async def test_every_table_has_select_policy_except_private(rls):
     conn, _ = rls
     no_policy = await conn.fetch(
         "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-        "WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT EXISTS ("
+        "WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname <> 'schema_migrations' "
+        "AND NOT EXISTS ("
         "SELECT 1 FROM pg_policies p WHERE p.schemaname = 'public' AND p.tablename = c.relname)"
     )
-    assert [r["relname"] for r in no_policy] == ["maintainer_email"]
+    assert sorted(r["relname"] for r in no_policy) == ["maintainer_email", "pr_gate_delivery"]
 
 
 # ---- scripts/add_team_member.py ---------------------------------------------------------------------
@@ -520,9 +521,9 @@ async def test_add_member_is_idempotent_and_updates_role(rls):
     conn, _ = rls
     user = uuid.UUID(int=77)
     try:
-        before = await get_redis().get(cache.GEN_KEY)
+        before = await get_redis().get(cache.MEMBERS_KEY)
         await add_member(conn, ["platform"], user)
-        assert await get_redis().get(cache.GEN_KEY) != before  # cached memberships are invalidated
+        assert await get_redis().get(cache.MEMBERS_KEY) != before  # cached memberships invalidated
         for role in ("member", "member", "admin"):
             await add_member(conn, ["platform", "data"], user, role)
         got = await conn.fetch(
@@ -533,3 +534,23 @@ async def test_add_member_is_idempotent_and_updates_role(rls):
             await add_member(conn, ["nope"], user)
     finally:
         await conn.execute("DELETE FROM team_member WHERE user_id = $1", user)
+
+
+# ---- scripts/register_service.py -------------------------------------------------------------------
+async def test_register_service_is_idempotent(rls):
+    from register_service import register
+
+    conn, _ = rls
+    repo = "https://github.com/Acme/Dogfood.git"
+    try:
+        sid, name = await register(conn, repo, "platform", None, "python")
+        assert name == "Dogfood"
+        assert await register(conn, repo + "/", "platform", None, None) == (sid, "Dogfood")
+        got = await conn.fetchrow(
+            "SELECT team_id, repo_url, language FROM service WHERE service_id = $1", sid
+        )
+        assert (got["team_id"], got["repo_url"], got["language"]) == (1, repo + "/", "python")
+        with pytest.raises(SystemExit):
+            await register(conn, repo, "nope", None, None)
+    finally:
+        await conn.execute("DELETE FROM service WHERE name = 'Dogfood'")

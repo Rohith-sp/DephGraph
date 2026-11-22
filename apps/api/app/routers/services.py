@@ -54,7 +54,7 @@ async def list_services(request: Request, session: DbSession, member: CurrentMem
             """,
             **team_params(member),
         ),
-        member.scope,
+        member,
     )
 
 
@@ -81,9 +81,10 @@ async def service_graph(
                 f"ref_package_id || '@' || ref_version_string AS target FROM ({EDGES_SQL}) e",
                 **params,
             )
-        return f'{{"service":{json.dumps(svc)},"nodes":{nodes},"edges":{edges}}}'
+        service = {"service_id": svc["service_id"], "name": svc["name"]}
+        return f'{{"service":{json.dumps(service)},"nodes":{nodes},"edges":{edges}}}'
 
-    return await cached_json(request, build, member.scope)
+    return await cached_json(request, build, member)
 
 
 @router.get("/{service_id}/prunable", response_model=Envelope[list[PrunableOut]])
@@ -100,4 +101,4 @@ async def service_prunable(
             **team_params(member),
         )
 
-    return await cached_json(request, build, member.scope)
+    return await cached_json(request, build, member)

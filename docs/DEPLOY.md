@@ -11,10 +11,18 @@ token), 7 smoke test. The API URL is needed for the web project and for GitHub, 
 
 ## 1. Supabase (Postgres + auth)
 
-Apply every file in `apps/api/migrations/` in numeric order, each once, in the SQL editor or with
-`psql -v ON_ERROR_STOP=1 -f` (`for f in apps/api/migrations/*.sql` sorts correctly; today that is 001 through 010).
-Later deploys apply only the files added since. Existing migrations are immutable; schema changes go in a new
-file with the next unused number.
+Apply the migrations with the runner, from a machine that can reach the database (use the **session** pooler or
+direct connection below, not the transaction pooler: the run holds an advisory lock):
+
+```bash
+DATABASE_URL=postgresql+asyncpg://postgres.<ref>:<password>@<pooler-host>:5432/postgres python scripts/migrate.py
+```
+
+It applies `apps/api/migrations/*.sql` in order, each in its own transaction, and records them in
+`schema_migrations` with a checksum. Re-running applies only new files, and it refuses to run if an applied file was
+edited: schema changes go in a new file with the next unused number. `--status` and `--dry-run` change nothing.
+A database that was set up by hand with 001..N (SQL editor, psql) needs `--baseline N` once, which records those
+files without running them after checking their tables exist. `python scripts/verify_schema.py` checks the result.
 
 Access is per team (`team_member`): the API limits every read and write to the caller's teams and the RLS
 policies in `010` mirror that. Disable open sign-up (Auth > Providers > Email > "Allow new users to sign up")
@@ -37,9 +45,11 @@ The pooled user is `postgres.<project-ref>`.
 Atlas M0: create the cluster and a database user, allow `0.0.0.0/0` in Network Access (Vercel has no fixed
 egress IP), copy the SRV string into `MONGO_URI`. Indexes are created idempotently at every cold start.
 Upstash: create a Redis database, copy the `rediss://default:<token>@<host>:6379` URL into `REDIS_URL`.
-Free limit: 500K commands per month. An authenticated read costs about four (rate limit, data generation,
-membership, cached payload), so roughly 100K requests per month; the cache and the limiter degrade to
-"compute directly" / in-memory counters if Redis is exhausted or down.
+Free limit: 500K commands per month. The limiter costs two commands per request (one `EVAL` that runs `INCR` and
+`EXPIRE`) and a cached read one more, so roughly 150K requests per month. Cache generations (per team, one for the
+shared catalogue, one for memberships) and memberships are also held in each instance's memory for 1.5 s, so a burst
+of requests shares one read. A write on one instance reaches the others within that 1.5 s. The cache and the limiter
+degrade to "compute directly" / in-memory counters if Redis is exhausted or down.
 
 ## 4. Vercel project "API"
 
@@ -63,7 +73,9 @@ bundle). One function serves every route, so the 300 s Hobby maximum applies to 
 | `GITHUB_REPOSITORY` | `owner/name` of this repo |
 | `ENVIRONMENT` | `production` (JSON logs) |
 
-Optional: `RATE_LIMIT` (default `100/minute`), `TRUSTED_PROXY_HOPS` (default `1`). Vercel sets `VERCEL=1` itself.
+Optional: `SENTRY_DSN` (errors are reported only when set; request bodies, cookies and the `Authorization`,
+`X-Hub-Signature-256` and `X-Cron-Secret` headers are stripped) and `SENTRY_TRACES_SAMPLE_RATE` (default `0.1`),
+`RATE_LIMIT` (default `100/minute`), `TRUSTED_PROXY_HOPS` (default `1`). Vercel sets `VERCEL=1` itself.
 
 Rate limiting is per authenticated user (verified JWT `sub`), else per client IP, as a fixed window in Redis
 shared by all instances (in-memory fallback when Redis errors). Vercel overwrites `X-Forwarded-For` with the
@@ -83,6 +95,7 @@ Import the same repo again, **Root Directory `apps/web`** (`vercel.json`: region
 | `NEXT_PUBLIC_API_URL` | the API project's URL |
 | `API_URL` | optional server-side override of the API base |
 | `GITHUB_WEBHOOK_SECRET` | same value as on the API project |
+| `SENTRY_DSN` / `NEXT_PUBLIC_SENTRY_DSN` | optional: server errors / browser errors (the public one is also allowed in the CSP `connect-src`); `SENTRY_TRACES_SAMPLE_RATE` for the server |
 
 **`AUTH_DISABLED` must be unset or `false` in production.** `true` skips the login middleware and sends
 `DEV_API_TOKEN` to the API. Leave `DEV_API_TOKEN` unset too, and never put `SUPABASE_SERVICE_ROLE_KEY` on Vercel.
@@ -91,6 +104,17 @@ The GitHub App's webhook URL is `https://<web project>/api/webhooks/github`. The
 answers GitHub `202` at once and forwards the delivery to the API inside Next's `after()` (Vercel `waitUntil`,
 up to 300 s). The API reviews the PR synchronously and answers `200` with `{verdict, stage_reached,
 processing_ms, deps}`, which the route only logs; GitHub sees the result as a Check Run.
+
+Deliveries are durable once they reach the API: it stores each `pull_request` delivery (`pr_gate_delivery`, keyed by
+`X-GitHub-Delivery`) before reviewing it. A redelivery of the same id is a no-op (`{"duplicate": true}`), and a review
+that fails or whose function dies is retried with backoff (2, 4, 8, 16 minutes, 5 attempts) by `retry.yml`, which calls
+`POST /internal/pr-gate/retry`. Rows older than 30 days are purged. The one remaining gap is a delivery that never
+reaches the API: the web route retries the forward twice (2 s, 8 s) and then logs/reports the failure; use "Redeliver" in
+the GitHub App's Advanced tab to replay it.
+
+The web app sets a Content-Security-Policy (self, Supabase, Sentry; `'unsafe-inline'` for scripts and styles because
+Next's bootstrap scripts carry no nonce on static pages), HSTS, `X-Frame-Options: DENY`, `nosniff`, a strict referrer
+policy and a minimal Permissions-Policy; the API sends the same set minus the CSP.
 
 ## 6. GitHub: Actions secrets
 
@@ -107,10 +131,30 @@ Repo > Settings > Secrets and variables > Actions. Workflows skip with a notice 
 | Workflow | Schedule (UTC) | Does |
 |---|---|---|
 | `cron.yml` | daily 02:23 / Mondays 03:41 | `POST /internal/osv-sync` / `/internal/maintainers-sync` with `X-Cron-Secret`; also runnable by hand |
+| `cron.yml` (second step) | with every run above | `POST /internal/keepalive`: a query on each of Postgres, Atlas and Redis, `503` naming the one that is down |
+| `retry.yml` | every 10 minutes | `POST /internal/pr-gate/retry`, see section 5. Roughly 4,300 minutes a month: free on a public repo, over the 2,000 free minutes on a private one (lower the cron there) |
 | `cluster.yml` | daily 03:17 + on dispatch | runs `python -m app.jobs.cluster` (CPU torch, model cached) on a free 4 vCPU runner; one run at a time |
+| `audit.yml` | Mondays 04:29 + dependency changes | `pip-audit` on both requirements files and `npm audit --omit=dev --audit-level=high`; fails on findings. Ignore list: `PIP_AUDIT_IGNORE` in the workflow (npm has none: pin a patched transitive version with `overrides` in the root `package.json`) |
 
-On public repos GitHub disables scheduled workflows after 60 days without repository activity; re-enable them in
-the Actions tab. Scheduled runs can start several minutes late.
+`.github/dependabot.yml` opens one grouped weekly PR each for pip, npm, GitHub Actions and Docker/compose images.
+
+## Keeping free tiers awake
+
+Supabase pauses a free project after a week without activity and Atlas M0 after 60 days. `cron.yml` runs daily and
+its last step calls `/internal/keepalive`, which touches Postgres, Atlas and Redis, so the three stay active as long
+as the schedule runs. GitHub disables scheduled workflows after 60 days without a commit on the repository (public or
+private); runs of the workflows themselves do not count. Re-enable them in the Actions tab (workflow > Enable
+workflow), or push any commit. A failed keep-alive step fails the run, and GitHub emails whoever last edited the schedule.
+
+## Using DephGraph on this repository (dogfooding)
+
+1. Create the GitHub App (webhook URL `https://<web project>/api/webhooks/github`, secret = `GITHUB_WEBHOOK_SECRET`,
+   permissions: Pull requests read, Checks read and write; event: Pull request) and install it on this repository.
+2. Register the repository as a service of a team:
+   `python scripts/register_service.py --repo https://github.com/Rohith-sp/DephGraph --team <team-slug>`
+   (needs `DATABASE_URL`; idempotent; the name defaults to the repository name).
+3. Open a PR that adds a dependency: DephGraph posts a Check Run on it. Skipped PRs (repository not registered)
+   leave no Check Run; the API log line `pr_gate_skipped` says why.
 
 ## 7. Smoke test
 

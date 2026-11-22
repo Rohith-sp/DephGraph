@@ -5,6 +5,9 @@ from pydantic import BaseModel, Field
 
 from app.schemas.common import BigBodyId
 
+Severity = Literal["CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE"]  # vulnerability.severity CHECK
+ActionStatus = Literal["PENDING", "DONE", "SKIPPED"]
+
 
 class ServiceOut(BaseModel):
     service_id: int
@@ -59,7 +62,7 @@ class PrunableOut(BaseModel):
 class VulnRef(BaseModel):
     vuln_id: int
     osv_id: str
-    severity: str | None
+    severity: Severity | None
     cvss_score: float | None
 
 
@@ -84,7 +87,7 @@ class VulnOut(BaseModel):
     vuln_id: int
     osv_id: str
     title: str | None
-    severity: str | None
+    severity: Severity | None
     cvss_score: float | None
     published_at: datetime | None
     affected_packages: int
@@ -119,7 +122,7 @@ class PlanStep(BaseModel):
     cumulative_coverage_pct: float
     plan_id: int | None  # most recent saved plan of the team that holds this upgrade
     action_seq: int | None
-    action_status: Literal["PENDING", "DONE", "SKIPPED"] | None
+    action_status: ActionStatus | None
 
 
 class PlanCreate(BaseModel):
@@ -130,20 +133,20 @@ class PlanCreate(BaseModel):
 class ActionOut(BaseModel):
     action_seq: int
     description: str | None
-    status: str
+    status: ActionStatus
 
 
 class PlanOut(BaseModel):
     plan_id: int
     team_id: int
     title: str | None
-    status: str
+    status: Literal["DRAFT", "ACTIVE", "CLOSED"]
     coverage_pct: float
     actions: list[ActionOut]
 
 
 class ActionPatch(BaseModel):
-    status: Literal["DONE", "SKIPPED", "PENDING"]
+    status: ActionStatus
 
 
 class SeverityCounts(BaseModel):

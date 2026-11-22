@@ -1,147 +1,25 @@
-// shortcut: hand-written from the API contract, no `supabase gen types` (needs a Supabase project).
-// Regenerate DB types once a project exists; these are API response shapes, not DB rows.
+// Response shapes of the FastAPI app, derived from its OpenAPI schema (src/lib/api-schema.ts, written
+// by `npm run gen:api`). Only the names components import live here; never hand-write a shape.
+import type { components } from "./api-schema";
 
-export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
-export type ActionStatus = "DONE" | "SKIPPED" | "PENDING";
+type Schemas = components["schemas"];
 
-export interface Paginated<T> {
-  items: T[];
-  total: number;
-  page: number;
-  page_size: number;
-}
+export type Severity = keyof Schemas["SeverityCounts"];
+export type ActionStatus = Schemas["ActionPatch"]["status"];
 
-export interface Service {
-  service_id: number;
-  team_id: number;
-  team_name: string;
-  name: string;
-  language: string | null;
-  repo_url: string | null;
-  package_count: number;
-  vuln_count: number;
-  critical_count: number;
-}
-
-export interface GraphNode {
-  id: string;
-  package_id: number;
-  name: string;
-  ecosystem: string;
-  version: string;
-  is_direct: boolean;
-  depth: number;
-  vuln_count: number;
-  max_cvss: number | null;
-}
-
-export interface GraphEdge {
-  id: string;
-  source: string;
-  target: string;
-}
-
-export interface ServiceGraph {
-  service: { service_id: number; name: string };
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-}
-
-export interface PrunablePackage {
-  package_id: number;
-  name: string;
-  ecosystem: string;
-  version: string;
-  exec_count: number;
-  deploy_seq: number;
-}
-
-export interface Vulnerability {
-  vuln_id: number;
-  osv_id: string;
-  title: string | null;
-  severity: Severity | "NONE" | null;
-  cvss_score: number | null;
-  published_at: string | null;
-  affected_packages: number;
-  affected_services: number;
-  has_fix: boolean;
-}
-
-export interface RemediationStep {
-  step: number;
-  package: string;
-  package_id: number;
-  ecosystem: string;
-  from_version: string;
-  to_version: string;
-  vulns_fixed: string[];
-  services_affected: string[];
-  new_coverage: number;
-  cumulative_coverage_pct: number;
-  // Set when the team's latest saved plan holds this upgrade, else null.
-  plan_id: number | null;
-  action_seq: number | null;
-  action_status: ActionStatus | null;
-}
-
-export interface PlanAction {
-  action_seq: number;
-  description: string | null;
-  status: ActionStatus;
-}
-
-export interface RemediationPlan {
-  plan_id: number;
-  team_id: number;
-  title: string | null;
-  status: string;
-  coverage_pct: number;
-  actions: PlanAction[];
-}
-
-export interface MeTeam {
-  team_id: number;
-  name: string;
-  slug: string;
-  role: "member" | "admin";
-}
-
-export interface Me {
-  user_id: string;
-  teams: MeTeam[];
-}
-
-export interface StatsOverview {
-  services: number;
-  packages: number;
-  open_vulns: number;
-  critical_vulns: number;
-  prunable_packages: number;
-  severity_counts: Record<Severity, number>;
-}
-
-export interface Cluster {
-  cluster_id: number;
-  label: string;
-  keywords: string[];
-  member_count: number;
-  members: ClusterMember[];
-}
-
-export interface ClusterMember {
-  package_id: number;
-  name: string;
-  ecosystem: string;
-  x: number | null;
-  y: number | null;
-}
-
-export interface ClusterRedundancy {
-  service_id: number;
-  service_name: string;
-  cluster_id: number;
-  cluster_label: string;
-  package_count: number;
-  packages: string[];
-}
+export type Service = Schemas["ServiceOut"];
+export type GraphNode = Schemas["GraphNode"];
+export type GraphEdge = Schemas["GraphEdge"];
+export type ServiceGraph = Schemas["GraphOut"];
+export type PrunablePackage = Schemas["PrunableOut"];
+export type Vulnerability = Schemas["VulnOut"];
+export type VulnerabilityPage = Schemas["Page_VulnOut_"];
+export type RemediationStep = Schemas["PlanStep"];
+export type PlanAction = Schemas["ActionOut"];
+export type RemediationPlan = Schemas["PlanOut"];
+export type MeTeam = Schemas["MeTeam"];
+export type Me = Schemas["MeOut"];
+export type StatsOverview = Schemas["StatsOut"];
+export type Cluster = Schemas["ClusterOut"];
+export type ClusterMember = Schemas["ClusterMember"];
+export type ClusterRedundancy = Schemas["RedundancyOut"];

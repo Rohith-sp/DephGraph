@@ -58,7 +58,7 @@ async def add_member(
         "ON CONFLICT (team_id, user_id) DO UPDATE SET role = EXCLUDED.role",
         [(teams[s], user_id, role) for s in slugs],
     )
-    await cache.bump()  # the API caches memberships per data generation
+    await cache.bump(memberships=True)  # the API caches memberships
 
 
 async def main() -> None:

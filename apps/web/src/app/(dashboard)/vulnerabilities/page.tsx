@@ -2,7 +2,7 @@ import { VulnFilters } from "@/components/tables/VulnFilters";
 import { VulnTable, type VulnQuery } from "@/components/tables/VulnTable";
 import { api } from "@/lib/api";
 import { ECOSYSTEMS, SEVERITIES } from "@/lib/severity";
-import type { Paginated, Vulnerability } from "@/lib/types";
+import type { VulnerabilityPage } from "@/lib/types";
 
 type Params = Record<string, string | string[] | undefined>;
 const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
@@ -24,7 +24,7 @@ export default async function VulnerabilitiesPage({ searchParams }: { searchPara
   };
   const qs = new URLSearchParams({ sort: query.sort, order: query.order, page: String(query.page), page_size: "50" });
   (["severity", "ecosystem", "q"] as const).forEach((k) => query[k] && qs.set(k, query[k]));
-  const data = await api<Paginated<Vulnerability>>(`/vulnerabilities?${qs}`);
+  const data = await api<VulnerabilityPage>(`/vulnerabilities?${qs}`);
   return (
     <>
       <h1>Vulnerabilities</h1>

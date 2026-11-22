@@ -51,7 +51,7 @@ async def require_service(
     """
     found = await rows(
         session,
-        "SELECT service_id, name FROM service WHERE service_id = :id "
+        "SELECT service_id, name, team_id FROM service WHERE service_id = :id "
         "AND (CAST(:scoped AS BOOLEAN) IS NOT TRUE OR team_id = ANY(:teams))",
         id=service_id,
         scoped=member is not None,

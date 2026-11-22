@@ -46,4 +46,4 @@ async def overview(request: Request, session: DbSession, member: CurrentMember) 
         params = {"sid": None, **team_params(member)}
         return str((await session.execute(text(OVERVIEW_SQL), params)).scalar_one())
 
-    return await cached_json(request, build, member.scope)
+    return await cached_json(request, build, member)

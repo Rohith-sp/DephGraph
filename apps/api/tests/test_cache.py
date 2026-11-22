@@ -4,10 +4,13 @@ old rows() + pydantic output; Redis failure never fails a request; connection lo
 
 import asyncio
 import json
+import time
+import uuid
 from datetime import datetime
 
 import asyncpg
 import pytest
+from sqlalchemy import text
 
 from app import auth as auth_module
 from app.database import SessionLocal, engine, get_redis
@@ -28,8 +31,10 @@ ALL_TEAMS_SERVICES = [1, 2, 3, 4, 5]
 CRON = {"X-Cron-Secret": "test-cron-secret"}
 
 
-async def gen() -> int:
-    return int(await get_redis().get(cache.GEN_KEY) or 0)
+async def gen() -> dict[str, int]:
+    """Every data generation counter in Redis."""
+    redis = get_redis()
+    return {k: int(await redis.get(k)) async for k in redis.scan_iter("dephgraph:datagen:*")}
 
 
 # ---- old rows() + pydantic output == new pre-serialized JSON -------------------------------------
@@ -176,7 +181,7 @@ async def w_replay(client, auth):
     before = await gen()
     with mock_upstreams():
         r = await client.post(f"/ingest/replay/{first}", headers=auth)
-    assert await gen() == before + 1
+    assert await gen() != before
     return r
 
 
@@ -217,7 +222,10 @@ async def w_plan_patch(client, auth):
     await w_plan_create(client, auth)
     before = await gen()
     r = await client.patch("/remediation/plan/1/actions/1", json={"status": "DONE"}, headers=auth)
-    assert r.status_code == 200 and await gen() == before + 1
+    assert r.status_code == 200 and await gen() == {
+        **before,
+        cache.team_key(1): before[cache.team_key(1)] + 1,
+    }
     return r
 
 
@@ -229,13 +237,13 @@ async def test_write_path_bumps_generation(client, auth, reseed, write):
     before = await gen()
     r = await write(client, auth)
     assert r.status_code in (200, 201), r.text
-    assert await gen() > before
+    assert await gen() != before
 
 
 async def test_maintainers_sync_bumps_generation(client, auth, monkeypatch, reseed):
     before = await gen()
     assert (await w_maintainers(client, auth, monkeypatch)).status_code == 200
-    assert await gen() == before + 1
+    assert await gen() == {cache.CATALOG_KEY: before.get(cache.CATALOG_KEY, 0) + 1}
 
 
 async def test_cluster_recompute_bumps_even_when_it_fails(monkeypatch):
@@ -248,7 +256,7 @@ async def test_cluster_recompute_bumps_even_when_it_fails(monkeypatch):
     await redis.set(cluster_engine.LOCK_KEY, "t")
     before = await gen()
     await cluster_engine.run_guarded(redis, "t")
-    assert await gen() == before + 1
+    assert await gen() == {cache.CATALOG_KEY: before.get(cache.CATALOG_KEY, 0) + 1}
 
 
 async def test_reads_serve_fresh_data_after_a_write(client, auth, reseed):
@@ -296,7 +304,10 @@ async def test_redis_down_never_fails_reads_or_writes(client, auth, monkeypatch,
         async def get(self, *_, **__):
             raise OSError("down")
 
-        set = incr = get
+        set = mget = get
+
+        def pipeline(self, *_, **__):
+            raise OSError("down")
 
     monkeypatch.setattr(cache, "get_redis", lambda: Dead())
     for path in ("/services", "/stats/overview", "/services/1/graph", "/clusters"):
@@ -315,7 +326,7 @@ async def test_racing_reader_cannot_resurrect_stale_data(monkeypatch):
 
     reader = asyncio.create_task(cache.read_through("k", slow_old_compute))
     await started.wait()
-    await cache.bump()  # the write commits and invalidates mid-compute
+    await cache.bump(catalog=True)  # the write commits and invalidates mid-compute
     release.set()
     assert (await reader) == ("old", False)
 
@@ -357,3 +368,90 @@ async def test_pool_recovers_after_connections_are_killed(client, auth):
         200,
     ]  # at most the first one fails
     assert engine.pool.checkedout() == 0
+
+
+# ---- per-team generations ------------------------------------------------------------------------------
+@pytest.fixture
+async def as_user(client):
+    """GET helper for a user who is a member of exactly `teams` (token minted per call)."""
+    import jwt
+
+    from app.config import settings
+    from app.database import SessionLocal
+
+    async def get(path, *teams):
+        user = uuid.uuid4()
+        async with SessionLocal() as s, s.begin():
+            for t in teams:
+                await s.execute(
+                    text("INSERT INTO team_member (team_id, user_id) VALUES (:t, :u)"),
+                    {"t": t, "u": user},
+                )
+        token = jwt.encode(
+            {"sub": str(user), "aud": "authenticated", "exp": int(time.time()) + 600},
+            settings.supabase_jwt_secret,
+            algorithm="HS256",
+        )
+        return await client.get(path, headers={"Authorization": f"Bearer {token}"})
+
+    return get
+
+
+async def cached_keys() -> set[str]:
+    return {k async for k in get_redis().scan_iter(f"{cache.PREFIX}*")}
+
+
+async def test_write_for_one_team_does_not_evict_another_teams_entries(client, as_user, reseed):
+    assert (await as_user("/services", 1)).status_code == 200
+    assert (await as_user("/services", 2)).status_code == 200
+    team1, team2 = sorted(await cached_keys(), key=lambda k: "teams:2" in k)
+    assert "teams:1" in team1 and "teams:2" in team2
+
+    await cache.bump([1])  # what a runtime / plan / PR-gate write for team 1 does
+    cache.generations.clear()  # as if another instance did it
+    assert (await as_user("/services", 2)).status_code == 200
+    assert await cached_keys() == {team1, team2}  # team 2 was a hit: nothing new stored
+    assert (await as_user("/services", 1)).status_code == 200
+    assert len(await cached_keys() - {team1, team2}) == 1  # team 1 recomputed under its new key
+
+
+@pytest.mark.parametrize("path", ["/services", "/stats/overview", "/vulnerabilities"])
+async def test_catalogue_write_evicts_every_teams_entries(client, as_user, reseed, path):
+    for team in (1, 2):
+        assert (await as_user(path, team)).status_code == 200
+    before = await cached_keys()
+    assert len(before) == 2
+    await cache.bump(catalog=True)  # osv-sync, maintainers-sync, cluster job
+    for team in (1, 2):
+        assert (await as_user(path, team)).status_code == 200
+    assert len(await cached_keys() - before) == 2  # both recomputed under new keys
+
+
+async def test_team_set_is_part_of_the_key(client, as_user, reseed):
+    """Same path, different team sets: never share an entry (a user in 1+2 vs one in 1)."""
+    both = (await as_user("/services", 1, 2)).json()["data"]
+    only1 = (await as_user("/services", 1)).json()["data"]
+    assert {s["team_id"] for s in both} == {1, 2} and {s["team_id"] for s in only1} == {1}
+
+
+# ---- in-process copies ---------------------------------------------------------------------------------
+async def test_bursts_share_one_generation_read_and_local_writes_are_visible_at_once(monkeypatch):
+    redis = get_redis()
+    await cache.bump([1], catalog=True)
+    await cache.current([cache.CATALOG_KEY, cache.team_key(1)])  # local after the bump itself
+    reads = []
+    real = redis.mget
+
+    async def counting(*a, **k):
+        reads.append(a)
+        return await real(*a, **k)
+
+    monkeypatch.setattr(redis, "mget", counting)
+    for _ in range(5):
+        assert await cache.current([cache.CATALOG_KEY, cache.team_key(1)]) == [1, 1]
+    assert reads == []  # five lookups, zero Redis commands
+    await redis.incr(cache.team_key(1))  # another instance bumps: seen once the copy expires
+    assert (await cache.current([cache.team_key(1)])) == [1]
+    cache.generations.clear()
+    assert (await cache.current([cache.team_key(1)])) == [2]
+    assert len(reads) == 1

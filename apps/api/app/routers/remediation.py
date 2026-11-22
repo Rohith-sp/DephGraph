@@ -101,7 +101,7 @@ async def get_plan(
             )
         return json.dumps([{k: s[k] for k in PlanStep.model_fields} for s in steps])
 
-    return await cached_json(request, build, member.scope)
+    return await cached_json(request, build, member)
 
 
 @router.post("/plan", response_model=Envelope[PlanOut], status_code=201)
@@ -133,7 +133,7 @@ async def create_plan(
             [{"p": row.plan_id, "q": s["step"], "v": v} for v in s["vuln_ids"]],
         )
     await session.commit()
-    await cache.bump()
+    await cache.bump([row.team_id])
     return ok(
         {
             "plan_id": row.plan_id,
@@ -166,11 +166,18 @@ async def patch_action(
                 ),
             )
             .values(status=body.status)
-            .returning(RemediationAction.description, RemediationAction.status)
+            .returning(
+                RemediationAction.description,
+                RemediationAction.status,
+                select(RemediationPlan.team_id)
+                .where(RemediationPlan.plan_id == plan_id)
+                .scalar_subquery()
+                .label("team_id"),
+            )
         )
     ).first()
     if updated is None:
         raise HTTPException(404, "Action not found")
     await session.commit()
-    await cache.bump()
+    await cache.bump([updated.team_id])
     return ok({"action_seq": seq, "description": updated.description, "status": updated.status})

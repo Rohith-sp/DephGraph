@@ -13,7 +13,11 @@ from app.config import settings
 from app.database import close_all
 from app.limiter import RateLimitMiddleware
 from app.models.mongo import ensure_indexes
-from app.observability import RequestContextMiddleware, configure_logging
+from app.observability import (
+    RequestContextMiddleware,
+    configure_logging,
+    configure_sentry,
+)
 from app.routers import (
     clusters,
     health,
@@ -30,6 +34,7 @@ from app.routers import (
 from app.services import pr_gate_engine
 
 configure_logging()
+configure_sentry()
 log = structlog.get_logger()
 
 

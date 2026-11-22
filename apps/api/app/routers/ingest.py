@@ -241,7 +241,9 @@ async def _project(session: AsyncSession, doc: dict[str, Any]) -> dict[str, Any]
             raise _mongo_down(e) from e
         async with session.begin():
             await lock_service(session, service_id)
-            await require_service(session, service_id, None)  # deleted since the first check -> 404
+            svc = await require_service(
+                session, service_id, None
+            )  # deleted since the first check -> 404
             refs, inserted = await _upsert_packages(session, ecosystem, parsed)
             await apply_metadata(session, _rekey(refs, meta))
             vulns = await osv_fetcher.upsert_advisories(
@@ -253,7 +255,8 @@ async def _project(session: AsyncSession, doc: dict[str, Any]) -> dict[str, Any]
         await _mark(doc["_id"], "failed", error=_error_text(e))
         raise
     await _mark(doc["_id"], "projected", deploy_seq=seq, parsed_packages=[vars(p) for p in parsed])
-    await cache.bump()
+    # the upserted advisories and package metadata are catalogue data other teams' results use too
+    await cache.bump([svc["team_id"]], catalog=True)
     return {
         "manifest_id": str(doc["_id"]),
         "deploy_seq": seq,
@@ -333,12 +336,12 @@ async def scan_service(
     await osv_fetcher.store_raw(advisories)
     async with session.begin():
         await lock_service(session, service_id)
-        await require_service(session, service_id, None)
+        svc = await require_service(session, service_id, None)
         if await latest_seq(session, service_id) != seq:  # a manifest landed mid-scan
             raise HTTPException(409, "Service changed during scan; retry")
         vulns = await osv_fetcher.upsert_advisories(session, refs, hits, advisories)
         await _record_scan(session, service_id)
-    await cache.bump()
+    await cache.bump([svc["team_id"]], catalog=True)  # advisories are shared catalogue data
     return ok(
         {
             "packages_scanned": len(refs),

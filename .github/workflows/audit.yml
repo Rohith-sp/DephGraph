@@ -1,0 +1,49 @@
+name: Audit
+# Known-vulnerability scan of every dependency. Weekly as well as on dependency changes: advisories
+# appear without any code change.
+on:
+  pull_request:
+    paths: ["apps/api/requirements*.txt", "package-lock.json", ".github/workflows/audit.yml"]
+  push:
+    branches: [main]
+    paths: ["apps/api/requirements*.txt", "package-lock.json", ".github/workflows/audit.yml"]
+  schedule:
+    - cron: "29 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    env:
+      # Advisory ids that cannot be fixed yet (space-separated); add one only with a reason in the commit.
+      PIP_AUDIT_IGNORE: ""
+      # torch 2.5.1 and sentence-transformers 3.3.1 run only in the offline clustering job on our own
+      # package names; the fixes need torch up to 2.13 and sentence-transformers 5.x. TODO: upgrade and empty this.
+      ML_AUDIT_IGNORE: >-
+        PYSEC-2025-41 PYSEC-2025-189 PYSEC-2025-190 PYSEC-2025-191 PYSEC-2025-192 PYSEC-2025-193
+        PYSEC-2025-194 PYSEC-2025-195 PYSEC-2025-198 PYSEC-2025-203 PYSEC-2025-204 PYSEC-2025-205
+        PYSEC-2025-206 PYSEC-2025-207 PYSEC-2025-208 PYSEC-2025-209 PYSEC-2026-139 PYSEC-2026-1856
+        PYSEC-2026-1970 PYSEC-2026-2286 PYSEC-2026-4164
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: pip install pip-audit
+      - name: API runtime requirements (with transitive dependencies)
+        run: pip-audit -r apps/api/requirements.txt $(for id in $PIP_AUDIT_IGNORE; do printf -- '--ignore-vuln %s ' "$id"; done)
+      # Pinned versions only: resolving the ML set would download torch just to scan it.
+      - name: Clustering job requirements
+        run: pip-audit --no-deps --disable-pip -r apps/api/requirements-ml.txt $(for id in $PIP_AUDIT_IGNORE $ML_AUDIT_IGNORE; do printf -- '--ignore-vuln %s ' "$id"; done)
+
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "22" }
+      # Fails on high/critical. npm has no ignore list: pin a patched transitive version with
+      # "overrides" in package.json instead.
+      - run: npm audit --omit=dev --audit-level=high

@@ -43,7 +43,7 @@ async def test_ingest_manifest_happy(client, auth, reseed):
     assert d["packages_inserted"] >= 1
     assert d["vulns_fetched"] == 1
     assert d["duration_ms"] < 60_000
-    assert await get_redis().get(cache.GEN_KEY) == "1"  # cache invalidated
+    assert await get_redis().get(cache.team_key(1)) == "1"  # cache invalidated
 
     assert await scalar("SELECT max(deploy_seq) FROM deployment WHERE service_id = 1") == 3
     assert await scalar("SELECT count(*) FROM resolves_to WHERE service_id=1 AND deploy_seq=3") >= 8

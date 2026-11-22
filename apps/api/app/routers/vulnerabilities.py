@@ -83,7 +83,7 @@ async def list_vulnerabilities(
             f'{{"items":{items},"total":{total},"page":{page.page},"page_size":{page.page_size}}}'
         )
 
-    return await cached_json(request, build, member.scope)
+    return await cached_json(request, build, member)
 
 
 @router.get("/vulnerabilities/{vuln_id}", response_model=Envelope[VulnDetail])
@@ -123,4 +123,4 @@ async def blast_radius(
     service_id: BigId, session: DbSession, member: CurrentMember
 ) -> dict[str, Any]:
     await require_service(session, service_id, member)
-    return ok(await get_blast_radius(session, service_id))
+    return ok(await get_blast_radius(session, service_id, member.team_ids))

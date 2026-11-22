@@ -3,6 +3,7 @@
 
 import json
 from collections import deque
+from collections.abc import Collection
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -122,9 +123,11 @@ async def compute(session: AsyncSession, service_id: int) -> dict[str, Any]:
     return out
 
 
-async def get_blast_radius(session: AsyncSession, service_id: int) -> dict[str, Any]:
+async def get_blast_radius(
+    session: AsyncSession, service_id: int, teams: Collection[int]
+) -> dict[str, Any]:
     async def build() -> str:
         return json.dumps(await compute(session, service_id))
 
-    body, hit = await cache.read_through(f"blast_radius:{service_id}", build)
+    body, hit = await cache.read_through(f"blast_radius:{service_id}", build, teams)
     return {**json.loads(body), "cached": hit}

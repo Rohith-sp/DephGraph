@@ -88,7 +88,7 @@ async def test_service_list_counts_honour_waivers_like_overview(client, auth, re
                 "ON CONFLICT (vuln_id, service_id) DO UPDATE SET expires_on = NULL"
             )
         )
-    await cache.bump()  # direct SQL, not an API write
+    await cache.bump(catalog=True)  # direct SQL, not an API write
     assert (await vulns())[0] == 0
 
 

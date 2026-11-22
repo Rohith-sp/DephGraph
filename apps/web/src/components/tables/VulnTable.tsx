@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import type { Paginated, Severity, Vulnerability } from "@/lib/types";
+import type { Severity, Vulnerability, VulnerabilityPage } from "@/lib/types";
 
 export interface VulnQuery {
   severity?: string;
@@ -49,7 +49,7 @@ function SortHeader({ col, label, query }: { col: VulnQuery["sort"]; label: stri
   );
 }
 
-export function VulnTable({ data, query }: { data: Paginated<Vulnerability>; query: VulnQuery }) {
+export function VulnTable({ data, query }: { data: VulnerabilityPage; query: VulnQuery }) {
   const pages = Math.max(1, Math.ceil(data.total / data.page_size));
   if (data.items.length === 0) return <p className="text-fg2">No vulnerabilities match.</p>;
   return (

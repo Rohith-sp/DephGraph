@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     github_dispatch_token: str = ""  # PAT / fine-grained token with Actions: write on the repo
     github_repository: str = ""  # owner/name; where cluster.yml is dispatched
     environment: str = "development"
+    sentry_dsn: str = ""  # empty = no error reporting
+    sentry_traces_sample_rate: float = 0.1
     cors_origins: list[str] = ["http://localhost:3000"]
     rate_limit: str = "100/minute"  # per client IP, all routes except /health
     # Reverse proxies in front of the app (Vercel overwrites X-Forwarded-For with the client IP = 1).

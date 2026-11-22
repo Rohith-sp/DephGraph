@@ -251,7 +251,7 @@ async def test_blast_radius_path_and_cache_generation(client, auth, reseed):
     assert len(hit["path"]) == 4
     assert (await client.get(f"/blast-radius/{sid}", headers=auth)).json()["data"]["cached"] is True
 
-    await cache.bump()
+    await cache.bump(catalog=True)
     again = (await client.get(f"/blast-radius/{sid}", headers=auth)).json()["data"]
     assert again["cached"] is False  # generation moved on
     # a reader that computed before the bump writes to its OLD generation: never served

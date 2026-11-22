@@ -14,7 +14,7 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.database import DbSession, get_redis
-from app.services.cache import GEN_KEY
+from app.services import cache
 
 log = structlog.get_logger()
 bearer = HTTPBearer(auto_error=False)
@@ -110,25 +110,26 @@ class Member:
 MEMBER_TTL = 60  # seconds; bounds staleness when a membership changes without a cache bump
 
 
-async def current_member(
-    claims: Annotated[dict[str, Any], Depends(get_current_user)], session: DbSession
-) -> Member:
-    """Teams of the authenticated user, from team_member (empty set = no team, not an error).
+async def teams_of(user_id: uuid.UUID, session: DbSession) -> frozenset[int]:
+    """Teams of `user_id` from team_member (empty = no team, not an error).
 
-    Cached in Redis per data generation, so scripts/add_team_member.py (which bumps it) takes effect
-    at once. On a miss the lookup runs on the request's own session in a short transaction of its
-    own, so the handler later opens its `session.begin()` on the same, already-pooled connection.
+    Cached in Redis under the membership generation (scripts/add_team_member.py bumps it, so a new
+    membership takes effect at once) and in-process for a moment (see app.services.cache). On a miss
+    the lookup runs on the request's own session in a short transaction of its own, so the handler
+    later opens its `session.begin()` on the same, already-pooled connection.
     """
-    try:
-        user_id = uuid.UUID(str(claims.get("sub")))
-    except ValueError:
-        raise HTTPException(401, "Invalid token") from None
+    if (cached := cache.members.get(user_id)) is not None:
+        return cached
     redis = get_redis()
-    key: str | None = None
+    key: str | None = f"dephgraph:member:{user_id}"
+    gen = 0
     try:
-        key = f"dephgraph:member:{user_id}:{await redis.get(GEN_KEY) or 0}"  # generation BEFORE db
-        if (hit := await redis.get(key)) is not None:
-            return Member(user_id, frozenset(json.loads(hit)))
+        stored_gen, hit = await redis.mget(cache.MEMBERS_KEY, key)  # generation read BEFORE the db
+        gen = int(stored_gen or 0)
+        if hit is not None and (entry := json.loads(hit))[0] == gen:
+            teams = frozenset(entry[1])
+            cache.members.set(user_id, teams)
+            return teams
     except (RedisError, OSError) as e:
         log.warning("member_cache_read_failed", error=str(e))
         key = None
@@ -136,13 +137,25 @@ async def current_member(
         found = await session.execute(
             text("SELECT team_id FROM team_member WHERE user_id = :u"), {"u": user_id}
         )
-        team_ids = sorted(found.scalars())
+        teams = frozenset(found.scalars())
+    cache.members.set(user_id, teams)
     if key:
         try:
-            await redis.set(key, json.dumps(team_ids), ex=MEMBER_TTL)
+            await redis.set(key, json.dumps([gen, sorted(teams)]), ex=MEMBER_TTL)
         except (RedisError, OSError) as e:
             log.warning("member_cache_write_failed", error=str(e))
-    return Member(user_id, frozenset(team_ids))
+    return teams
+
+
+async def current_member(
+    claims: Annotated[dict[str, Any], Depends(get_current_user)], session: DbSession
+) -> Member:
+    """The authenticated caller and their teams."""
+    try:
+        user_id = uuid.UUID(str(claims.get("sub")))
+    except ValueError:
+        raise HTTPException(401, "Invalid token") from None
+    return Member(user_id, await teams_of(user_id, session))
 
 
 CurrentMember = Annotated[Member, Depends(current_member)]

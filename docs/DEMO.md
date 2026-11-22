@@ -23,8 +23,9 @@ T=$(docker exec dephgraph-web-1 cat /shared/dev_token)
 docker compose --profile ml run --rm cluster   # ~1 min (builds the ~2.3 GB ML image the first time)
 ```
 
-An older volume only has the migrations that existed when it was created (through 009 today). Apply each newer file once, e.g.:
-`docker exec -i dephgraph-postgres-1 psql -U dephgraph dephgraph < apps/api/migrations/<NNN_name>.sql`
+The `init` container applies pending migrations with `scripts/migrate.py` at every `up`. A volume created before the
+runner existed has no migration history; record it once (use the last migration it already had) and `up` does the rest:
+`docker compose run --rm init python ../../scripts/migrate.py --baseline 010`
 
 Open in the browser: http://localhost:3000, and the ER figures from `er-diagram/images/`.
 Keep two terminals open. In the second one set the variables used in part B:

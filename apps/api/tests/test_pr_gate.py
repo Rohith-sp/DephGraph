@@ -953,13 +953,13 @@ async def test_older_delivery_cannot_overwrite_newer_verdicts(client, auth, rese
     files("evilcrit2")
     await review(client, auth, at("2026-11-22T10:00:02Z", "new-head"))
     assert [x["dep_name"] for x in await review_rows(client, auth)] == ["evilcrit2"]
-    gen = await redis.get(cache.GEN_KEY)
+    gen = await redis.get(cache.team_key(1))
 
     respx.clear()
     files("quietpkg2")  # the OLDER push's evaluation finishes last
     await review(client, auth, at("2026-11-22T10:00:01Z", "old-head"))
     assert [x["dep_name"] for x in await review_rows(client, auth)] == ["evilcrit2"]
-    assert await redis.get(cache.GEN_KEY) == gen  # nothing stored, nothing invalidated
+    assert await redis.get(cache.team_key(1)) == gen  # nothing stored, nothing invalidated
     async with SessionLocal() as s:
         sha = (
             await s.execute(text("SELECT head_sha FROM pr_review WHERE pr_number = 7"))
@@ -968,4 +968,4 @@ async def test_older_delivery_cannot_overwrite_newer_verdicts(client, auth, rese
 
     await review(client, auth, at("2026-11-22T10:00:03Z", "newest-head"))  # newer still wins
     assert [x["dep_name"] for x in await review_rows(client, auth)] == ["quietpkg2"]
-    assert await redis.get(cache.GEN_KEY) != gen
+    assert await redis.get(cache.team_key(1)) != gen

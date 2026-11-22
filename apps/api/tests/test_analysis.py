@@ -86,12 +86,15 @@ async def test_blast_radius_works_when_redis_down(client, auth, monkeypatch):
         async def get(self, *_, **__):
             raise OSError("down")
 
-        set = delete = incr = get
+        set = delete = mget = get
+
+        def pipeline(self, *_, **__):
+            raise OSError("down")
 
     monkeypatch.setattr(cache, "get_redis", lambda: Dead())
     r = await client.get("/blast-radius/1", headers=auth)
     assert r.status_code == 200 and r.json()["data"]["cached"] is False
-    await cache.bump()  # must swallow the error too
+    await cache.bump([1], catalog=True)  # must swallow the error too
 
 
 async def test_blast_radius_path_follows_dependencies():
@@ -287,7 +290,7 @@ async def test_internal_osv_sync(client, reseed):
     with mock_upstreams():
         r = await client.post("/internal/osv-sync", headers={"X-Cron-Secret": "test-cron-secret"})
     assert r.status_code == 200 and r.json()["data"]["packages_scanned"] > 0
-    assert await get_redis().get(cache.GEN_KEY) == "1"
+    assert await get_redis().get(cache.CATALOG_KEY) == "1"
 
 
 @pytest.mark.parametrize("headers", [{}, {"X-Cron-Secret": "wrong"}, {"X-Cron-Secret": ""}])
@@ -301,6 +304,6 @@ async def test_bump_moves_generation_so_old_entries_are_unreachable():
 
     await cache.read_through("k", build)
     assert (await cache.read_through("k", build))[1] is True
-    await cache.bump()
+    await cache.bump(catalog=True)
     assert (await cache.read_through("k", build))[1] is False
-    assert await get_redis().get(cache.GEN_KEY) == "1"
+    assert await get_redis().get(cache.CATALOG_KEY) == "1"

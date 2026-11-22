@@ -1,12 +1,17 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { startTransition } from "react";
+import { startTransition, useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import { report } from "@/lib/sentry";
 
 // Production hides server error text behind a digest, so the message is fixed and the digest is the reference.
 export default function DashboardError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   const router = useRouter();
+  // Server render errors carry a digest and are already reported on the server; this catches the rest.
+  useEffect(() => {
+    if (!error.digest) void report(error);
+  }, [error]);
   // reset() alone only re-renders the client tree; the failed server render must be fetched again.
   const retry = () =>
     startTransition(() => {

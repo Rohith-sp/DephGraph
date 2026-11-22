@@ -8,5 +8,6 @@
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": { "turbo": "2.3.0" },
+  "overrides": { "next": { "postcss": "8.5.32" } },
   "packageManager": "npm@10.9.0"
 }

@@ -121,7 +121,10 @@ async def main(dsn: str = DSN) -> None:
     async with c.transaction():
         names = [
             r[0]
-            for r in await c.fetch("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+            for r in await c.fetch(
+                "SELECT tablename FROM pg_tables "
+                "WHERE schemaname = 'public' AND tablename <> 'schema_migrations'"  # the runner's ledger
+            )
         ]
         await c.execute(f"TRUNCATE {', '.join(names)} RESTART IDENTITY CASCADE")
 

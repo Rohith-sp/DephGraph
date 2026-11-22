@@ -44,7 +44,7 @@ async def list_clusters(request: Request, session: DbSession) -> Response:
                 m["x"], m["y"] = coords.get((c["cluster_id"], m["package_id"]), (None, None))
         return json.dumps(clusters)
 
-    return await cached_json(request, build, "shared")  # catalogue, same for everyone
+    return await cached_json(request, build, None)  # catalogue, same for everyone
 
 
 @router.get("/redundancy", response_model=Envelope[list[RedundancyOut]])
@@ -59,7 +59,7 @@ async def redundancy(request: Request, session: DbSession, member: CurrentMember
             "ORDER BY redundant_package_count DESC, service_name",
             **team_params(member),
         ),
-        member.scope,
+        member,
     )
 
 

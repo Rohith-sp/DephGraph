@@ -3,6 +3,7 @@ import hmac
 import json
 import re
 import time
+import uuid
 from typing import Annotated, Any
 
 import httpx
@@ -20,7 +21,7 @@ from app.config import settings
 from app.database import DbSession, SessionLocal
 from app.schemas.analysis import VerdictOut
 from app.schemas.common import BigId, Envelope, ok
-from app.services import cache, github, pr_gate_engine
+from app.services import cache, github, pr_gate_engine, pr_gate_queue
 from app.services.queries import lock_service, require_service, rows
 
 log = structlog.get_logger()
@@ -48,9 +49,31 @@ def normalize_repo_url(url: str) -> str:
     return re.sub(_REPO_URL_TAIL, "", re.sub(r"^http://", "https://", url.strip().lower()))
 
 
+def _parse(payload: Any) -> tuple[dict[str, Any], int, str, str, str, str]:
+    """(pull_request, number, head sha, action, repo full name, repo html url); ValueError if malformed."""
+    try:
+        pr, repo = payload["pull_request"], payload["repository"]
+        return (
+            pr,
+            int(pr["number"]),
+            pr["head"]["sha"],
+            payload["action"],
+            repo["full_name"],
+            str(repo.get("html_url", "")),
+        )
+    except (KeyError, TypeError) as e:
+        raise ValueError("Malformed pull_request payload") from e
+
+
+def _failure(e: Exception) -> str:
+    return f"DephGraph could not evaluate this PR: {type(e).__name__}"
+
+
 # Synchronous, as the PRD asks (verdict < 30s). GitHub drops a delivery unanswered after 10s, so it
 # talks to the Next.js route (apps/web/src/app/api/webhooks/github), which acknowledges at once and
-# forwards here inside `after()`; Python on Vercel cannot keep working after its response.
+# forwards here inside `after()`; Python on Vercel cannot keep working after its response. The
+# delivery is stored first (pr_gate_queue): a redelivery is a no-op, and a review that fails or
+# crashes is retried by POST /internal/pr-gate/retry.
 @router.post("/webhook")
 async def webhook(
     request: Request,
@@ -66,16 +89,38 @@ async def webhook(
         return ok({"skipped": True})
     try:
         payload = json.loads(body)
-        pr, repo = payload["pull_request"], payload["repository"]
-        number, head_sha = int(pr["number"]), pr["head"]["sha"]
-        action = payload["action"]
-        full_name, html_url = repo["full_name"], str(repo.get("html_url", ""))
-    except (ValueError, KeyError, TypeError):
+        action = _parse(payload)[3]
+    except ValueError:  # includes json.JSONDecodeError
         raise HTTPException(422, "Malformed pull_request payload") from None
     if action not in ACTIONS:
         return ok({"skipped": True})
+    delivery = x_github_delivery or uuid.uuid4().hex
+    if not await pr_gate_queue.record(delivery, x_github_event, payload):
+        return ok({"duplicate": True})
+    try:
+        return ok(await attempt(delivery, payload, started))
+    except Exception as e:  # noqa: BLE001 -- already recorded for retry; the caller sees a 502
+        raise HTTPException(502, _failure(e)) from e
+
+
+async def attempt(
+    delivery_id: str, payload: dict[str, Any], started: float | None = None
+) -> dict[str, Any]:
+    """Review a claimed delivery and record the outcome: done, or scheduled for retry (then raises)."""
+    try:
+        result = await process(payload, delivery_id, started or time.monotonic())
+    except Exception as e:
+        await pr_gate_queue.fail(delivery_id, e)
+        raise
+    await pr_gate_queue.done(delivery_id)
+    return result
+
+
+async def process(payload: dict[str, Any], delivery_id: str, started: float) -> dict[str, Any]:
+    """Evaluate the PR and post the Check Run (neutral when evaluation fails, then re-raise)."""
+    pr, number, head_sha, _, full_name, html_url = _parse(payload)
     install_id = (payload.get("installation") or {}).get("id")
-    ctx = {"delivery": x_github_delivery, "repo": full_name, "pr": number}
+    ctx = {"delivery": delivery_id, "repo": full_name, "pr": number}
     token: str | None = None
     async with httpx.AsyncClient(timeout=15) as client:
         try:
@@ -84,7 +129,7 @@ async def webhook(
             verdict = await _evaluate_and_store(client, pr, number, full_name, html_url, token)
             if verdict is None:
                 log.info("pr_gate_skipped", reason="repository not registered", **ctx)
-                return ok({"skipped": True})
+                return {"skipped": True}
             overall, stage, summary, deps = verdict
             ms = int((time.monotonic() - started) * 1000)
             log.info("pr_gate_done", verdict=overall, ms=ms, **ctx)
@@ -95,20 +140,31 @@ async def webhook(
                 "processing_ms": ms,
                 "deps": deps,
             }
-        except Exception as e:  # noqa: BLE001 -- surfaced as a neutral Check Run, then a 502
+        except Exception as e:
             log.exception("pr_gate_failed", **ctx)
-            overall, result = "ADVISORY", None
-            summary = f"DephGraph could not evaluate this PR: {type(e).__name__}"
-        if not token:
-            log.info("check_run_skipped", reason="no installation token", **ctx)
-        else:
-            try:
-                await github.post_check_run(client, full_name, head_sha, token, overall, summary)
-            except httpx.HTTPError as e:
-                log.warning("check_run_failed", error=str(e), **ctx)
-    if result is None:
-        raise HTTPException(502, summary)
-    return ok(result)
+            overall, summary = "ADVISORY", _failure(e)
+            await _post_check_run(client, full_name, head_sha, token, overall, summary, ctx)
+            raise
+        await _post_check_run(client, full_name, head_sha, token, overall, summary, ctx)
+    return result
+
+
+async def _post_check_run(
+    client: httpx.AsyncClient,
+    full_name: str,
+    head_sha: str,
+    token: str | None,
+    overall: str,
+    summary: str,
+    ctx: dict[str, Any],
+) -> None:
+    if not token:
+        log.info("check_run_skipped", reason="no installation token", **ctx)
+        return
+    try:
+        await github.post_check_run(client, full_name, head_sha, token, overall, summary)
+    except httpx.HTTPError as e:
+        log.warning("check_run_failed", error=str(e), **ctx)
 
 
 async def _evaluate_and_store(
@@ -124,7 +180,7 @@ async def _evaluate_and_store(
     async with SessionLocal() as session, session.begin():
         services = await rows(
             session,
-            f"SELECT service_id, name FROM service WHERE {_REPO_URL_SQL} = :url ORDER BY service_id",
+            f"SELECT service_id, name, team_id FROM service WHERE {_REPO_URL_SQL} = :url ORDER BY service_id",
             url=normalize_repo_url(html_url),
         )
     if not services:
@@ -153,7 +209,7 @@ async def _evaluate_and_store(
                     continue  # deleted mid-review
                 stored = await pr_gate_engine.store_verdicts(session, sid, number, pr, results)
             if stored:
-                await cache.bump()
+                await cache.bump([svc["team_id"]])
         everything += results
         deps_out += [
             {

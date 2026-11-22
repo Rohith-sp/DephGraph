@@ -26,7 +26,7 @@ export default async function RemediationPage({ searchParams }: { searchParams: 
           plan_id: savedSteps[0].plan_id!,
           team_id: teamId,
           title: null,
-          status: "OPEN",
+          status: "DRAFT",
           coverage_pct: 0,
           actions: savedSteps.map((s) => ({
             action_seq: s.action_seq!,
