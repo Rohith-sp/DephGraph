@@ -145,6 +145,10 @@ async def recompute() -> int:
                 for i, p in enumerate(pkgs)
             ]
         )
+    # packages left out of this run (no description) must not keep vectors/clusters from older runs
+    await get_mongo()["package_embeddings"].delete_many(
+        {"package_id": {"$nin": [p["package_id"] for p in pkgs]}}
+    )
     log.info("cluster_recompute_done", packages=len(pkgs), clusters=len(words))
     return len(words)
 

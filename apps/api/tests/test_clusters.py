@@ -129,3 +129,14 @@ def test_top_keywords_and_small_input():
     assert kw[0][0] in {"http", "client"} and kw[1][0] == "yaml"
     c = cluster_engine.cluster(np.zeros((3, 384)))  # below min_cluster_size: all noise
     assert set(c.labels.tolist()) == {-1}
+
+
+async def test_recompute_drops_stale_embeddings(client, auth, fake_model, reseed):
+    # a package no longer clustered (deleted, or no description) must not keep an old vector
+    emb = get_mongo()["package_embeddings"]
+    await emb.update_one(
+        {"package_id": 999_999}, {"$set": {"embedding": [0.0], "cluster_id": 1}}, upsert=True
+    )
+    r = await client.post("/clusters/recompute", headers=auth)
+    assert r.status_code == 202
+    assert await emb.count_documents({"package_id": 999_999}) == 0
