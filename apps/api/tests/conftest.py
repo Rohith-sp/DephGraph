@@ -38,6 +38,19 @@ settings.supabase_jwt_secret = "test-jwt-secret-at-least-32-characters"
 settings.internal_cron_secret = "test-cron-secret"
 settings.rate_limit = "1000000/minute"  # test_polish lowers it per test
 settings.gate_live_lookup = False  # no test reaches OSV / deps.dev; live tests are opt-in (live)
+# A developer's .env.local may hold real integrations (GitHub App, Groq, Sentry, admin list): tests
+# start without them and opt in per test, so results never depend on whose machine runs them.
+for _name in (
+    "github_app_id",
+    "github_private_key_base64",
+    "github_repository",
+    "github_webhook_secret",
+    "groq_api_key",
+    "org_admin_emails",
+    "allowed_email_domains",
+    "sentry_dsn",
+):
+    setattr(settings, _name, "")
 
 sys.path.insert(0, str(ROOT / "scripts"))
 import migrate  # noqa: E402

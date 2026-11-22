@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -83,6 +84,20 @@ async def test_unknown_kid_refetches_once_then_cooldown():
     with pytest.raises(PyJWTError):
         await auth.decode_token(_token(pem, "forged-2"))
     assert route.call_count == 1  # forged kids cannot trigger repeated fetches
+
+
+@respx.mock
+async def test_concurrent_first_requests_share_one_jwks_fetch():
+    """A cold instance gets a burst: every request must wait for the one fetch, not hit the cooldown."""
+    pem, pub = _keypair("k1")
+
+    async def slow(_request):
+        await asyncio.sleep(0.05)
+        return httpx.Response(200, json={"keys": [pub]})
+
+    route = respx.get(JWKS_URL).mock(side_effect=slow)
+    claims = await asyncio.gather(*(auth.decode_token(_token(pem, "k1")) for _ in range(8)))
+    assert len(claims) == 8 and route.call_count == 1
 
 
 @respx.mock

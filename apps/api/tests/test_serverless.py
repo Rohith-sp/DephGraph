@@ -56,6 +56,22 @@ def test_serverless_engine_is_pooler_safe_and_works():
     assert r.stdout.split() == ["3", "True"]
 
 
+async def test_pooler_connect_args_work_and_name_statements_uniquely():
+    """Supavisor shares server connections: asyncpg's per-connection counter names collide there."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.database import POOLER_CONNECT_ARGS
+
+    name = POOLER_CONNECT_ARGS["prepared_statement_name_func"]
+    assert len({name() for _ in range(1000)}) == 1000
+    e = create_async_engine(settings.database_url, connect_args=POOLER_CONNECT_ARGS)
+    try:
+        async with e.connect() as c:
+            assert (await c.execute(text("SELECT CAST(:x AS INT)"), {"x": 1})).scalar_one() == 1
+    finally:
+        await e.dispose()
+
+
 def test_default_engine_keeps_pool_settings():
     r = run_py("from app.database import engine; print(engine.pool.size(), engine.pool._pre_ping)")
     assert r.stdout.split() == ["10", "False"], r.stderr[-800:]

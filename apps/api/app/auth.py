@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 import uuid
@@ -23,22 +24,29 @@ bearer = HTTPBearer(auto_error=False)
 
 _jwks: dict[str, dict[str, Any]] = {}  # kid -> JWK
 _jwks_fetched = 0.0
+_jwks_lock = asyncio.Lock()
 _JWKS_ALGS = {"ES256": "EC", "RS256": "RSA"}  # alg -> JWK kty
 JWKS_COOLDOWN = 30  # seconds between refetches, so forged kids cannot hammer Supabase
 
 
 async def _signing_key(kid: str) -> dict[str, Any]:
-    """JWK for `kid` from the project's JWKS; refetched once (rate-limited) on an unknown kid."""
+    """JWK for `kid` from the project's JWKS; refetched once (rate-limited) on an unknown kid.
+
+    Concurrent requests for an unknown kid wait for the one fetch in flight instead of failing on
+    the cooldown it just set (a cold instance gets a burst of requests at once)."""
     global _jwks_fetched
-    if kid not in _jwks and time.monotonic() - _jwks_fetched > JWKS_COOLDOWN:
-        _jwks_fetched = time.monotonic()
-        try:
-            async with httpx.AsyncClient(timeout=5) as c:
-                r = await c.get(f"{settings.supabase_url}/auth/v1/.well-known/jwks.json")
-                r.raise_for_status()
-            _jwks.update({k["kid"]: k for k in r.json()["keys"]})
-        except (httpx.HTTPError, KeyError, ValueError) as e:
-            raise jwt.InvalidTokenError(f"JWKS fetch failed: {e}") from e
+    if kid in _jwks:
+        return _jwks[kid]
+    async with _jwks_lock:
+        if kid not in _jwks and time.monotonic() - _jwks_fetched > JWKS_COOLDOWN:
+            _jwks_fetched = time.monotonic()
+            try:
+                async with httpx.AsyncClient(timeout=5) as c:
+                    r = await c.get(f"{settings.supabase_url}/auth/v1/.well-known/jwks.json")
+                    r.raise_for_status()
+                _jwks.update({k["kid"]: k for k in r.json()["keys"]})
+            except (httpx.HTTPError, KeyError, ValueError) as e:
+                raise jwt.InvalidTokenError(f"JWKS fetch failed: {e}") from e
     if kid not in _jwks:
         raise jwt.InvalidTokenError("Unknown signing key")
     return _jwks[kid]

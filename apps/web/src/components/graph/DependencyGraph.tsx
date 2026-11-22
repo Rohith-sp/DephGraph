@@ -14,6 +14,7 @@ import { PathChain } from "./PathChain";
 const nodeTypes = { package: PackageNode };
 const COL_W = 288;
 const ROW_H = 52;
+const GRID_W = 240; // 208px node + gap
 const MAX_PATHS = 5;
 
 const mapOf = (edges: ServiceGraph["edges"], from: "source" | "target", to: "source" | "target") => {
@@ -25,6 +26,14 @@ const mapOf = (edges: ServiceGraph["edges"], from: "source" | "target", to: "sou
 // Column = depth. Within a column rows follow the average row of their parents, which keeps
 // edges short; short columns are centred against the tallest one.
 function layout(nodes: GraphNode[], parents: Map<string, string[]>) {
+  if (parents.size === 0) {
+    // No edges (a manifest without a lockfile): one column would be a tall strip, so wrap the
+    // packages into a grid about as wide as the viewport is relative to a node's cell.
+    const per = Math.max(1, Math.round(Math.sqrt(nodes.length / 3)));
+    const sorted = [...nodes].sort((a, b) => a.name.localeCompare(b.name));
+    const rows = Math.ceil(sorted.length / per);
+    return new Map(sorted.map((n, i) => [n.id, { x: Math.floor(i / rows) * GRID_W, y: (i % rows) * ROW_H }]));
+  }
   const cols = new Map<number, GraphNode[]>();
   nodes.forEach((n) => cols.set(n.depth, [...(cols.get(n.depth) ?? []), n]));
   const y = new Map<string, number>();

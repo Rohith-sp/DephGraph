@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from typing import Annotated
+from uuid import uuid4
 
 from fastapi import Depends
 from pymongo import AsyncMongoClient
@@ -15,6 +16,13 @@ from app.config import settings
 # be frozen between requests, so pre-ping each checkout, and DATABASE_URL points at Supabase's
 # transaction pooler (:6543), which cannot hold asyncpg's prepared statements.
 POOL_RECYCLE = 300
+POOLER_CONNECT_ARGS = {
+    "statement_cache_size": 0,
+    "prepared_statement_cache_size": 0,
+    # The pooler hands one server connection to many clients: asyncpg's per-connection counter
+    # names (__asyncpg_stmt_1__) collide there (DuplicatePreparedStatementError), so name each one.
+    "prepared_statement_name_func": lambda: f"__asyncpg_{uuid4().hex}__",
+}
 engine = (
     create_async_engine(
         settings.database_url,
@@ -22,7 +30,7 @@ engine = (
         max_overflow=2,
         pool_recycle=POOL_RECYCLE,
         pool_pre_ping=True,
-        connect_args={"statement_cache_size": 0, "prepared_statement_cache_size": 0},
+        connect_args=POOLER_CONNECT_ARGS,
     )
     if settings.serverless
     else create_async_engine(
