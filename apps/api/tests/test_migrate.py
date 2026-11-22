@@ -63,7 +63,11 @@ async def test_existing_database_needs_baseline(conn):
     with pytest.raises(migrate.MigrationError, match="--baseline"):
         await migrate.migrate(conn)
     assert len(await migrate.baseline(conn, "010")) == 10
-    assert await migrate.migrate(conn) == ["011_pr_gate_delivery.sql", "012_onboarding.sql"]
+    assert await migrate.migrate(conn) == [
+        "011_pr_gate_delivery.sql",
+        "012_onboarding.sql",
+        "014_deployment_edges.sql",
+    ]
     with pytest.raises(migrate.MigrationError, match="already exists"):
         await migrate.baseline(conn, "010")
 

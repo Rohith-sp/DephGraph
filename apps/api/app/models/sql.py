@@ -136,6 +136,9 @@ class Deployment(Base):
     deploy_seq: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
     environment: Mapped[str] = mapped_column(String(40), server_default="production")
     deployed_at: Mapped[datetime] = _now()
+    locked: Mapped[bool] = mapped_column(
+        Boolean, server_default="false"
+    )  # ingested from a lockfile
 
 
 class PackageVersion(Base):
@@ -233,6 +236,35 @@ class ResolvesTo(Base):
     version_string: Mapped[str] = mapped_column(String(100), primary_key=True)
     depth: Mapped[int] = mapped_column(Integer, server_default="0")
     is_direct: Mapped[bool] = mapped_column(Boolean, server_default="false")
+
+
+class DeploymentEdge(Base):
+    """A lockfile's own dependency edges: they belong to one deployment, not the global catalogue."""
+
+    __tablename__ = "deployment_edge"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["service_id", "deploy_seq"],
+            ["deployment.service_id", "deployment.deploy_seq"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["dep_package_id", "dep_version_string"],
+            ["package_version.package_id", "package_version.version_string"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["ref_package_id", "ref_version_string"],
+            ["package_version.package_id", "package_version.version_string"],
+            ondelete="CASCADE",
+        ),
+    )
+    service_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    deploy_seq: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    dep_package_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    dep_version_string: Mapped[str] = mapped_column(String(100), primary_key=True)
+    ref_package_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    ref_version_string: Mapped[str] = mapped_column(String(100), primary_key=True)
 
 
 class DependsOn(Base):

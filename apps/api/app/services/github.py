@@ -10,17 +10,20 @@ import structlog
 
 from app.config import settings
 from app.services import http
-from app.services.manifest_parser import parse_manifest
+from app.services.manifest_parser import LOCKFILES, parse_manifest
 
 log = structlog.get_logger()
 API = "https://api.github.com"
 HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
 MANIFESTS = {"package.json": "npm", "cargo.toml": "cargo", "go.mod": "go"}
 # manifests/lockfiles whose changes we cannot read: the gate says so instead of passing silently
-UNPARSED = {
-    "pyproject.toml", "pipfile", "pipfile.lock", "poetry.lock", "uv.lock", "package-lock.json",
-    "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "cargo.lock", "go.sum",
-}  # fmt: skip
+UNPARSED = {"pipfile", "pipfile.lock", "npm-shrinkwrap.json", "go.sum"}
+# Files whose '+' lines cannot be parsed alone: diffed as head vs base instead.
+FULL_FILE_ECOSYSTEM = {"pyproject.toml": "pypi", **{n: eco for n, (eco, _) in LOCKFILES.items()}}
+RAW = {"Accept": "application/vnd.github.raw+json"}
+MAX_FILE_CHARS = 1_000_000  # same cap as the ingest upload
+MAX_FULL_FILES = 10  # whole-file inspections per PR
+MAX_ADDED_PER_FILE = 500
 FILES_PER_PAGE = 100
 MAX_PR_FILES = 3000  # GitHub's cap on the PR files API
 NPM_LINE = re.compile(r'^\s*"[^"]+"\s*:\s*"[^"]*"\s*,?\s*$')
@@ -88,12 +91,83 @@ def ecosystem_of(filename: str) -> str | None:
     return MANIFESTS.get(base)
 
 
+def _sibling(pyproject: str, lock: str) -> bool:
+    d = lock.rpartition("/")[0]
+    return lock.lower().endswith("poetry.lock") and pyproject == f"{d}/pyproject.toml".lstrip("/")
+
+
+class TooLarge(Exception):
+    """A file over MAX_FILE_CHARS: unlike an absent file, it cannot be treated as empty."""
+
+
+async def _file_at(
+    client: httpx.AsyncClient, url: str, headers: dict[str, str], **params: str
+) -> str | None:
+    """Raw file text, None when absent (404); raises TooLarge over the size cap."""
+    r = await http.request(client, "GET", url, headers={**headers, **RAW}, params=params)
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    if len(r.text) > MAX_FILE_CHARS:
+        raise TooLarge
+    return r.text
+
+
+async def changed_full_file_deps(
+    client: httpx.AsyncClient,
+    full_name: str,
+    f: dict,
+    base_sha: str,
+    headers: dict[str, str],
+    pyproject_url: str | None = None,
+) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """(deps, notes): (ecosystem, name, version) in the head lockfile/pyproject but not the base."""
+    filename = f["filename"]
+    eco = FULL_FILE_ECOSYSTEM[filename.rsplit("/", 1)[-1].lower()]
+    try:
+        head = await _file_at(client, f["contents_url"], headers)
+        pyproject = await _file_at(client, pyproject_url, headers) if pyproject_url else None
+        old_name = f.get("previous_filename", filename)
+        base = (
+            None
+            if f["status"] == "added"
+            else await _file_at(
+                client, f"{API}/repos/{full_name}/contents/{old_name}", headers, ref=base_sha
+            )
+        )
+    except TooLarge:
+        return [], [f"{filename}: too large to inspect, not inspected"]
+    except httpx.HTTPError as e:  # one unreadable file must not sink the whole gate
+        log.warning("pr_lockfile_unreadable", file=filename, error=str(e))
+        return [], [f"{filename}: could not be fetched, not inspected"]
+    if head is None:
+        return [], [f"{filename}: could not be fetched, not inspected"]
+    try:
+        new = {
+            (p.name, p.version) for p in parse_manifest(eco, head, filename, pyproject=pyproject)
+        }
+        old = (
+            {(p.name, p.version) for p in parse_manifest(eco, base, filename, pyproject=pyproject)}
+            if base
+            else set()
+        )
+    except ValueError as e:
+        log.warning("pr_manifest_unparseable", file=filename, error=str(e))
+        return [], [f"{filename}: could not be parsed, not inspected"]
+    added = [(eco, n, v) for n, v in sorted(new - old)]
+    if len(added) > MAX_ADDED_PER_FILE:
+        return added[:MAX_ADDED_PER_FILE], [
+            f"{filename}: {len(added)} new packages, only the first {MAX_ADDED_PER_FILE} inspected"
+        ]
+    return added, []
+
+
 def added_deps(filename: str, patch: str) -> list[tuple[str, str, str]]:
     """(ecosystem, name, version) from a diff's '+' lines.
 
     shortcut: parses added lines in isolation (npm: line-wise JSON, so non-dependency
-    `"key": "value"` lines parse too and simply miss the DB); pyproject.toml and lockfiles are
-    reported as not inspected by pr_added_deps; upgrade to fetching the full head file.
+    `"key": "value"` lines parse too and simply miss the DB). Lockfiles and pyproject.toml are
+    diffed whole in `changed_full_file_deps` instead.
     """
     eco = ecosystem_of(filename)
     if eco is None:
@@ -114,6 +188,26 @@ def added_deps(filename: str, patch: str) -> list[tuple[str, str, str]]:
         return []
 
 
+async def _merge_base(
+    client: httpx.AsyncClient, full_name: str, number: int, headers: dict[str, str]
+) -> str | None:
+    """Merge-base commit of the PR (what GitHub's own diff is against); None (logged) on failure."""
+    try:
+        pr = await http.request(
+            client, "GET", f"{API}/repos/{full_name}/pulls/{number}", headers=headers
+        )
+        pr.raise_for_status()
+        base, head = pr.json()["base"]["sha"], pr.json()["head"]["sha"]
+        cmp = await http.request(
+            client, "GET", f"{API}/repos/{full_name}/compare/{base}...{head}", headers=headers
+        )
+        cmp.raise_for_status()
+        return cmp.json()["merge_base_commit"]["sha"]
+    except (httpx.HTTPError, KeyError, ValueError) as e:
+        log.warning("pr_merge_base_failed", pr=number, error=str(e))
+        return None
+
+
 async def pr_added_deps(
     client: httpx.AsyncClient, full_name: str, number: int, token: str | None
 ) -> tuple[list[tuple[str, str, str]], list[str]]:
@@ -122,6 +216,7 @@ async def pr_added_deps(
     headers = {**HEADERS, **({"Authorization": f"Bearer {token}"} if token else {})}
     deps: list[tuple[str, str, str]] = []
     notes: list[str] = []
+    full: list[dict] = []
     for page in range(1, MAX_PR_FILES // FILES_PER_PAGE + 1):
         r = await http.request(
             client,
@@ -137,7 +232,9 @@ async def pr_added_deps(
             if f.get("status") == "removed":
                 continue
             base = name.rsplit("/", 1)[-1].lower()
-            if base in UNPARSED:
+            if base in FULL_FILE_ECOSYSTEM:
+                full.append(f)
+            elif base in UNPARSED:
                 notes.append(f"{name}: {base} changes are not inspected")
             elif ecosystem_of(name) and patch is None and f.get("changes", 1) > 0:
                 notes.append(f"{name}: diff too large for GitHub to include, not inspected")
@@ -147,6 +244,22 @@ async def pr_added_deps(
             break
     else:
         notes.append(f"PR touches {MAX_PR_FILES}+ files: files beyond GitHub's cap not inspected")
+    if full:  # the merge base is only needed for these, so the extra calls are skipped otherwise
+        base_sha = await _merge_base(client, full_name, number, headers)
+        for f in full[:MAX_FULL_FILES]:
+            if base_sha is None:
+                notes.append(f"{f['filename']}: merge base unavailable, not inspected")
+                continue
+            sibling = next(  # poetry.lock 2.0 needs its pyproject.toml to tell dev from main
+                (g["contents_url"] for g in full if _sibling(g["filename"], f["filename"])), None
+            )
+            found, note = await changed_full_file_deps(
+                client, full_name, f, base_sha, headers, sibling
+            )
+            deps += found
+            notes += note
+        for f in full[MAX_FULL_FILES:]:
+            notes.append(f"{f['filename']}: more than {MAX_FULL_FILES} lockfiles, not inspected")
     return list(dict.fromkeys(deps)), notes
 
 

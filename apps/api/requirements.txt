@@ -25,6 +25,7 @@ groq==0.12.0
 
 # Version parsing + CVSS scoring
 packaging==24.2
+PyYAML==6.0.3  # lockfile parsers (pnpm, yarn berry); also a uvicorn[standard] dependency
 cvss==3.6
 
 # Auth

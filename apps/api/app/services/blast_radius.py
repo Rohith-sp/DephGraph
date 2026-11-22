@@ -26,12 +26,17 @@ NODES_SQL = """
 EDGES_SQL = """
         SELECT d.dep_package_id, d.dep_version_string, d.ref_package_id, d.ref_version_string
         FROM depends_on d
+        JOIN deployment dp ON dp.service_id = :s AND dp.deploy_seq = :q AND NOT dp.locked
         JOIN resolves_to a ON (a.package_id, a.version_string)
                             = (d.dep_package_id, d.dep_version_string)
                           AND a.service_id = :s AND a.deploy_seq = :q
         JOIN resolves_to b ON (b.package_id, b.version_string)
                             = (d.ref_package_id, d.ref_version_string)
                           AND b.service_id = :s AND b.deploy_seq = :q
+        UNION
+        SELECT e.dep_package_id, e.dep_version_string, e.ref_package_id, e.ref_version_string
+        FROM deployment_edge e
+        WHERE e.service_id = :s AND e.deploy_seq = :q
         """
 
 
