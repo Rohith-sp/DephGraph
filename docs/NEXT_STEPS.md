@@ -1,6 +1,6 @@
 # DephGraph — Where things stand and what is left
 
-*Status as of 22 November 2026: course Phases 1–6 done, report written, synopsis features complete. PR-gate stage 3 tested live on Groq (`openai/gpt-oss-120b`). Left: viva prep, production deploy. PostgreSQL is the system of record; the MySQL schema is the course demonstration.*
+*Status as of 22 November 2026: course Phases 1–6 done, report written. Product: production build in progress on `fix/full-review` (see 3.1). Left: viva prep, finish the build, production deploy. PostgreSQL is the system of record; the MySQL schema is the course demonstration.*
 
 There are two tracks:
 
@@ -159,26 +159,45 @@ Optional later: sample documents for four collections that are empty on the loca
 
 ## 3. Product track — what is left
 
-### 3.1 Production deploy (PRD phase 7)
+### 3.1 Handoff: production build status (22 November 2026, branch `fix/full-review`)
 
-Full instructions are in [`DEPLOY.md`](DEPLOY.md). In order:
+Target: an internal tool for one organisation, hosted entirely on free tiers (Vercel Hobby, Supabase,
+MongoDB Atlas M0, Upstash). Nothing simulated ships: no seed data in production, and dev bypasses
+refuse to run on Vercel.
 
-| # | Step | Who |
-|---|---|---|
-| 1 | Create accounts: Supabase, MongoDB Atlas (M0), Upstash, Vercel, Groq | you (sign-ups need your own login) |
-| 2 | **Supabase:** run migrations 001–010 in order, then the seed; copy URL, anon key, JWT secret, pooled `DATABASE_URL` | you, with help |
-| 3 | **Security first:** turn off open sign-up in Supabase Auth, or add team scoping. RLS currently lets any signed-in user read everything | you |
-| 4 | **MongoDB Atlas:** create the M0 cluster and a database user; copy the SRV string | you |
-| 5 | **Upstash:** create a Redis database; copy the `rediss://` URL | you |
-| 6 | **Vercel (API):** import the repo, root `apps/api`; set the variables listed in DEPLOY.md | you, with help |
-| 7 | **Vercel:** import the repo, root `apps/web`; set the variables; `AUTH_DISABLED` must stay unset | you, with help |
-| 8 | **GitHub App** for the PR gate: `checks:write`, webhook to the Vercel route; app id, private key, webhook secret | you |
-| 9 | **Groq** API key (PR gate stage 3) | you |
-| 10 | **GitHub Actions secrets** for `cron.yml` and `cluster.yml` (DEPLOY.md section 6) | you |
-| 11 | **Smoke test:** run the PRD phase 7 checks against the live URLs | together |
+**Built on this branch, tests passing (backend 717/718 before the final fix, 98 % coverage; web lint,
+type check and build clean):**
 
-Keep every key and password out of the repo. They go only in each service's dashboard or a local
-`.env.local`.
+| Area | What |
+|---|---|
+| Reliability | Durable PR-gate delivery queue with retry sweeper (011); `scripts/migrate.py` runner with checksums (`--status`, `--dry-run`, `--baseline`) |
+| Access | Invite-only: `ORG_ADMIN_EMAILS` create teams, admins invite by email (7-day expiry), verified email read from `auth.users`, optional `ALLOWED_EMAIL_DOMAINS`, GitHub sign-in (012) |
+| Services | Self-serve create/patch/delete; repo must be reachable by the DephGraph GitHub App; one team per repo + subfolder (`root_path`) |
+| GitHub | Push to the default branch auto-imports all manifests as one production deployment; `installation` events import new repos; App-scoped tokens per repo; cluster dispatch through the App |
+| Parsing | `pyproject.toml`, `uv.lock`, `poetry.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `Cargo.lock`; lockfile edges kept per deployment (014, 015) |
+| Alerts | One GitHub Issue per serious CVE reaching a production service, closed on fix; opt-in per team (013) |
+| Runtime | Python and Node collectors (`collectors/`) with per-service `dgs_` tokens |
+| Ops | Security headers + CSP, pip-audit/npm audit/Dependabot, Sentry (opt-in), free-tier keep-alive, weekly encrypted `pg_dump` backup |
+| Checks | `verify_schema.py` and the schema tests derive expectations from the migrations (no literal counts) |
+
+**In progress (not yet on this branch):** real package descriptions for clustering, live OSV/deps.dev
+lookups in the PR gate for unscanned dependencies, "unverified" / "LLM review skipped" verdict text
+instead of a silent PASS, configurable verdict thresholds, depth-limit `truncated` flag.
+
+**Left, in order:**
+
+1. Merge the in-progress work, then one full gate: backend suite, web lint/tsc/build, e2e twice.
+2. Merge `fix/full-review` into `main`.
+3. Deploy (see [`DEPLOY.md`](DEPLOY.md)): Vercel projects `dephgraph-api` and `dephgraph-web`;
+   Supabase, Atlas and Upstash on free plans; `python scripts/migrate.py`; fresh random secrets;
+   **no seed scripts in production**.
+4. GitHub App, created by the repo owner (private, installed on this repo). Permissions: Actions RW,
+   Checks RW, Contents R, Issues RW, Metadata R, Pull requests R, Email addresses R. Events:
+   Pull request, Push, Installation, Installation repositories. Its client id/secret also power
+   Supabase "Sign in with GitHub". Credentials go only into Vercel environment variables.
+5. Live acceptance on production with this repo: GitHub sign-in, create team, invite, add service,
+   push to main imports, PR gets a Check Run, collector sample lands, alert issue opens and closes,
+   backup artifact restores.
 
 ### 3.2 Smaller gaps
 
