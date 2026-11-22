@@ -54,7 +54,7 @@ async def list_vulnerabilities(
     member: CurrentMember,
     page: Annotated[Pagination, Depends()],
     severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"] | None = None,
-    ecosystem: Literal["npm", "pypi", "cargo", "go", "maven", "nuget"] | None = None,
+    ecosystem: Literal["npm", "pypi", "cargo", "go"] | None = None,
     q: Annotated[str | None, Query(max_length=200)] = None,
     sort: Literal["cvss_score", "published_at"] = "cvss_score",
     order: Literal["asc", "desc"] = "desc",

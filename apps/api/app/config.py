@@ -1,7 +1,30 @@
+import ipaddress
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Compose / .env.example values: fine on a laptop, a hole anywhere else.
+DEV_SECRETS = {
+    "dev-only-jwt-secret-change-me-0123456789",
+    "dev-only-cron-secret",
+    "your-supabase-jwt-secret",
+    "another-random-secret",
+    "your-random-webhook-secret",
+}
+MIN_SECRET_LEN = 32
+
+
+def _is_local(url: str) -> bool:
+    host = urlsplit(url).hostname or ""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return host == "localhost"
+    ip = getattr(ip, "ipv4_mapped", None) or ip
+    return ip.is_loopback
+
 
 _parents = Path(__file__).resolve().parents
 ROOT = _parents[min(3, len(_parents) - 1)]  # repo root (.env.local); a shallow deploy path has none
@@ -44,10 +67,38 @@ class Settings(BaseSettings):
     # Vercel sets VERCEL=1 in every deployment; true = serverless connection settings.
     serverless: bool = Field(default=False, validation_alias="VERCEL")
 
+    @property
+    def production(self) -> bool:
+        """Vercel is always production, whatever ENVIRONMENT says."""
+        return self.environment == "production" or self.serverless
+
     @model_validator(mode="after")
-    def production_needs_org_admins(self) -> "Settings":
-        if self.environment == "production" and not self.org_admins:
-            raise ValueError("ORG_ADMIN_EMAILS is required when ENVIRONMENT=production")
+    def production_guards(self) -> "Settings":
+        """Refuse to start a production deployment that still carries a dev default."""
+        if not self.production:
+            return self
+        bad = []
+        if not self.org_admins:
+            bad.append("ORG_ADMIN_EMAILS is required")
+        if not self.github_webhook_secret:
+            bad.append("GITHUB_WEBHOOK_SECRET is required")
+        for name, val in (
+            ("INTERNAL_CRON_SECRET", self.internal_cron_secret),
+            ("SUPABASE_JWT_SECRET", self.supabase_jwt_secret),
+        ):
+            # an empty JWT secret is fine (JWKS projects); an empty cron secret is not
+            if val or name == "INTERNAL_CRON_SECRET":
+                if val in DEV_SECRETS or len(val) < MIN_SECRET_LEN:
+                    bad.append(f"{name} must be a non-default secret of >= {MIN_SECRET_LEN} chars")
+        for name, val in (
+            ("DATABASE_URL", self.database_url),
+            ("REDIS_URL", self.redis_url),
+            ("MONGO_URI", self.mongo_uri),
+        ):
+            if _is_local(val):
+                bad.append(f"{name} points at localhost")
+        if bad:
+            raise ValueError("production configuration refused: " + "; ".join(bad))
         return self
 
     @property

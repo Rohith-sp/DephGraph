@@ -33,6 +33,8 @@ FROM runtime AS api
 COPY --from=build /opt/venv /opt/venv
 COPY apps/api apps/api
 COPY scripts scripts
+# Demo/dev tooling never ships in the runtime image (compose's init mounts ./scripts over this dir).
+RUN rm -f scripts/seed_db.py scripts/seed_demo_extra.py scripts/demo.py scripts/make_dev_token.py
 USER app
 WORKDIR /srv/dephgraph/apps/api
 EXPOSE 8000

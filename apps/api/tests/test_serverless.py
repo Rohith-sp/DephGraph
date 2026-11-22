@@ -19,6 +19,17 @@ API_DIR = Path(ROOT / "apps/api")
 ML = ("numpy", "torch", "sklearn", "sentence_transformers", "umap", "hdbscan")
 
 
+PROD_ENV = dict(
+    VERCEL="1",
+    DATABASE_URL="postgresql+asyncpg://u:p@db.example.com:5432/d",
+    REDIS_URL="rediss://r.example.com:6379",
+    MONGO_URI="mongodb://m.example.com",
+    ORG_ADMIN_EMAILS="a@b.co",
+    GITHUB_WEBHOOK_SECRET="w" * 32,
+    INTERNAL_CRON_SECRET="c" * 32,
+)
+
+
 def run_py(code: str, **env: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-c", code],
@@ -38,15 +49,11 @@ def test_api_imports_without_ml_packages():
 
 def test_serverless_engine_is_pooler_safe_and_works():
     r = run_py(
-        "import asyncio; from sqlalchemy import text; from app.database import engine\n"
-        "async def go():\n"
-        "    async with engine.connect() as c: print((await c.execute(text('SELECT 1'))).scalar())\n"
-        "    print(engine.pool.size(), engine.pool._pre_ping)\n"
-        "asyncio.run(go())",
-        VERCEL="1",
+        "from app.database import engine; print(engine.pool.size(), engine.pool._pre_ping)",
+        **PROD_ENV,  # VERCEL=1 is production: no localhost URLs, so the engine is never connected here
     )
     assert r.returncode == 0, r.stderr[-800:]
-    assert r.stdout.split() == ["1", "3", "True"]
+    assert r.stdout.split() == ["3", "True"]
 
 
 def test_default_engine_keeps_pool_settings():

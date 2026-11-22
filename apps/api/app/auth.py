@@ -108,6 +108,7 @@ async def verified_email(claims: dict[str, Any], session: AsyncSession) -> str |
     user_metadata is writable by the user, so it is never trusted. On Supabase the email and its
     confirmation come from auth.users (Dashboard -> Auth -> "Confirm email" must be ON, or anyone can
     claim any address); without that table (compose, CI) the signed token's own email claim is used.
+    In production the claim fallback does not exist: no auth.users = 503.
     """
     global _has_auth_users
     uid = user_id_of(claims)
@@ -116,6 +117,9 @@ async def verified_email(claims: dict[str, Any], session: AsyncSession) -> str |
             _has_auth_users = (
                 await session.execute(text("SELECT to_regclass('auth.users') IS NOT NULL"))
             ).scalar_one()
+    if not _has_auth_users and settings.production:
+        log.error("auth_users_missing", detail="production needs Supabase auth.users; refusing")
+        raise HTTPException(503, "Authentication backend unavailable")
     if not _has_auth_users:
         email = claims.get("email")
         return email.lower() if isinstance(email, str) else None

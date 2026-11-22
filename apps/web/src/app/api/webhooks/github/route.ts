@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { after } from "next/server";
 import { report } from "@/lib/sentry";
+import { apiBaseUrl } from "@/lib/runtime";
 
 export const runtime = "nodejs";
 export const maxDuration = 300; // Hobby maximum; covers the whole after() review
@@ -25,7 +26,7 @@ export async function POST(req: Request) {
     const v = req.headers.get(h);
     if (v) headers.set(h, v);
   }
-  const base = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+  const base = apiBaseUrl();
   const delivery = req.headers.get("x-github-delivery");
   // GitHub drops a delivery that is not answered within 10 s, but the review takes up to ~30 s and the
   // Python function cannot work after its own response. So acknowledge now and let the FastAPI call

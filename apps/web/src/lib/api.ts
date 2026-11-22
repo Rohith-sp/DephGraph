@@ -1,6 +1,7 @@
 import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
 import type { Me } from "@/lib/types";
+import { apiBaseUrl, authDisabled } from "@/lib/runtime";
 
 export class ApiError extends Error {
   constructor(
@@ -12,11 +13,11 @@ export class ApiError extends Error {
   }
 }
 
-export const authDisabled = () => process.env.AUTH_DISABLED === "true";
+export { authDisabled };
 
 // shortcut: server-only. Browser code never calls FastAPI directly (the dev token is server-only
 // and the Supabase token would need a second client path); mutations go through server actions.
-const baseUrl = () => process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const baseUrl = apiBaseUrl;
 
 async function token(): Promise<string | undefined> {
   if (authDisabled()) return process.env.DEV_API_TOKEN;

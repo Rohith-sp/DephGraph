@@ -1,5 +1,7 @@
-"""Compose init: apply pending migrations, seed demo data only into an empty DB, then mint a dev JWT."""
+"""Compose init (local dev only): apply migrations, seed demo data into an empty DB when
+DEPHGRAPH_SEED_DEMO=1 (compose sets it), then mint a dev JWT. Needs ./scripts mounted: the image has no seed/token scripts."""
 import asyncio
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -7,7 +9,6 @@ from pathlib import Path
 import asyncpg
 import migrate
 from _db import DSN
-from seed_db import main as seed
 
 TOKEN = Path("/shared/dev_token")
 
@@ -19,10 +20,12 @@ async def init() -> None:
         empty = await c.fetchval("SELECT NOT EXISTS (SELECT 1 FROM service)")
     finally:
         await c.close()
-    if empty:
+    if empty and os.environ.get("DEPHGRAPH_SEED_DEMO") == "1":
+        from seed_db import main as seed
+
         await seed(DSN)
     else:
-        print("db already has data, skipping seed")
+        print("skipping demo seed (db has data or DEPHGRAPH_SEED_DEMO != 1)")
 
 
 try:

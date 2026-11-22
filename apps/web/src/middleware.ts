@@ -1,11 +1,12 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { authDisabled } from "@/lib/runtime";
 
 const PUBLIC = ["/login", "/register", "/auth/callback"];
 
 export async function middleware(req: NextRequest) {
-  // Opt-in only: anything but the literal "true" keeps auth enforced.
-  if (process.env.AUTH_DISABLED === "true") return NextResponse.next();
+  // Opt-in, local only (throws on Vercel).
+  if (authDisabled()) return NextResponse.next();
 
   const { pathname } = req.nextUrl;
   const isPublic = PUBLIC.some((p) => pathname === p);

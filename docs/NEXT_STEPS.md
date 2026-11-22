@@ -33,8 +33,8 @@ Postgres, MongoDB and Redis. The team setup is `docker compose up` (README, "Run
 | PRD phase | Check | Result |
 |---|---|---|
 | 0. Setup | API `/health`, frontend type-check + production build | ✅ `{"status":"ok"}`, build passes (10 routes) |
-| 1. Schema + seed | `scripts/verify_schema.py`, `scripts/seed_db.py` | ✅ 23/23 tables, 5/5 views, 14/14 indexes, RLS 23/23, 27 FKs; 3 teams, 5 services, 50 packages, 200 versions, 15 vulns |
-| 2–6. Ingestion, analysis, dashboard, clustering, PR gate | backend test suite | ✅ 140/140 tests pass, 96 % coverage (PRD target ≥ 70 %) |
+| 1. Schema + seed | `scripts/verify_schema.py`, `scripts/seed_db.py` | ✅ schema verified by `verify_schema.py` (counts change with every migration; run it for the current numbers); seed data creates demo teams, services and packages only |
+| 2–6. Ingestion, analysis, dashboard, clustering, PR gate | backend test suite | ✅ passed at that date (final test and coverage numbers are recorded after the final gate; CI enforces ≥ 70 % coverage) |
 | 4. Dashboard | every page opened in a browser | ✅ overview, service graph (38 nodes / 67 edges for api-gateway), vulnerabilities, remediation plan, clusters |
 | 7. Production deploy | — | ❌ not done |
 
@@ -45,7 +45,7 @@ GitHub Actions CI is also green on the app commits.
 ### Completion work (22 November 2026)
 
 Everything the synopsis promised, except deployment, is built and tested
-(208 backend tests, 97 % coverage, CI green):
+(CI green; final test and coverage numbers are recorded after the final gate):
 
 | Synopsis item | What was added | Where |
 |---|---|---|
@@ -55,9 +55,9 @@ Everything the synopsis promised, except deployment, is built and tested
 | PR gate redundancy signal | Stage 2 flags a dependency that does the same job as one the service already uses (same cluster, same ecosystem); offline gate runner | `services/pr_gate_engine.py`, `scripts/pr_gate_dry_run.py` |
 | Semantic clustering target | Demo data seed; clustering skips packages without a description | `scripts/seed_demo_extra.py`, `jobs/cluster.py` |
 
-Verified on the local stack: 8 clusters from the 97 described packages (617 packages in total), a
-520-node service graph served in about 0.06 s, a live ingest that pulled 43 advisories from OSV.dev,
-a runtime batch and a replay. `scripts/test_api.sh` runs the backend tests in Docker with an isolated
+Verified on the local stack with seed data (counts and timings depend on the seed and are not
+claims about production): clustering, a large service graph, a live ingest against OSV.dev, a
+runtime batch and a replay. `scripts/test_api.sh` runs the backend tests in Docker with an isolated
 test database. Migrations are applied by `scripts/migrate.py` (compose `init` runs it); a volume that predates the
 runner needs `scripts/migrate.py --baseline <last applied version>` once.
 
@@ -185,8 +185,8 @@ Keep every key and password out of the repo. They go only in each service's dash
 The CI gaps for coverage enforcement and browser testing are now closed in
 `.github/workflows/ci.yml`: backend tests fail below 70% coverage, and a Playwright job provisions
 the test services, applies migrations/seeds the database, starts the API, and runs the existing
-no-Supabase browser suite. Locally, the backend suite passed at 96.31% coverage and the browser suite
-passed its three dashboard tests (the three real-auth tests are intentionally skipped in this mode).
+no-Supabase browser suite. The three real-auth browser tests are intentionally skipped in that no-Supabase mode;
+final test and coverage numbers are recorded after the final gate.
 
 | Gap | Fix |
 |---|---|

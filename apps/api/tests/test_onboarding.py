@@ -10,6 +10,7 @@ import httpx
 import jwt
 import pytest
 import respx
+from fastapi import HTTPException
 from sqlalchemy import text
 
 from app import auth as auth_module
@@ -438,10 +439,56 @@ async def test_invite_only_access(client, org):
     assert denied.status_code == 403
 
 
-def test_production_requires_org_admins():
+PROD_OK = dict(
+    database_url="postgresql+asyncpg://u:p@db.example.com:5432/d",
+    redis_url="rediss://r.example.com:6379",
+    mongo_uri="mongodb://m.example.com",
+    github_webhook_secret="w" * 32,
+    internal_cron_secret="c" * 32,
+)
+
+
+def _prod(**over):
+    kw = {"environment": "production", "org_admin_emails": "a@b.co", **PROD_OK, **over}
+    return Settings(_env_file=None, **kw)
+
+
+@pytest.mark.parametrize(
+    "over, msg",
+    [
+        ({"org_admin_emails": ""}, "ORG_ADMIN_EMAILS"),
+        ({"github_webhook_secret": ""}, "GITHUB_WEBHOOK_SECRET"),
+        ({"internal_cron_secret": ""}, "INTERNAL_CRON_SECRET"),
+        ({"internal_cron_secret": "dev-only-cron-secret"}, "INTERNAL_CRON_SECRET"),
+        (
+            {"supabase_jwt_secret": "dev-only-jwt-secret-change-me-0123456789"},
+            "SUPABASE_JWT_SECRET",
+        ),
+        ({"supabase_jwt_secret": "short"}, "SUPABASE_JWT_SECRET"),
+        ({"database_url": "postgresql+asyncpg://u:p@localhost:5432/d"}, "DATABASE_URL"),
+        ({"redis_url": "redis://127.0.0.1:6379/0"}, "REDIS_URL"),
+        ({"mongo_uri": "mongodb://[::1]:27017"}, "MONGO_URI"),
+    ],
+)
+def test_production_refuses_dev_defaults(over, msg):
+    with pytest.raises(ValueError, match=msg):
+        _prod(**over)
+    assert _prod(supabase_jwt_secret="j" * 40).production
+
+
+def test_vercel_is_production_even_without_environment():
     with pytest.raises(ValueError, match="ORG_ADMIN_EMAILS"):
-        Settings(environment="production", org_admin_emails="", _env_file=None)
-    Settings(environment="production", org_admin_emails="a@b.co", _env_file=None)
+        Settings(_env_file=None, VERCEL="1")
+    assert not Settings(_env_file=None).production
+
+
+async def test_production_has_no_claim_email_fallback(client, monkeypatch):
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(auth_module, "_has_auth_users", False)
+    async with SessionLocal() as s:
+        with pytest.raises(HTTPException) as e:
+            await auth_module.verified_email({"sub": str(uuid.uuid4()), "email": "x@y.co"}, s)
+    assert e.value.status_code == 503
 
 
 # ---- invite expiry, email validation -----------------------------------------------------------

@@ -53,7 +53,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://dephgraph:dephgraph@postgres:5432/dephgraph
       MONGO_URI: mongodb://mongo:27017
       REDIS_URL: redis://redis:6379/0
-      # Dev-only defaults; override via env / .env for anything shared.
+      DEPHGRAPH_SEED_DEMO: "1"  # local dev only: init seeds demo data into an empty DB (only init reads it)
+      # LOCAL-ONLY dev secrets. The API refuses these values when ENVIRONMENT=production (or on Vercel).
       SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-dev-only-jwt-secret-change-me-0123456789}
       INTERNAL_CRON_SECRET: ${INTERNAL_CRON_SECRET:-dev-only-cron-secret}
       CORS_ORIGINS: '["http://localhost:${WEB_PORT:-3000}"]'
@@ -61,8 +62,10 @@ services:
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
       # The web server calls the API from one IP, so every dashboard visitor shares this bucket.
       RATE_LIMIT: ${RATE_LIMIT:-600/minute}
+    # The api image ships no seed / dev-token scripts: init (local dev only) mounts them from the checkout.
     volumes:
       - shared:/shared
+      - ./scripts:/srv/dephgraph/scripts:ro
     depends_on:
       postgres: { condition: service_healthy }
 
