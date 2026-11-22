@@ -22,6 +22,7 @@ from app.routers import (
     internal,
     pr_gate,
     remediation,
+    runtime,
     services,
     stats,
     vulnerabilities,
@@ -87,5 +88,6 @@ for r in (
     internal,
     clusters,
     pr_gate,
+    runtime,
 ):
     app.include_router(r.router)
