@@ -1,6 +1,6 @@
+import jwt
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from jose import JWTError
 from limits import parse
 from limits.storage import MemoryStorage
 from limits.strategies import MovingWindowRateLimiter
@@ -47,7 +47,7 @@ async def limit_key(request: Request) -> str:
         try:
             if sub := (await request_claims(request, token)).get("sub"):
                 return f"user:{sub}"
-        except JWTError:
+        except jwt.PyJWTError:
             pass
     return client_ip(request)
 

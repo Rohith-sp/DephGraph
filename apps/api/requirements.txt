@@ -8,8 +8,7 @@ asyncpg==0.29.0
 sqlalchemy[asyncio]==2.0.36
 
 # MongoDB
-motor==3.6.0
-pymongo==4.9.2  # motor 3.6.0 requires pymongo<4.10 (PRD pin 4.10.1 is unsatisfiable)
+pymongo==4.20.1  # native asyncio API (AsyncMongoClient); replaces EOL motor
 
 # Cache (redis-py speaks to local redis and Upstash rediss://)
 redis==5.3.1
@@ -38,7 +37,7 @@ cvss==3.6
 
 # Auth
 supabase==2.10.0
-python-jose[cryptography]==3.5.0
+pyjwt[crypto]==2.15.1
 
 # Logging & rate limiting
 structlog==24.4.0

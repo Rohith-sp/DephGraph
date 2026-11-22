@@ -7,3 +7,6 @@ from app.config import settings  # noqa: E402
 
 # SQLAlchemy URL -> plain libpq/asyncpg DSN
 DSN = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
+
+# Fixed identity of the dev token (make_dev_token.py): seed_db makes it a member of every team.
+DEV_USER_ID = "00000000-0000-0000-0000-000000000001"

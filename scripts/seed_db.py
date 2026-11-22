@@ -5,7 +5,7 @@ import random
 from datetime import datetime, timedelta, timezone
 
 import asyncpg
-from _db import DSN
+from _db import DEV_USER_ID, DSN
 
 rng = random.Random(42)
 NOW = datetime(2026, 11, 1, tzinfo=timezone.utc)
@@ -129,6 +129,10 @@ async def main(dsn: str = DSN) -> None:
         await c.executemany(
             "INSERT INTO team (name, slug) VALUES ($1, $2)",
             [("Platform", "platform"), ("Payments", "payments"), ("Data", "data")],
+        )
+        await c.executemany(  # the dev token's user sees every team (scripts/add_team_member.py adds others)
+            "INSERT INTO team_member (team_id, user_id, role) VALUES ($1, $2, 'admin')",
+            [(t, DEV_USER_ID) for t in (1, 2, 3)],
         )
         await c.executemany(
             "INSERT INTO service (team_id, name, repo_url, language) VALUES ($1, $2, $3, $4)",

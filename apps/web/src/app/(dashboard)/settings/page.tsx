@@ -1,7 +1,9 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { authDisabled } from "@/lib/api";
+import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
+import { authDisabled, getMe } from "@/lib/api";
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
+  const me = await getMe();
   return (
     <>
       <h1>Settings</h1>
@@ -18,6 +20,30 @@ export default function SettingsPage() {
             <dt className="text-fg2">Auth</dt>
             <dd>{authDisabled() ? "Disabled (dev mode, shared dev token)" : "Supabase"}</dd>
           </dl>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Your teams</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <caption className="sr-only">Your teams</caption>
+            <THead>
+              <TR>
+                <TH>Team</TH>
+                <TH>Role</TH>
+              </TR>
+            </THead>
+            <TBody>
+              {me.teams.map((t) => (
+                <TR key={t.team_id}>
+                  <TD>{t.name}</TD>
+                  <TD className="text-fg2">{t.role}</TD>
+                </TR>
+              ))}
+            </TBody>
+          </Table>
         </CardContent>
       </Card>
     </>

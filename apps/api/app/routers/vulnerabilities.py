@@ -5,34 +5,41 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pymongo.errors import PyMongoError
 from sqlalchemy import text
 
-from app.auth import get_current_user
+from app.auth import CurrentMember, get_current_user
 from app.database import DbSession
 from app.models.mongo import osv_advisories
 from app.schemas.analysis import BlastRadiusOut, VulnDetail, VulnOut
 from app.schemas.common import BigId, Envelope, Page, Pagination, ok
 from app.services.blast_radius import get_blast_radius
 from app.services.cache import cached_json
-from app.services.queries import LATEST, require_service, rows
+from app.services.queries import LATEST, MY_SERVICES, require_service, rows, team_params
 
 log = structlog.get_logger()
 router = APIRouter(dependencies=[Depends(get_current_user)], tags=["vulnerabilities"])
 
 SORT_COLUMNS = {"cvss_score": "v.cvss_score", "published_at": "v.published_at"}  # whitelist
-SELECT = f"""
-WITH {LATEST}
+# `mine`: (vuln, package, service) hits in the caller's latest production deployments. A vulnerability
+# is visible only if it has a hit, and its counts are within the caller's teams.
+MINE = f"""{LATEST},
+mine AS (
+  SELECT DISTINCT a.vuln_id, a.package_id, l.service_id
+  FROM latest l
+  JOIN resolves_to r ON (r.service_id, r.deploy_seq) = (l.service_id, l.deploy_seq)
+  JOIN affects a ON (a.package_id, a.version_string) = (r.package_id, r.version_string)
+  WHERE l.service_id IN ({MY_SERVICES}))"""
+SELECT = """
 SELECT v.vuln_id, v.osv_id, v.title, v.severity, v.cvss_score, v.published_at,
-  (SELECT COUNT(DISTINCT a.package_id) FROM affects a WHERE a.vuln_id = v.vuln_id)
+  (SELECT COUNT(DISTINCT m.package_id) FROM mine m WHERE m.vuln_id = v.vuln_id)
     AS affected_packages,
-  (SELECT COUNT(DISTINCT l.service_id) FROM affects a
-     JOIN resolves_to r ON (r.package_id, r.version_string) = (a.package_id, a.version_string)
-     JOIN latest l ON (l.service_id, l.deploy_seq) = (r.service_id, r.deploy_seq)
-   WHERE a.vuln_id = v.vuln_id) AS affected_services,
+  (SELECT COUNT(DISTINCT m.service_id) FROM mine m WHERE m.vuln_id = v.vuln_id)
+    AS affected_services,
   EXISTS (SELECT 1 FROM affects a WHERE a.vuln_id = v.vuln_id AND a.fixed_in IS NOT NULL)
     AS has_fix
 FROM vulnerability v
 """
 FILTERS = """
-WHERE (CAST(:severity AS TEXT) IS NULL OR v.severity = CAST(:severity AS TEXT))
+WHERE EXISTS (SELECT 1 FROM mine m WHERE m.vuln_id = v.vuln_id)
+  AND (CAST(:severity AS TEXT) IS NULL OR v.severity = CAST(:severity AS TEXT))
   AND (CAST(:q AS TEXT) IS NULL OR v.osv_id ILIKE CAST(:q AS TEXT) OR v.title ILIKE CAST(:q AS TEXT))
   AND (CAST(:ecosystem AS TEXT) IS NULL OR EXISTS (
         SELECT 1 FROM affects a JOIN package p ON p.package_id = a.package_id
@@ -44,6 +51,7 @@ WHERE (CAST(:severity AS TEXT) IS NULL OR v.severity = CAST(:severity AS TEXT))
 async def list_vulnerabilities(
     request: Request,
     session: DbSession,
+    member: CurrentMember,
     page: Annotated[Pagination, Depends()],
     severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"] | None = None,
     ecosystem: Literal["npm", "pypi", "cargo", "go", "maven", "nuget"] | None = None,
@@ -54,6 +62,7 @@ async def list_vulnerabilities(
     async def build() -> str:
         found = await session.execute(
             text(f"""
+            WITH {MINE}
             SELECT (SELECT coalesce(json_agg(i), '[]'::json)::text FROM (
                       {SELECT} {FILTERS}
                       ORDER BY {SORT_COLUMNS[sort]} {order.upper()} NULLS LAST, v.vuln_id
@@ -66,6 +75,7 @@ async def list_vulnerabilities(
                 "q": f"%{q.replace('%', r'\%').replace('_', r'\_')}%" if q else None,
                 "limit": page.page_size,
                 "offset": page.offset,
+                **team_params(member),
             },
         )
         items, total = found.one()
@@ -73,12 +83,20 @@ async def list_vulnerabilities(
             f'{{"items":{items},"total":{total},"page":{page.page},"page_size":{page.page_size}}}'
         )
 
-    return await cached_json(request, build)
+    return await cached_json(request, build, member.scope)
 
 
 @router.get("/vulnerabilities/{vuln_id}", response_model=Envelope[VulnDetail])
-async def get_vulnerability(vuln_id: BigId, session: DbSession) -> dict[str, Any]:
-    found = await rows(session, f"{SELECT} WHERE v.vuln_id = :id", id=vuln_id)
+async def get_vulnerability(
+    vuln_id: BigId, session: DbSession, member: CurrentMember
+) -> dict[str, Any]:
+    found = await rows(
+        session,
+        f"WITH {MINE} {SELECT} WHERE v.vuln_id = :id AND EXISTS "
+        "(SELECT 1 FROM mine m WHERE m.vuln_id = v.vuln_id)",
+        id=vuln_id,
+        **team_params(member),
+    )
     if not found:
         raise HTTPException(404, "Vulnerability not found")
     vuln = found[0]
@@ -101,6 +119,8 @@ async def get_vulnerability(vuln_id: BigId, session: DbSession) -> dict[str, Any
 
 
 @router.get("/blast-radius/{service_id}", response_model=Envelope[BlastRadiusOut])
-async def blast_radius(service_id: BigId, session: DbSession) -> dict[str, Any]:
-    await require_service(session, service_id)
+async def blast_radius(
+    service_id: BigId, session: DbSession, member: CurrentMember
+) -> dict[str, Any]:
+    await require_service(session, service_id, member)
     return ok(await get_blast_radius(session, service_id))

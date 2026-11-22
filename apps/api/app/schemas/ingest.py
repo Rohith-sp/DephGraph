@@ -10,6 +10,8 @@ class IngestRequest(BaseModel):
     ecosystem: Literal["npm", "pypi", "cargo", "go"]
     content: str = Field(min_length=1, max_length=1_000_000)
     filename: str = Field(min_length=1, max_length=255)
+    # only production deployments are analysed; staging/preview ingests are stored but ignored
+    environment: Literal["production", "staging", "preview"] = "production"
 
 
 class IngestResult(BaseModel):

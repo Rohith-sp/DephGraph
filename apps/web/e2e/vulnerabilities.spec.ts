@@ -28,7 +28,7 @@ test("sorting by CVSS flips the order", async ({ page }) => {
   await expect(rows(page).first()).toContainText("10.0");
   await clickUntilUrl(page, cvss.getByRole("link"), /order=asc/);
   await expect(cvss).toHaveAttribute("aria-sort", "ascending");
-  await expect(rows(page).first()).toContainText("2.4");
+  await expect(rows(page).first()).toContainText("3.1"); // 2.4 (cargo) affects no production deployment: not listed
 });
 
 test("filters, search and sort survive a reload", async ({ page }) => {

@@ -21,7 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user
+from app.auth import CurrentMember, get_current_user
 from app.database import DbSession
 from app.models.mongo import raw_manifests
 from app.models.sql import Package, PackageVersion
@@ -68,17 +68,21 @@ async def _upsert_packages(
 
 
 async def _record_deployment(
-    session: AsyncSession, service_id: int, parsed: list[ParsedPackage], refs: list[PkgRef]
+    session: AsyncSession,
+    service_id: int,
+    environment: str,
+    parsed: list[ParsedPackage],
+    refs: list[PkgRef],
 ) -> int:
     """New deployment + resolves_to: direct deps, then closure over known depends_on edges."""
     seq = (
         await session.execute(
             text(
-                "INSERT INTO deployment (service_id, deploy_seq) "
-                "SELECT :s, COALESCE(MAX(deploy_seq), 0) + 1 FROM deployment WHERE service_id = :s "
-                "RETURNING deploy_seq"
+                "INSERT INTO deployment (service_id, deploy_seq, environment) "
+                "SELECT :s, COALESCE(MAX(deploy_seq), 0) + 1, :env FROM deployment "
+                "WHERE service_id = :s RETURNING deploy_seq"
             ),
-            {"s": service_id},
+            {"s": service_id, "env": environment},
         )
     ).scalar_one()
     await session.execute(
@@ -154,6 +158,7 @@ async def _store_manifest(body: IngestRequest) -> dict[str, Any]:
                 },
                 "$set": {
                     "ecosystem": body.ecosystem,  # describe this upload, not the first one
+                    "environment": body.environment,
                     "filename": body.filename,
                     "status": "received",
                     "received_at": now,
@@ -219,6 +224,7 @@ async def _project(session: AsyncSession, doc: dict[str, Any]) -> dict[str, Any]
     """
     started = time.perf_counter()
     service_id, ecosystem = doc["service_id"], doc["ecosystem"]
+    environment = doc.get("environment", "production")  # documents stored before 010 have none
     try:
         try:
             parsed = parse_manifest(ecosystem, doc["raw_content"])
@@ -235,13 +241,13 @@ async def _project(session: AsyncSession, doc: dict[str, Any]) -> dict[str, Any]
             raise _mongo_down(e) from e
         async with session.begin():
             await lock_service(session, service_id)
-            await require_service(session, service_id)  # deleted since the first check -> 404
+            await require_service(session, service_id, None)  # deleted since the first check -> 404
             refs, inserted = await _upsert_packages(session, ecosystem, parsed)
             await apply_metadata(session, _rekey(refs, meta))
             vulns = await osv_fetcher.upsert_advisories(
                 session, refs, _rekey(refs, hits), advisories
             )
-            seq = await _record_deployment(session, service_id, parsed, refs)
+            seq = await _record_deployment(session, service_id, environment, parsed, refs)
             await _record_scan(session, service_id)
     except Exception as e:
         await _mark(doc["_id"], "failed", error=_error_text(e))
@@ -259,20 +265,24 @@ async def _project(session: AsyncSession, doc: dict[str, Any]) -> dict[str, Any]
 
 
 @router.post("/manifest", response_model=Envelope[IngestResult])
-async def ingest_manifest(body: IngestRequest, session: DbSession) -> dict[str, object]:
+async def ingest_manifest(
+    body: IngestRequest, session: DbSession, member: CurrentMember
+) -> dict[str, object]:
     """Store the raw manifest in Mongo (status `received`), then project it into Postgres.
 
     Mongo is the raw layer and the source of the projection, so if the raw document (or the
     raw advisories) cannot be written the request fails with 503 and Postgres is not touched.
     """
     async with session.begin():
-        await require_service(session, body.service_id)
+        await require_service(session, body.service_id, member)
     doc = await _store_manifest(body)
     return ok(await _project(session, doc))
 
 
 @router.post("/replay/{manifest_id}", response_model=Envelope[IngestResult])
-async def replay_manifest(manifest_id: str, session: DbSession) -> dict[str, object]:
+async def replay_manifest(
+    manifest_id: str, session: DbSession, member: CurrentMember
+) -> dict[str, object]:
     """Re-project a stored raw manifest from Mongo into Postgres as a new deployment.
 
     Demonstrates the one-way flow: Postgres is rebuilt from what Mongo holds, never the reverse.
@@ -288,19 +298,21 @@ async def replay_manifest(manifest_id: str, session: DbSession) -> dict[str, obj
     if doc is None:
         raise HTTPException(404, "Manifest not found")
     async with session.begin():
-        await require_service(session, doc["service_id"])
+        await require_service(session, doc["service_id"], member)
     return ok(await _project(session, doc))
 
 
 @router.post("/scan/{service_id}", response_model=Envelope[ScanResult])
-async def scan_service(service_id: BigId, session: DbSession) -> dict[str, object]:
-    """Re-query OSV for the latest deployment; raw advisories go to Mongo before Postgres.
+async def scan_service(
+    service_id: BigId, session: DbSession, member: CurrentMember
+) -> dict[str, object]:
+    """Re-query OSV for the latest production deployment; raw advisories go to Mongo first.
 
     Unlike ingest, a Mongo outage does not fail the scan (store_raw is best-effort here).
     """
     started = time.perf_counter()
     async with session.begin():
-        await require_service(session, service_id)
+        await require_service(session, service_id, member)
         seq = await latest_seq(session, service_id)
         found = (
             await rows(
@@ -321,7 +333,7 @@ async def scan_service(service_id: BigId, session: DbSession) -> dict[str, objec
     await osv_fetcher.store_raw(advisories)
     async with session.begin():
         await lock_service(session, service_id)
-        await require_service(session, service_id)
+        await require_service(session, service_id, None)
         if await latest_seq(session, service_id) != seq:  # a manifest landed mid-scan
             raise HTTPException(409, "Service changed during scan; retry")
         vulns = await osv_fetcher.upsert_advisories(session, refs, hits, advisories)

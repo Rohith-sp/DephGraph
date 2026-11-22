@@ -17,7 +17,7 @@ from fastapi import (
     Response,
 )
 
-from app.auth import get_current_user
+from app.auth import CurrentMember, get_current_user
 from app.config import settings
 from app.database import DbSession, SessionLocal
 from app.schemas.analysis import VerdictOut
@@ -178,8 +178,8 @@ async def _evaluate_and_store(
     response_model=Envelope[list[VerdictOut]],
     dependencies=[Depends(get_current_user)],
 )
-async def verdicts(service_id: BigId, session: DbSession) -> dict[str, Any]:
-    await require_service(session, service_id)
+async def verdicts(service_id: BigId, session: DbSession, member: CurrentMember) -> dict[str, Any]:
+    await require_service(session, service_id, member)
     return ok(
         await rows(
             session,

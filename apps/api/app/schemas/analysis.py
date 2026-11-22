@@ -199,3 +199,15 @@ class VerdictOut(BaseModel):
     stage_reached: int
     reasoning: str | None
     decided_at: datetime
+
+
+class MeTeam(BaseModel):
+    team_id: int
+    name: str
+    slug: str
+    role: Literal["member", "admin"]
+
+
+class MeOut(BaseModel):
+    user_id: str
+    teams: list[MeTeam]

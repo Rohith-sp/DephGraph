@@ -1,19 +1,23 @@
 import time
+import uuid
+from dataclasses import dataclass
 from typing import Annotated, Any
 
 import httpx
+import jwt
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
-from jose.exceptions import JOSEError
+from sqlalchemy import text
 
 from app.config import settings
+from app.database import SessionLocal
 
 bearer = HTTPBearer(auto_error=False)
 
 
 _jwks: dict[str, dict[str, Any]] = {}  # kid -> JWK
 _jwks_fetched = 0.0
+_JWKS_ALGS = {"ES256": "EC", "RS256": "RSA"}  # alg -> JWK kty
 JWKS_COOLDOWN = 30  # seconds between refetches, so forged kids cannot hammer Supabase
 
 
@@ -28,9 +32,9 @@ async def _signing_key(kid: str) -> dict[str, Any]:
                 r.raise_for_status()
             _jwks.update({k["kid"]: k for k in r.json()["keys"]})
         except (httpx.HTTPError, KeyError, ValueError) as e:
-            raise JWTError(f"JWKS fetch failed: {e}") from e
+            raise jwt.InvalidTokenError(f"JWKS fetch failed: {e}") from e
     if kid not in _jwks:
-        raise JWTError("Unknown signing key")
+        raise jwt.InvalidTokenError("Unknown signing key")
     return _jwks[kid]
 
 
@@ -39,26 +43,31 @@ def auth_configured() -> bool:
 
 
 async def decode_token(token: str) -> dict[str, Any]:
-    """Verify a Supabase access token (aud=authenticated); raises JWTError.
+    """Verify a Supabase access token (aud=authenticated); raises jwt.PyJWTError.
 
     Legacy projects sign HS256 with the shared secret; current ones sign ES256/RS256 and publish
-    the public keys at /auth/v1/.well-known/jwks.json.
+    the public keys at /auth/v1/.well-known/jwks.json. The algorithm is pinned per key source and
+    key type, so `none` and HS256-signed-with-a-public-key (algorithm confusion) never verify.
     """
     header = jwt.get_unverified_header(token)
     alg = header.get("alg")
+    if not isinstance(alg, str):  # unverified header: a list/dict alg is unhashable
+        raise jwt.InvalidAlgorithmError("Invalid alg")
     if alg == "HS256" and settings.supabase_jwt_secret:
         key: Any = settings.supabase_jwt_secret
-    elif alg in ("ES256", "RS256") and settings.supabase_url:
+    elif alg in _JWKS_ALGS and settings.supabase_url:
         kid = header.get("kid")
         if not isinstance(kid, str):  # unverified header: an unhashable kid would raise TypeError
-            raise JWTError("Invalid kid")
-        key = await _signing_key(kid)
+            raise jwt.InvalidTokenError("Invalid kid")
+        jwk = jwt.PyJWK(await _signing_key(kid))
+        if _JWKS_ALGS[alg] != jwk.key_type:
+            raise jwt.InvalidAlgorithmError("Algorithm does not match key type")
+        key = jwk.key
     else:
-        raise JWTError(f"Unsupported token algorithm: {alg}")
-    try:
-        return jwt.decode(token, key, algorithms=[alg], audience="authenticated")
-    except JOSEError as e:  # JWKError (alg/key-type mismatch) is not a JWTError
-        raise JWTError(str(e)) from e
+        raise jwt.InvalidAlgorithmError(f"Unsupported token algorithm: {alg}")
+    return jwt.decode(
+        token, key, algorithms=[alg], audience="authenticated", options={"require": ["exp", "aud"]}
+    )
 
 
 async def request_claims(request: Request, token: str) -> dict[str, Any]:
@@ -69,13 +78,42 @@ async def request_claims(request: Request, token: str) -> dict[str, Any]:
 
 
 async def get_current_user(
-    request: Request,
-    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+    request: Request, creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]
 ) -> dict[str, Any]:
     """Return the verified claims of the bearer token."""
     if creds is None or not auth_configured():
         raise HTTPException(401, "Not authenticated")
     try:
         return await request_claims(request, creds.credentials)
-    except JWTError:
+    except jwt.PyJWTError:
         raise HTTPException(401, "Invalid token") from None
+
+
+@dataclass(frozen=True)
+class Member:
+    """The caller and the teams whose data they may read or write."""
+
+    user_id: uuid.UUID
+    team_ids: frozenset[int]
+
+    @property
+    def scope(self) -> str:
+        """Cache-key component: users with the same teams see the same payloads."""
+        return "teams:" + ",".join(map(str, sorted(self.team_ids)))
+
+
+async def current_member(claims: Annotated[dict[str, Any], Depends(get_current_user)]) -> Member:
+    """Teams of the authenticated user, from team_member (empty set = no team, not an error)."""
+    try:
+        user_id = uuid.UUID(str(claims.get("sub")))
+    except ValueError:
+        raise HTTPException(401, "Invalid token") from None
+    # own session: the handler's session must stay free for its `session.begin()` blocks
+    async with SessionLocal() as session:
+        found = await session.execute(
+            text("SELECT team_id FROM team_member WHERE user_id = :u"), {"u": user_id}
+        )
+        return Member(user_id, frozenset(found.scalars()))
+
+
+CurrentMember = Annotated[Member, Depends(current_member)]

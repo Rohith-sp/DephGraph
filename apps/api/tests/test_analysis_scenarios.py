@@ -10,6 +10,7 @@ from sqlalchemy import text
 from app.database import SessionLocal, get_redis
 from app.services import blast_radius, cache
 from app.services.set_cover import greedy_set_cover
+from tests.conftest import DEV_USER
 
 # ---- set cover vs brute force ----------------------------------------------------------------
 
@@ -52,7 +53,10 @@ def test_greedy_within_harmonic_bound_and_coverage_exact(seed):
 
 def test_greedy_is_deterministic_on_ties():
     sets = {2: {1, 2}, 10: {3, 4}, 9: {1, 2}}
-    assert [s["package"] for s in greedy_set_cover({1, 2, 3, 4}, sets)] == [2, 10]  # int order
+    assert [s["package"] for s in greedy_set_cover({1, 2, 3, 4}, sets)] == [
+        2,
+        10,
+    ]  # int order
 
 
 # ---- remediation plan end to end -------------------------------------------------------------
@@ -90,7 +94,8 @@ async def mkservice(s, team_id: int, name: str) -> int:
         )
     ).scalar_one()
     await s.execute(
-        text("INSERT INTO deployment (service_id, deploy_seq) VALUES (:s, 1)"), {"s": sid}
+        text("INSERT INTO deployment (service_id, deploy_seq) VALUES (:s, 1)"),
+        {"s": sid},
     )
     return sid
 
@@ -125,11 +130,18 @@ async def mkvuln(s, osv: str, pid: int, fixed: str | None, severity="CRITICAL", 
 
 
 async def mkteam(s, name: str) -> int:
-    return (
+    """A team the dev-token user (the `auth` fixture) belongs to."""
+    team = (
         await s.execute(
-            text("INSERT INTO team (name, slug) VALUES (:n, :n) RETURNING team_id"), {"n": name}
+            text("INSERT INTO team (name, slug) VALUES (:n, :n) RETURNING team_id"),
+            {"n": name},
         )
     ).scalar_one()
+    await s.execute(
+        text("INSERT INTO team_member (team_id, user_id) VALUES (:t, :u)"),
+        {"t": team, "u": DEV_USER},
+    )
+    return team
 
 
 async def test_plan_counts_service_package_vuln_elements(client, auth, reseed):
@@ -178,7 +190,13 @@ async def test_plan_ranks_shared_package_first(client, auth, reseed):
 
 
 def node(pid, name, direct=False, depth=1):
-    return {"package_id": pid, "name": name, "version": "1", "is_direct": direct, "depth": depth}
+    return {
+        "package_id": pid,
+        "name": name,
+        "version": "1",
+        "is_direct": direct,
+        "depth": depth,
+    }
 
 
 def edge(a, b):
@@ -199,7 +217,10 @@ def test_shortest_paths_diamond():
     assert paths[(4, "1")] in (["A@1", "B@1", "D@1"], ["A@1", "C@1", "D@1"])
     assert paths[(5, "1")][:1] == ["A@1"] and paths[(5, "1")][-2:] == ["D@1", "E@1"]
     assert len(paths[(5, "1")]) == 4  # shortest: the diamond is not walked twice
-    assert (6, "1") not in paths  # no path from a direct dependency (F only points at E)
+    assert (
+        6,
+        "1",
+    ) not in paths  # no path from a direct dependency (F only points at E)
 
 
 async def test_blast_radius_path_and_cache_generation(client, auth, reseed):
@@ -223,7 +244,10 @@ async def test_blast_radius_path_and_cache_generation(client, auth, reseed):
     assert first["cached"] is False and first["total_vulns"] == 1 and first["critical_count"] == 1
     hit = first["vulnerable_packages"][0]
     assert hit["name"] == "dia-e" and hit["depth"] == 3
-    assert hit["path"][0] == "dia-a@1.0.0" and hit["path"][-2:] == ["dia-d@1.0.0", "dia-e@1.0.0"]
+    assert hit["path"][0] == "dia-a@1.0.0" and hit["path"][-2:] == [
+        "dia-d@1.0.0",
+        "dia-e@1.0.0",
+    ]
     assert len(hit["path"]) == 4
     assert (await client.get(f"/blast-radius/{sid}", headers=auth)).json()["data"]["cached"] is True
 

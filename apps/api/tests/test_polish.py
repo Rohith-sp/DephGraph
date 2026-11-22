@@ -1,8 +1,9 @@
 import time
+import uuid
 
+import jwt
 import pytest
 from fastapi import Request
-from jose import jwt
 
 from app.config import settings
 from app.limiter import client_ip, storage
@@ -78,7 +79,7 @@ def _token(sub: str, secret: str | None = None) -> dict[str, str]:
 
 
 async def test_limit_keyed_per_verified_user(client, low_limit):
-    a, b = _token("user-a"), _token("user-b")
+    a, b = _token(str(uuid.UUID(int=10))), _token(str(uuid.UUID(int=11)))
     for _ in range(3):
         assert (await client.get("/services", headers=a)).status_code == 200
     assert (await client.get("/services", headers=a)).status_code == 429

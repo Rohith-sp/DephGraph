@@ -11,12 +11,15 @@ import json
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import asyncpg
 import httpx
+import jwt
 import seed_db
+from add_team_member import add_member
 from _db import DSN, settings
 
 API = os.environ.get("API_URL", "http://localhost:8000")
@@ -73,6 +76,10 @@ async def main(force: bool = False) -> None:
     await seed_db.main()
     token = await sign_in()
     print(f"signed in as {EMAIL} (token alg header via {SB})")
+    conn = await asyncpg.connect(DSN)  # seeding wiped team_member: the demo user joins every team
+    sub = jwt.decode(token, options={"verify_signature": False})["sub"]
+    await add_member(conn, ["platform", "payments", "data"], uuid.UUID(sub), "admin")
+    await conn.close()
     async with httpx.AsyncClient(
         base_url=API, headers={"Authorization": f"Bearer {token}"}, timeout=180
     ) as c:

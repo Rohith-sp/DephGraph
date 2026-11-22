@@ -1,7 +1,8 @@
 """MongoDB collection helpers + index setup (PRD §6)."""
 
 import structlog
-from motor.motor_asyncio import AsyncIOMotorCollection, AsyncIOMotorDatabase
+from pymongo.asynchronous.collection import AsyncCollection
+from pymongo.asynchronous.database import AsyncDatabase
 from pymongo.errors import PyMongoError
 
 from app.database import get_mongo
@@ -11,15 +12,15 @@ log = structlog.get_logger()
 DAY = 86400
 
 
-def raw_manifests() -> AsyncIOMotorCollection:
+def raw_manifests() -> AsyncCollection:
     return get_mongo()["raw_manifests"]
 
 
-def osv_advisories() -> AsyncIOMotorCollection:
+def osv_advisories() -> AsyncCollection:
     return get_mongo()["osv_advisories"]
 
 
-async def ensure_indexes(db: AsyncIOMotorDatabase | None = None) -> bool:
+async def ensure_indexes(db: AsyncDatabase | None = None) -> bool:
     """Create all indexes; returns False (and logs) if Mongo is unreachable."""
     db = db if db is not None else get_mongo()
     specs = {

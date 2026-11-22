@@ -16,7 +16,10 @@ FIX = Path(__file__).parent / "fixtures"
 
 
 def body(
-    service_id=1, ecosystem="pypi", fixture="requirements_flask.txt", filename="requirements.txt"
+    service_id=1,
+    ecosystem="pypi",
+    fixture="requirements_flask.txt",
+    filename="requirements.txt",
 ):
     return {
         "service_id": service_id,
@@ -98,7 +101,10 @@ async def test_ingest_osv_down_is_502_and_rolls_back(client, auth, reseed):
 async def test_osv_retries_on_429(client, auth, reseed):
     router = mock_upstreams()
     router.post("https://api.osv.dev/v1/querybatch").mock(
-        side_effect=[httpx.Response(429), httpx.Response(200, json={"results": [{}] * 8})]
+        side_effect=[
+            httpx.Response(429),
+            httpx.Response(200, json={"results": [{}] * 8}),
+        ]
     )
     with router:
         r = await client.post("/ingest/manifest", json=body(), headers=auth)
@@ -273,7 +279,7 @@ async def test_scan_409_when_deployment_lands_mid_scan(client, auth, monkeypatch
 
 
 class _DownCollection:
-    """Stands in for a Motor collection while Mongo is unreachable."""
+    """Stands in for a Mongo collection while Mongo is unreachable."""
 
     def __getattr__(self, _name):
         async def fail(*_a, **_k):

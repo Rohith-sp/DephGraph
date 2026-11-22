@@ -1,4 +1,6 @@
+import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
+import type { Me } from "@/lib/types";
 
 export class ApiError extends Error {
   constructor(
@@ -52,3 +54,6 @@ export async function api<T>(
   }
   return env.data;
 }
+
+// One /me call per request, shared by the layout (empty state) and the pages that list teams.
+export const getMe = cache(() => api<Me>("/me"));

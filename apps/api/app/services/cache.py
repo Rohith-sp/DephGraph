@@ -49,11 +49,18 @@ async def read_through(name: str, build: Callable[[], Awaitable[str]]) -> tuple[
     return value, False
 
 
-async def cached_json(request: Request, build: Callable[[], Awaitable[str]]) -> Response:
-    """Envelope response cached per path + query; `build` returns the JSON of `data`."""
+async def cached_json(
+    request: Request, build: Callable[[], Awaitable[str]], scope: str
+) -> Response:
+    """Envelope response cached per scope + path + query; `build` returns the JSON of `data`.
+
+    `scope` is `member.scope` for anything derived from team data ("shared" for the catalogue), so
+    one tenant's payload is never served to another. `build` also runs the authorization check:
+    a 404 raised there is never cached.
+    """
 
     async def envelope() -> str:
         return f'{{"data":{await build()},"error":null}}'
 
-    body, _ = await read_through(f"{request.url.path}?{request.url.query}", envelope)
+    body, _ = await read_through(f"{scope}:{request.url.path}?{request.url.query}", envelope)
     return Response(body, media_type="application/json")

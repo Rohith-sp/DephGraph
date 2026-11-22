@@ -134,7 +134,7 @@ async def _signals(session: AsyncSession, eco: str, name: str, ver: str) -> dict
 async def _redundancy(
     session: AsyncSession, service_id: int | None, eco: str, name: str, ver: str
 ) -> list[dict[str, Any]]:
-    """Other packages in the service's LATEST deployment that share a cluster with eco/name.
+    """Other packages in the service's latest production deployment sharing a cluster with eco/name.
 
     Same ecosystem only: an npm and a pypi package in one cluster do not do the same job inside
     one runtime (clusters are built from descriptions and can mix ecosystems).
@@ -154,7 +154,8 @@ async def _redundancy(
                   WHERE x.package_id = p.package_id AND x.version_string = :ver
                     AND x.cluster_id IS NOT NULL))
         ),
-        latest AS (SELECT MAX(deploy_seq) AS deploy_seq FROM deployment WHERE service_id = :sid)
+        latest AS (SELECT MAX(deploy_seq) AS deploy_seq FROM deployment
+                  WHERE service_id = :sid AND environment = 'production')
         SELECT DISTINCT p2.name AS package, sc.cluster_id, sc.label AS cluster_label
         FROM resolves_to rt
         JOIN latest ld ON rt.deploy_seq = ld.deploy_seq
@@ -351,9 +352,7 @@ async def stage3(
 
 
 async def evaluate_all(
-    session: AsyncSession,
-    deps: list[tuple[str, str, str]],
-    service_id: int | None = None,
+    session: AsyncSession, deps: list[tuple[str, str, str]], service_id: int | None = None
 ) -> list[DepVerdict]:
     """Stages 1-2 (DB reads only). deps = (ecosystem, name, version)."""
     return [await evaluate(session, *d, service_id=service_id) for d in deps]

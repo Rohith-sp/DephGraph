@@ -1,5 +1,6 @@
 """Read cache + pre-serialized JSON: every write path bumps the generation; payloads equal the
-old rows() + pydantic output; Redis failure never fails a request; connection loss recovers."""
+old rows() + pydantic output; Redis failure never fails a request; connection loss recovers.
+"""
 
 import asyncio
 import json
@@ -11,7 +12,7 @@ import pytest
 from app import auth as auth_module
 from app.database import SessionLocal, engine, get_redis
 from app.models.mongo import ensure_indexes
-from app.routers.vulnerabilities import SELECT
+from app.routers.vulnerabilities import MINE, SELECT
 from app.schemas import analysis as schemas
 from app.schemas.common import Envelope, Page
 from app.services import cache, cluster_engine, maintainers
@@ -21,6 +22,8 @@ from tests.test_clusters import fake_encode
 from tests.test_ingest import body as manifest_body
 from tests.upstream import mock_upstreams
 
+ALL_TEAMS = [1, 2, 3]
+ALL_TEAMS_SERVICES = [1, 2, 3, 4, 5]
 CRON = {"X-Cron-Secret": "test-cron-secret"}
 
 
@@ -74,7 +77,7 @@ async def test_graph_prunable_services_redundancy_match_old_output(client, auth)
         got = (await client.get(f"/services/{sid}/graph", headers=auth)).json()["data"]
         assert got == dumped(schemas.GraphOut, await old_graph(sid))
         async with SessionLocal() as s:
-            old = await rows(s, PRUNABLE_SQL, sid=sid)
+            old = await rows(s, PRUNABLE_SQL, sid=sid, teams=ALL_TEAMS)
         got = (await client.get(f"/services/{sid}/prunable", headers=auth)).json()["data"]
         assert got == dumped(list[schemas.PrunableOut], old)
     async with SessionLocal() as s:
@@ -82,7 +85,8 @@ async def test_graph_prunable_services_redundancy_match_old_output(client, auth)
             s,
             "SELECT service_id, service_name, cluster_id, cluster_label, "
             "redundant_package_count AS package_count, packages "
-            "FROM v_cluster_redundancy ORDER BY redundant_package_count DESC, service_name",
+            "FROM v_cluster_redundancy WHERE service_id = ANY(:t) ORDER BY redundant_package_count DESC, service_name",
+            t=ALL_TEAMS_SERVICES,
         )
     got = (await client.get("/clusters/redundancy", headers=auth)).json()["data"]
     assert got == dumped(list[schemas.RedundancyOut], old)
@@ -113,7 +117,9 @@ async def test_vulnerability_list_matches_old_output(client, auth, qs):
         async with SessionLocal() as s:
             old = await rows(
                 s,
-                f"{SELECT} ORDER BY v.cvss_score DESC NULLS LAST, v.vuln_id LIMIT 50",
+                f"WITH {MINE} {SELECT} WHERE EXISTS (SELECT 1 FROM mine m WHERE m.vuln_id = v.vuln_id) "
+                "ORDER BY v.cvss_score DESC NULLS LAST, v.vuln_id LIMIT 50",
+                teams=ALL_TEAMS,
             )
         assert norm(page["items"]) == norm(dumped(list[schemas.VulnOut], old))
         assert page["total"] == len(old)
@@ -121,13 +127,18 @@ async def test_vulnerability_list_matches_old_output(client, auth, qs):
 
 async def test_stats_matches_old_python_computation(client, auth):
     async with SessionLocal() as s:
-        unique = {r["vuln_id"]: r["severity"] for r in await open_vuln_rows(s)}
-        prunable = len(await rows(s, PRUNABLE_SQL, sid=None))
+        unique = {
+            r["vuln_id"]: r["severity"] for t in (1, 2, 3) for r in await open_vuln_rows(s, t)
+        }
+        prunable = len(await rows(s, PRUNABLE_SQL, sid=None, teams=ALL_TEAMS))
         counts = (
             await rows(
                 s,
-                "SELECT (SELECT COUNT(*) FROM service) AS services, "
-                "(SELECT COUNT(*) FROM package) AS packages",
+                "SELECT (SELECT COUNT(*) FROM service) AS services, (SELECT COUNT(DISTINCT "
+                "rt.package_id) FROM resolves_to rt JOIN deployment d USING (service_id, "
+                "deploy_seq) WHERE d.environment = 'production' AND d.deploy_seq = (SELECT "
+                "MAX(deploy_seq) FROM deployment x WHERE x.service_id = d.service_id AND "
+                "x.environment = 'production')) AS packages",
             )
         )[0]
     sev = {k: sum(v == k for v in unique.values()) for k in ("CRITICAL", "HIGH", "MEDIUM", "LOW")}
@@ -176,7 +187,10 @@ async def w_scan(client, auth):
 async def w_runtime(client, auth):
     return await client.post(
         "/runtime/samples",
-        json={"service_id": 1, "samples": [{"name": "nope", "version": "1", "exec_count": 1}]},
+        json={
+            "service_id": 1,
+            "samples": [{"name": "nope", "version": "1", "exec_count": 1}],
+        },
         headers=auth,
     )
 
@@ -337,5 +351,8 @@ async def test_pool_recovers_after_connections_are_killed(client, auth):
         await admin.close()
     await get_redis().flushdb()  # force a DB read
     statuses = [(await client.get("/services", headers=auth)).status_code for _ in range(3)]
-    assert statuses[-1] == 200 and statuses[1:] == [200, 200]  # at most the first one fails
+    assert statuses[-1] == 200 and statuses[1:] == [
+        200,
+        200,
+    ]  # at most the first one fails
     assert engine.pool.checkedout() == 0

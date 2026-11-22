@@ -14,6 +14,7 @@ from pymongo.errors import PyMongoError
 from sqlalchemy import text
 
 from app import auth, main
+from app.auth import Member
 from app.config import settings
 from app.database import SessionLocal, get_mongo
 from app.routers.ingest import _upsert_packages
@@ -21,6 +22,7 @@ from app.schemas.runtime import RuntimeSamplesRequest
 from app.services import cache, deps_dev_client, maintainers, osv_fetcher, runtime
 from app.services.manifest_parser import PkgRef, parse_requirements
 from app.services.queries import PRUNABLE_SQL, rows
+from tests.conftest import DEV_USER
 from tests.test_auth import JWKS_URL, _keypair
 from tests.test_ingest import body, scalar
 from tests.test_runtime import fetch, payload, resolved
@@ -128,10 +130,14 @@ async def test_wrong_auth_scheme_is_401(client, scheme):
 
 
 async def test_hs256_wrong_secret_wrong_aud_expired_are_401(client):
-    from jose import jwt
+    import jwt
 
     def tok(secret="test-jwt-secret-at-least-32-characters", aud="authenticated", exp=600):
-        claims = {"sub": "u", "aud": aud, "exp": int(time.time()) + exp}
+        claims = {
+            "sub": "00000000-0000-0000-0000-000000000001",
+            "aud": aud,
+            "exp": int(time.time()) + exp,
+        }
         return {"Authorization": "Bearer " + jwt.encode(claims, secret, algorithm="HS256")}
 
     for h in (tok(secret="x" * 40), tok(aud="anon"), tok(exp=-60)):
@@ -202,7 +208,12 @@ async def test_overview_prunable_counts_service_package_pairs(client, auth, rese
                 {"s": sid, "c": scan, "p": pid, "n": int(live), "l": live},
             )
     async with SessionLocal() as s:
-        overall = await rows(s, f"SELECT service_id, name FROM ({PRUNABLE_SQL}) p", sid=None)
+        overall = await rows(
+            s,
+            f"SELECT service_id, name FROM ({PRUNABLE_SQL}) p",
+            sid=None,
+            teams=[1, 2, 3],
+        )
     per_service = [
         (await client.get(f"/services/{i}/prunable", headers=auth)).json()["data"]
         for i in range(1, 6)
@@ -354,7 +365,7 @@ def test_crlf_requirements_with_hash_continuations():
 
 # A15 / A16 --------------------------------------------------------------------------------------
 async def test_runtime_samples_match_pypi_names_after_pep503_normalisation(client, auth, reseed):
-    pkg = next(p for p in await resolved(1, 2) if p["name"] != p["name"].upper())
+    pkg = next(p for p in await resolved(1, 1) if p["name"] != p["name"].upper())
     sample = {
         "name": pkg["name"].upper().replace("-", "_"),
         "version": pkg["version"],
@@ -363,7 +374,11 @@ async def test_runtime_samples_match_pypi_names_after_pep503_normalisation(clien
     r = await client.post("/runtime/samples", json=payload([sample]), headers=auth)
     assert r.status_code == 200, r.text
     d = r.json()["data"]
-    assert (d["observes_written"], d["live_packages"], d["samples_skipped"]) == (1, 1, 0)
+    assert (d["observes_written"], d["live_packages"], d["samples_skipped"]) == (
+        1,
+        1,
+        0,
+    )
 
 
 async def test_db_error_marks_raw_sample_doc_failed(monkeypatch, reseed):
@@ -376,7 +391,7 @@ async def test_db_error_marks_raw_sample_doc_failed(monkeypatch, reseed):
     )
     async with SessionLocal() as s:
         with pytest.raises(RuntimeError):
-            await runtime.record_samples(s, req)
+            await runtime.record_samples(s, req, Member(DEV_USER, frozenset({1})))
     doc = await runtime.runtime_samples().find_one({}, sort=[("_id", -1)])
     assert doc["status"] == "failed" and "deadlock" in doc["error"]
 

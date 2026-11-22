@@ -44,8 +44,15 @@ async def test_prunable(client, auth):
     r = await client.get("/services/1/prunable", headers=auth)
     assert r.status_code == 200
     for p in r.json()["data"]:
-        assert set(p) == {"package_id", "name", "ecosystem", "version", "exec_count", "deploy_seq"}
-        assert p["exec_count"] == 0 and p["deploy_seq"] == 2  # latest deployment of service 1
+        assert set(p) == {
+            "package_id",
+            "name",
+            "ecosystem",
+            "version",
+            "exec_count",
+            "deploy_seq",
+        }
+        assert p["exec_count"] == 0 and p["deploy_seq"] == 1  # seq 2 is staging: ignored
 
 
 async def test_prunable_404_422(client, auth):
@@ -107,7 +114,7 @@ async def test_blast_radius_404_422_401(client, auth):
 async def test_vuln_list_default(client, auth):
     r = await client.get("/vulnerabilities", headers=auth)
     d = r.json()["data"]
-    assert r.status_code == 200 and d["total"] == 15 and d["page"] == 1 and d["page_size"] == 50
+    assert r.status_code == 200 and d["total"] == 11 and d["page"] == 1 and d["page_size"] == 50
     scores = [i["cvss_score"] for i in d["items"]]
     assert scores == sorted(scores, reverse=True)
     assert set(d["items"][0]) == {
@@ -124,7 +131,7 @@ async def test_vuln_list_filters_and_pagination(client, auth):
     ]
     assert len(npm["items"]) == 2 and npm["total"] >= 2
     page2 = (await client.get("/vulnerabilities?page=2&page_size=10", headers=auth)).json()["data"]
-    assert len(page2["items"]) == 5 and page2["total"] == 15
+    assert len(page2["items"]) == 1 and page2["total"] == 11
     q = (await client.get("/vulnerabilities?q=advisory %234", headers=auth)).json()["data"]
     assert q["total"] == 1
     asc = (await client.get("/vulnerabilities?sort=published_at&order=asc", headers=auth)).json()
@@ -134,7 +141,14 @@ async def test_vuln_list_filters_and_pagination(client, auth):
 
 @pytest.mark.parametrize(
     "qs",
-    ["page=0", "page_size=201", "sort=title", "order=sideways", "severity=BOGUS", "ecosystem=x"],
+    [
+        "page=0",
+        "page_size=201",
+        "sort=title",
+        "order=sideways",
+        "severity=BOGUS",
+        "ecosystem=x",
+    ],
 )
 async def test_vuln_list_422(client, auth, qs):
     assert (await client.get(f"/vulnerabilities?{qs}", headers=auth)).status_code == 422
@@ -145,7 +159,7 @@ async def test_vuln_list_sql_injection_is_inert(client, auth):
         "/vulnerabilities", params={"q": "'; DROP TABLE vulnerability;--"}, headers=auth
     )
     assert r.status_code == 200 and r.json()["data"]["total"] == 0
-    assert (await client.get("/vulnerabilities", headers=auth)).json()["data"]["total"] == 15
+    assert (await client.get("/vulnerabilities", headers=auth)).json()["data"]["total"] == 11
 
 
 async def test_vuln_list_401(client):
@@ -156,7 +170,11 @@ async def test_vuln_detail(client, auth):
     from app.database import get_mongo
 
     await get_mongo()["osv_advisories"].insert_one(
-        {"osv_id": "GHSA-seed-0001", "raw_osv": {"summary": "S", "details": "D"}, "fetched_at": 0}
+        {
+            "osv_id": "GHSA-seed-0001",
+            "raw_osv": {"summary": "S", "details": "D"},
+            "fetched_at": 0,
+        }
     )
     r = await client.get("/vulnerabilities/1", headers=auth)
     d = r.json()["data"]
@@ -212,7 +230,8 @@ async def test_plan_persist_and_patch(client, auth, reseed):
     async with SessionLocal() as s:
         n = (
             await s.execute(
-                text("SELECT count(*) FROM resolves WHERE plan_id = :p"), {"p": plan["plan_id"]}
+                text("SELECT count(*) FROM resolves WHERE plan_id = :p"),
+                {"p": plan["plan_id"]},
             )
         ).scalar_one()
     assert n >= len(plan["actions"])
@@ -249,7 +268,7 @@ async def test_stats_overview(client, auth):
     r = await client.get("/stats/overview", headers=auth)
     d = r.json()["data"]
     assert r.status_code == 200
-    assert d["services"] == 5 and d["packages"] == 50
+    assert d["services"] == 5 and d["packages"] == 48  # packages of production deployments
     assert sum(d["severity_counts"].values()) == d["open_vulns"]
     assert d["critical_vulns"] == d["severity_counts"]["CRITICAL"]
     assert d["prunable_packages"] >= 0

@@ -1,6 +1,6 @@
 import { chromium, type FullConfig } from "@playwright/test";
 import { AUTH_DISABLED, EMAIL, PASSWORD, SIGNOUT_EMAIL, STATE } from "./credentials";
-import { reseed } from "./seed";
+import { addToAllTeams, reseed } from "./seed";
 
 // Reseeds the database, then signs in through the real /login UI once and saves the session for every test.
 export default async function globalSetup(config: FullConfig) {
@@ -16,6 +16,7 @@ export default async function globalSetup(config: FullConfig) {
         headers: { apikey: admin, Authorization: `Bearer ${admin}`, "Content-Type": "application/json" },
         body: JSON.stringify({ email, password: PASSWORD, email_confirm: true }),
       });
+      addToAllTeams(email);
     }
   }
   const browser = await chromium.launch();

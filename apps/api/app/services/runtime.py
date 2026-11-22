@@ -12,11 +12,12 @@ from typing import Any
 import structlog
 from bson import ObjectId
 from fastapi import HTTPException
-from motor.motor_asyncio import AsyncIOMotorCollection
+from pymongo.asynchronous.collection import AsyncCollection
 from pymongo.errors import PyMongoError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import Member
 from app.database import get_mongo
 from app.schemas.runtime import RuntimeSamplesRequest
 from app.services import cache
@@ -30,17 +31,24 @@ MAX_SKIPPED_LISTED = 50
 Key = tuple[str, str]  # (package name, version)
 
 
-def runtime_samples() -> AsyncIOMotorCollection:
+def runtime_samples() -> AsyncCollection:
     return get_mongo()["runtime_samples"]
 
 
-async def _resolve_seq(session: AsyncSession, service_id: int, requested: int | None) -> int:
-    """The deployment the samples belong to: 404 unknown service/deployment, 409 none at all."""
-    await require_service(session, service_id)
+async def _resolve_seq(
+    session: AsyncSession, service_id: int, requested: int | None, member: Member | None
+) -> int:
+    """The deployment the samples belong to: 404 unknown service/deployment, 409 none at all.
+
+    Without an explicit `requested` seq, samples go to the latest production deployment.
+    """
+    await require_service(session, service_id, member)
     if requested is None:
         seq = await latest_seq(session, service_id)
         if seq is None:
-            raise HTTPException(409, "Service has no deployment; ingest a manifest first")
+            raise HTTPException(
+                409, "Service has no production deployment; ingest a manifest first"
+            )
         return seq
     found = await rows(
         session,
@@ -99,7 +107,7 @@ async def _project(
 ) -> tuple[int, list[dict[str, Any]], set[Key]]:
     """In the caller's transaction: scan_run + observes rows. Returns (scan_id, rows, matched)."""
     await lock_service(session, service_id)
-    await _resolve_seq(session, service_id, seq)  # deleted since the first check -> 404
+    await _resolve_seq(session, service_id, seq, None)  # deleted since the first check -> 404
     resolved = await rows(
         session,
         "SELECT p.name, p.ecosystem, rt.package_id, rt.version_string FROM resolves_to rt "
@@ -157,7 +165,9 @@ async def _project(
     return scan_id, out, matched
 
 
-async def record_samples(session: AsyncSession, body: RuntimeSamplesRequest) -> dict[str, Any]:
+async def record_samples(
+    session: AsyncSession, body: RuntimeSamplesRequest, member: Member
+) -> dict[str, Any]:
     """MongoDB first, then one Postgres transaction, then the Mongo doc is marked projected.
 
     Mongo down: the raw copy is skipped with a warning and the batch is still projected
@@ -166,7 +176,7 @@ async def record_samples(session: AsyncSession, body: RuntimeSamplesRequest) -> 
     A rejected batch (404/409 after the raw insert) stays in Mongo with status 'rejected'.
     """
     async with session.begin():  # fast fail before writing anything
-        seq = await _resolve_seq(session, body.service_id, body.deploy_seq)
+        seq = await _resolve_seq(session, body.service_id, body.deploy_seq, member)
     captured = body.captured_at or datetime.now(UTC)
     totals = _aggregate(body)
     doc_id = await _store_raw(body, seq, captured)
@@ -185,8 +195,7 @@ async def record_samples(session: AsyncSession, body: RuntimeSamplesRequest) -> 
     skipped = [s for s in body.samples if (s.name, s.version) not in matched]
     distinct_skipped = list(dict.fromkeys((s.name, s.version) for s in skipped))
     await _mark_raw(
-        doc_id,
-        {"status": "projected", "scan_id": scan_id, "projected_at": datetime.now(UTC)},
+        doc_id, {"status": "projected", "scan_id": scan_id, "projected_at": datetime.now(UTC)}
     )
     log.info(
         "runtime_samples_projected",

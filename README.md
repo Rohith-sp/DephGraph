@@ -86,6 +86,16 @@ This creates the `dephgraph` database with all tables, constraints and views. Th
 
 ---
 
+## Run with Docker (one command)
+
+```bash
+docker compose up -d --build --wait   # postgres, mongo, redis, init (seeds an empty DB + mints a dev token), api :8000, web :3000
+```
+
+Ports bind to 127.0.0.1 and can be moved with `PG_PORT`, `MONGO_PORT`, `REDIS_PORT`, `API_PORT`, `WEB_PORT`; `RATE_LIMIT` (default `600/minute`, shared by all dashboard visitors) and `WEB_CONCURRENCY` (default 1) tune the API. Data lives in named volumes: `docker compose down` keeps it, `down -v` wipes it (the next `up` reseeds). The web container runs without Supabase (`AUTH_DISABLED`) using the token written by `init`; do not expose it beyond localhost.
+
+---
+
 ## Run locally
 
 Needs Docker, Python 3.12 (with [uv](https://docs.astral.sh/uv/)) and Node 22+.
@@ -115,6 +125,8 @@ npm run build -w apps/web && npm run start -w apps/web   # dashboard on :3000 (u
 API notes:
 - `GET /clusters` returns each cluster with its `members` inline; `GET /clusters/{id}/members` no longer exists.
 - `GET /remediation/plan/{team_id}` steps carry `plan_id`, `action_seq`, `action_status` (null without a saved plan), so the UI restores saved progress after a reload.
+- Tenancy: every read and write is limited to the caller's teams (`team_member`; others get 404, a user with no team gets empty lists). `GET /me` returns the caller's teams. Add people with `python scripts/add_team_member.py --team-slug platform --user-id <uuid> | --email <addr>`; the dev token's user is a member of every seeded team (`make_dev_token.py --user-id` mints a token for any other user).
+- Only a service's latest `production` deployment is analysed; `POST /ingest/manifest` takes `environment` (`production` default, `staging`, `preview`) and non-production ingests never change risk numbers.
 - `POST /pr-gate/webhook` answers `202 {accepted, delivery_id}` and reviews in the background. Read results with `GET /pr-gate/verdicts/{service_id}` (and the Check Run on GitHub).
 - Ids must be positive and in range, else `422`. Vulnerability timestamps use `+00:00`, not `Z`.
 - Latency: read endpoints are cached in Redis under a generation counter (any write bumps it). Rate-limit counters are per worker, so keep `WEB_CONCURRENCY=1` unless you scale `RATE_LIMIT` down.

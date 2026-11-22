@@ -26,7 +26,7 @@ router = APIRouter(
 
 @router.post("/osv-sync", response_model=Envelope[SyncOut])
 async def osv_sync(session: DbSession) -> dict[str, object]:
-    """Cron: re-query OSV for every package version in a latest deployment."""
+    """Cron: re-query OSV for every package version in a latest production deployment."""
     async with session.begin():
         found = await rows(
             session,

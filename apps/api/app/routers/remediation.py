@@ -3,10 +3,10 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from packaging.version import InvalidVersion, Version
-from sqlalchemy import text, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_user
+from app.auth import CurrentMember, Member, get_current_user
 from app.database import DbSession
 from app.models.sql import RemediationAction, RemediationPlan
 from app.schemas.analysis import ActionOut, ActionPatch, PlanCreate, PlanOut, PlanStep
@@ -28,10 +28,10 @@ def _vkey(v: str) -> tuple[int, Version | str]:
         return (0, v)
 
 
-async def build_plan(session: AsyncSession, team_id: int) -> list[dict[str, Any]]:
+async def build_plan(session: AsyncSession, team_id: int, member: Member) -> list[dict[str, Any]]:
     """Greedy set cover over fixable open vulns; one step = upgrade one package."""
     found = await rows(session, "SELECT 1 AS ok FROM team WHERE team_id = :t", t=team_id)
-    if not found:
+    if not found or team_id not in member.team_ids:  # another team's id looks like a missing one
         raise HTTPException(404, "Team not found")
     open_rows = await open_vuln_rows(session, team_id)
     by_pkg: dict[int, list[dict[str, Any]]] = {}
@@ -88,9 +88,12 @@ async def saved_state(session: AsyncSession, team_id: int) -> dict[str, tuple[in
 
 
 @router.get("/plan/{team_id}", response_model=Envelope[list[PlanStep]])
-async def get_plan(team_id: BigId, request: Request, session: DbSession) -> Response:
+async def get_plan(
+    team_id: BigId, request: Request, session: DbSession, member: CurrentMember
+) -> Response:
     async def build() -> str:
-        steps, saved = await build_plan(session, team_id), await saved_state(session, team_id)
+        steps = await build_plan(session, team_id, member)
+        saved = await saved_state(session, team_id)
         for s in steps:
             s["plan_id"], s["action_seq"], s["action_status"] = saved.get(
                 f"Upgrade {s['package']} {s['from_version']} -> {s['to_version']}",
@@ -98,12 +101,14 @@ async def get_plan(team_id: BigId, request: Request, session: DbSession) -> Resp
             )
         return json.dumps([{k: s[k] for k in PlanStep.model_fields} for s in steps])
 
-    return await cached_json(request, build)
+    return await cached_json(request, build, member.scope)
 
 
 @router.post("/plan", response_model=Envelope[PlanOut], status_code=201)
-async def create_plan(body: PlanCreate, session: DbSession) -> dict[str, Any]:
-    plan = await build_plan(session, body.team_id)
+async def create_plan(
+    body: PlanCreate, session: DbSession, member: CurrentMember
+) -> dict[str, Any]:
+    plan = await build_plan(session, body.team_id, member)
     row = RemediationPlan(
         team_id=body.team_id,
         title=body.title or f"Remediation plan ({len(plan)} steps)",
@@ -146,12 +151,20 @@ async def create_plan(body: PlanCreate, session: DbSession) -> dict[str, Any]:
 
 @router.patch("/plan/{plan_id}/actions/{seq}", response_model=Envelope[ActionOut])
 async def patch_action(
-    plan_id: BigId, seq: SmallId, body: ActionPatch, session: DbSession
+    plan_id: BigId, seq: SmallId, body: ActionPatch, session: DbSession, member: CurrentMember
 ) -> dict[str, Any]:
     updated = (
         await session.execute(
             update(RemediationAction)
-            .where(RemediationAction.plan_id == plan_id, RemediationAction.action_seq == seq)
+            .where(
+                RemediationAction.plan_id == plan_id,
+                RemediationAction.action_seq == seq,
+                RemediationAction.plan_id.in_(
+                    select(RemediationPlan.plan_id).where(
+                        RemediationPlan.team_id.in_(member.team_ids)
+                    )
+                ),
+            )
             .values(status=body.status)
             .returning(RemediationAction.description, RemediationAction.status)
         )

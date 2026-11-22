@@ -7,13 +7,14 @@ import os
 import re
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import asyncpg
+import jwt
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from jose import jwt
 from pymongo.errors import PyMongoError
 
 from app.config import settings
@@ -39,6 +40,7 @@ settings.rate_limit = "1000000/minute"  # test_polish lowers it per test
 
 sys.path.insert(0, str(ROOT / "scripts"))
 import seed_db  # noqa: E402
+from _db import DEV_USER_ID  # noqa: E402
 
 from app.database import get_mongo, get_redis  # noqa: E402
 from app.main import app  # noqa: E402
@@ -72,6 +74,9 @@ async def database():
     yield
 
 
+DEV_USER = uuid.UUID(DEV_USER_ID)  # member of every seeded team
+
+
 @pytest.fixture(autouse=True)
 async def clean_stores(monkeypatch):
     monkeypatch.setattr(http, "BACKOFF", 0)
@@ -94,7 +99,7 @@ async def reseed():
 def auth() -> dict[str, str]:
     token = jwt.encode(
         {
-            "sub": "00000000-0000-0000-0000-000000000001",
+            "sub": DEV_USER_ID,
             "aud": "authenticated",
             "exp": int(time.time()) + 3600,
         },

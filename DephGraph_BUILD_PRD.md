@@ -790,7 +790,7 @@ dephgraph/
 │       ├── app/
 │       │   ├── main.py                   # FastAPI app, CORS, lifespan, routers
 │       │   ├── config.py                 # pydantic-settings: reads .env
-│       │   ├── database.py               # SQLAlchemy async + Motor + Upstash
+│       │   ├── database.py               # SQLAlchemy async + PyMongo async + Upstash
 │       │   │
 │       │   ├── models/
 │       │   │   ├── sql.py                # SQLAlchemy 2.0 ORM (all 23 tables)
@@ -1242,8 +1242,7 @@ asyncpg==0.29.0
 sqlalchemy[asyncio]==2.0.36
 
 # MongoDB
-motor==3.6.0
-pymongo[srv]==4.10.1
+pymongo==4.20.1
 
 # Cache
 upstash-redis==1.3.0
@@ -1271,7 +1270,7 @@ packaging==24.2
 
 # Auth
 supabase==2.10.0
-python-jose[cryptography]==3.3.0
+pyjwt[crypto]==2.15.1
 
 # Logging & rate limiting
 structlog==24.4.0

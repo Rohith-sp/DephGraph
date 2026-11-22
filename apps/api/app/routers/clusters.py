@@ -4,13 +4,13 @@ import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from pymongo.errors import PyMongoError
 
-from app.auth import get_current_user
+from app.auth import CurrentMember, get_current_user
 from app.database import DbSession, get_mongo
 from app.schemas.analysis import ClusterOut, RedundancyOut
 from app.schemas.common import Envelope, ok
 from app.services import cluster_engine
 from app.services.cache import cached_json
-from app.services.queries import json_rows
+from app.services.queries import MY_SERVICES, json_rows, team_params
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/clusters", dependencies=[Depends(get_current_user)], tags=["clusters"])
@@ -44,19 +44,22 @@ async def list_clusters(request: Request, session: DbSession) -> Response:
                 m["x"], m["y"] = coords.get((c["cluster_id"], m["package_id"]), (None, None))
         return json.dumps(clusters)
 
-    return await cached_json(request, build)
+    return await cached_json(request, build, "shared")  # catalogue, same for everyone
 
 
 @router.get("/redundancy", response_model=Envelope[list[RedundancyOut]])
-async def redundancy(request: Request, session: DbSession) -> Response:
+async def redundancy(request: Request, session: DbSession, member: CurrentMember) -> Response:
     return await cached_json(
         request,
         lambda: json_rows(
             session,
             "SELECT service_id, service_name, cluster_id, cluster_label, "
             "redundant_package_count AS package_count, packages "
-            "FROM v_cluster_redundancy ORDER BY redundant_package_count DESC, service_name",
+            f"FROM v_cluster_redundancy WHERE service_id IN ({MY_SERVICES}) "
+            "ORDER BY redundant_package_count DESC, service_name",
+            **team_params(member),
         ),
+        member.scope,
     )
 
 

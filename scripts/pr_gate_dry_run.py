@@ -61,7 +61,7 @@ async def dry_run(
         pr = {"html_url": "", "user": {"login": DRY_RUN_AUTHOR}}
         async with session.begin():
             await lock_service(session, service_id)
-            await require_service(session, service_id)
+            await require_service(session, service_id, None)
             await pr_gate_engine.store_verdicts(session, service_id, pr_number, pr, results)
     return {
         "service_id": service_id,

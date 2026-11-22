@@ -1,4 +1,4 @@
-"""Assert schema shape: 23 tables, 5 views, valid FKs, indexes (003 + 008), RLS, 005/007/009 columns."""
+"""Assert schema shape: 24 tables, 5 views, valid FKs, indexes (003 + 008 + 010), RLS, 005/007/009 columns."""
 import asyncio
 import re
 import sys
@@ -11,6 +11,7 @@ MIGRATIONS = "\n".join(p.read_text() for p in sorted((Path(__file__).parents[1] 
 # Net index set: every CREATE INDEX in the migrations minus the ones a later migration drops (008).
 DROPPED = set(re.findall(r"DROP INDEX (?:IF EXISTS )?(\w+)", MIGRATIONS))
 INDEXES = sorted(set(re.findall(r"CREATE INDEX (?:IF NOT EXISTS )?(\w+)", MIGRATIONS)) - DROPPED)
+PRIVATE = {"maintainer_email"}  # PII: RLS on, no policy and no grant for `authenticated` (API only)
 COLUMNS = [("semantic_cluster", "keywords"), ("pr_risk_verdict", "reasoning"), ("maintainer", "last_active_at"), ("pr_review", "head_sha"), ("pr_review", "evaluated_at")]
 
 
@@ -33,18 +34,20 @@ async def check(c: asyncpg.Connection) -> int:
     idx = await rows("SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname = ANY($1)", INDEXES)
     pol = await rows("SELECT DISTINCT tablename FROM pg_policies WHERE schemaname = 'public' AND cmd = 'SELECT'")
     gone = await rows("SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname = ANY($1)", sorted(DROPPED))
+    leaks = await rows("SELECT relname FROM pg_class WHERE relname = ANY($1) AND has_table_privilege('authenticated', oid, 'SELECT')", sorted(PRIVATE))
     cols = await rows(
         "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'"
     )
 
     checks = [
-        ("Tables", len(tables), 23),
+        ("Tables", len(tables), 24),
         ("Views", len(views), 5),
         ("Indexes", len(idx), len(INDEXES)),
         ("Dropped indexes still present (008)", len(gone), 0),
         ("Columns from 005/007/009", sum((t, col) in {(r[0], r[1]) for r in cols} for t, col in COLUMNS), len(COLUMNS)),
-        ("RLS enabled", sum(t["relrowsecurity"] for t in tables), 23),
-        ("SELECT policies", len(pol), 23),
+        ("RLS enabled", sum(t["relrowsecurity"] for t in tables), 24),
+        ("SELECT policies", len(pol), 24 - len(PRIVATE)),
+        ("Private tables readable by authenticated", len(leaks), 0),
     ]
     ok = all(a == b for _, a, b in checks)
     fk_ok = bool(fks) and all(f["convalidated"] for f in fks)

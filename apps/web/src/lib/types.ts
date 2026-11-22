@@ -100,6 +100,18 @@ export interface RemediationPlan {
   actions: PlanAction[];
 }
 
+export interface MeTeam {
+  team_id: number;
+  name: string;
+  slug: string;
+  role: "member" | "admin";
+}
+
+export interface Me {
+  user_id: string;
+  teams: MeTeam[];
+}
+
 export interface StatsOverview {
   services: number;
   packages: number;

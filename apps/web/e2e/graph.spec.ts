@@ -16,7 +16,7 @@ test("every package is a node and vulnerable ones are tinted", async ({ page, re
   const tinted = nodes.locator("div.w-\\[208px\\]").filter({ has: page.locator("span.rounded-full") });
   await expect(tinted).toHaveCount(graph.nodes.filter((n) => n.vuln_count > 0).length);
   await expect(nodes.filter({ hasText: "aiohttp" }).locator("div.w-\\[208px\\]")).not.toHaveClass(/bg-(crit|high|med|low)\/10/);
-  await expect(nodes.filter({ hasText: "jinja2" }).filter({ hasText: "1.2.6" }).locator("div.w-\\[208px\\]")).toHaveClass(
+  await expect(nodes.filter({ hasText: "jinja2" }).filter({ hasText: "1.1.7" }).locator("div.w-\\[208px\\]")).toHaveClass(
     /bg-high\/10/,
   );
 });
@@ -29,10 +29,10 @@ test("selecting a package shows its dependency path", async ({ page }) => {
   const chain = paths.getByRole("listitem").first();
   await expect(chain).toContainText("api-gateway");
   await expect(chain).toContainText("pyyaml 4.3.9");
-  await expect(chain).toContainText("jinja2 1.3.4"); // a transitive hop between the service and pyyaml
+  await expect(chain).toContainText("sqlalchemy 0.1.9"); // a transitive hop between the service and pyyaml
 
   await (await hydrated(page.locator(".react-flow__node").filter({ hasText: "flask" }).first())).click();
-  await expect(page.getByRole("button", { name: /flask 3\.1\.4/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: /flask 3\.0\.8/ })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("list", { name: "Paths to flask" })).toContainText("api-gateway");
 });
 

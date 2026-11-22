@@ -2,7 +2,7 @@ import json
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from app.auth import get_current_user
+from app.auth import CurrentMember, get_current_user
 from app.database import DbSession
 from app.schemas.analysis import GraphOut, PrunableOut, ServiceOut
 from app.schemas.common import BigId, Envelope
@@ -14,13 +14,14 @@ from app.services.queries import (
     json_rows,
     latest_seq,
     require_service,
+    team_params,
 )
 
 router = APIRouter(prefix="/services", dependencies=[Depends(get_current_user)], tags=["services"])
 
 
 @router.get("", response_model=Envelope[list[ServiceOut]])
-async def list_services(request: Request, session: DbSession) -> Response:
+async def list_services(request: Request, session: DbSession, member: CurrentMember) -> Response:
     return await cached_json(
         request,
         lambda: json_rows(
@@ -47,17 +48,22 @@ async def list_services(request: Request, session: DbSession) -> Response:
             FROM service s
             JOIN team t ON t.team_id = s.team_id
             LEFT JOIN sv ON sv.service_id = s.service_id
+            WHERE s.team_id = ANY(:teams)
             GROUP BY s.service_id, t.name
             ORDER BY s.service_id
             """,
+            **team_params(member),
         ),
+        member.scope,
     )
 
 
 @router.get("/{service_id}/graph", response_model=Envelope[GraphOut])
-async def service_graph(service_id: BigId, request: Request, session: DbSession) -> Response:
+async def service_graph(
+    service_id: BigId, request: Request, session: DbSession, member: CurrentMember
+) -> Response:
     async def build() -> str:
-        svc = await require_service(session, service_id)
+        svc = await require_service(session, service_id, member)
         seq = await latest_seq(session, service_id)
         params = {"s": service_id, "q": seq}
         nodes = edges = "[]"
@@ -77,18 +83,21 @@ async def service_graph(service_id: BigId, request: Request, session: DbSession)
             )
         return f'{{"service":{json.dumps(svc)},"nodes":{nodes},"edges":{edges}}}'
 
-    return await cached_json(request, build)
+    return await cached_json(request, build, member.scope)
 
 
 @router.get("/{service_id}/prunable", response_model=Envelope[list[PrunableOut]])
-async def service_prunable(service_id: BigId, request: Request, session: DbSession) -> Response:
+async def service_prunable(
+    service_id: BigId, request: Request, session: DbSession, member: CurrentMember
+) -> Response:
     async def build() -> str:
-        await require_service(session, service_id)
+        await require_service(session, service_id, member)
         return await json_rows(
             session,
             "SELECT package_id, name, ecosystem, version, exec_count, deploy_seq "
             f"FROM ({PRUNABLE_SQL}) p",
             sid=service_id,
+            **team_params(member),
         )
 
-    return await cached_json(request, build)
+    return await cached_json(request, build, member.scope)

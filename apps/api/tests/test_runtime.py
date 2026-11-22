@@ -50,12 +50,11 @@ async def dead_in(seq: int, service_id: int = 1) -> list[dict]:
 
 
 async def target() -> dict:
-    """A package prunable only because of deployment 2, so one live sample removes it."""
-    older = await dead_in(1)
-    return next(p for p in await dead_in(2) if p not in older)
+    """A package never live in the latest production deployment (seq 1; seq 2 is staging)."""
+    return (await dead_in(1))[0]
 
 
-async def resolved(service_id: int = 1, seq: int = 2) -> list[dict]:
+async def resolved(service_id: int = 1, seq: int = 1) -> list[dict]:
     return await fetch(
         "SELECT p.name, rt.version_string AS version FROM resolves_to rt "
         "JOIN package p USING (package_id) WHERE rt.service_id = :s AND rt.deploy_seq = :q "
@@ -81,7 +80,7 @@ async def test_samples_happy_path_makes_package_live(client, auth, reseed):
     assert r.status_code == 200, r.text
     d = r.json()["data"]
     assert r.json()["error"] is None
-    assert d["deploy_seq"] == 2  # latest deployment of service 1
+    assert d["deploy_seq"] == 1  # latest production deployment of service 1
     assert d["samples_received"] == 1
     assert d["observes_written"] == 1
     assert d["live_packages"] == 1
@@ -100,7 +99,7 @@ async def test_samples_happy_path_makes_package_live(client, auth, reseed):
 
     doc = await runtime.runtime_samples().find_one({"scan_id": d["scan_id"]})
     assert doc["status"] == "projected"
-    assert doc["service_id"] == 1 and doc["deploy_seq"] == 2
+    assert doc["service_id"] == 1 and doc["deploy_seq"] == 1
     assert doc["samples"] == [{"name": dead["name"], "version": dead["version"], "exec_count": 42}]
 
 
@@ -151,7 +150,8 @@ async def test_complete_batch_zeroes_unseen_packages(client, auth, reseed):
     r = await client.post(
         "/runtime/samples",
         json=payload(
-            [{"name": seen["name"], "version": seen["version"], "exec_count": 7}], complete=True
+            [{"name": seen["name"], "version": seen["version"], "exec_count": 7}],
+            complete=True,
         ),
         headers=auth,
     )
@@ -165,7 +165,7 @@ async def test_complete_batch_zeroes_unseen_packages(client, auth, reseed):
 
 
 async def test_explicit_deploy_seq_and_captured_at(client, auth, reseed):
-    pkg = (await resolved(1, 1))[0]
+    pkg = (await resolved())[0]
     cap = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
     r = await client.post(
         "/runtime/samples",
@@ -227,7 +227,8 @@ async def test_service_deleted_mid_flight_marks_raw_rejected(client, auth, monke
             )
         ).scalar_one()
         await s.execute(
-            text("INSERT INTO deployment (service_id, deploy_seq) VALUES (:s, 1)"), {"s": sid}
+            text("INSERT INTO deployment (service_id, deploy_seq) VALUES (:s, 1)"),
+            {"s": sid},
         )
     real = runtime.lock_service
 

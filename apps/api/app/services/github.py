@@ -5,8 +5,8 @@ import re
 import time
 
 import httpx
+import jwt
 import structlog
-from jose import JOSEError, jwt
 
 from app.config import settings
 from app.services import http
@@ -14,10 +14,7 @@ from app.services.manifest_parser import parse_manifest
 
 log = structlog.get_logger()
 API = "https://api.github.com"
-HEADERS = {
-    "Accept": "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-}
+HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
 MANIFESTS = {"package.json": "npm", "cargo.toml": "cargo", "go.mod": "go"}
 # manifests/lockfiles whose changes we cannot read: the gate says so instead of passing silently
 UNPARSED = {
@@ -51,7 +48,7 @@ async def installation_token(client: httpx.AsyncClient, installation_id: int) ->
         )
         r.raise_for_status()
         return r.json()["token"]
-    except (httpx.HTTPError, JOSEError, ValueError, KeyError) as e:
+    except (httpx.HTTPError, jwt.PyJWTError, ValueError, KeyError) as e:
         log.warning("installation_token_failed", installation=installation_id, error=str(e))
         return None
 
@@ -126,12 +123,7 @@ async def pr_added_deps(
 
 
 async def post_check_run(
-    client: httpx.AsyncClient,
-    full_name: str,
-    head_sha: str,
-    token: str,
-    verdict: str,
-    summary: str,
+    client: httpx.AsyncClient, full_name: str, head_sha: str, token: str, verdict: str, summary: str
 ) -> None:
     conclusion = {"PASS": "success", "ADVISORY": "neutral", "BLOCK": "failure"}[verdict]
     r = await http.request(
