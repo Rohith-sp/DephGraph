@@ -3,6 +3,7 @@
 Settings are overridden BEFORE app.database creates its clients.
 """
 
+import os
 import re
 import sys
 import time
@@ -18,7 +19,8 @@ from pymongo.errors import PyMongoError
 from app.config import settings
 
 ROOT = Path(__file__).resolve().parents[3]
-TEST_DB = "dephgraph_test"
+# Overridable so several test runs can share one Postgres/Mongo/Redis without clobbering each other.
+TEST_DB = os.environ.get("DEPHGRAPH_TEST_DB", "dephgraph_test")
 ADMIN_DSN = re.sub(r"/[^/?]+(\?|$)", r"/postgres\1", settings.database_url).replace(
     "postgresql+asyncpg://", "postgresql://"
 )
@@ -28,7 +30,9 @@ TEST_DSN = re.sub(r"/[^/?]+(\?|$)", rf"/{TEST_DB}\1", settings.database_url).rep
 
 settings.database_url = TEST_DSN.replace("postgresql://", "postgresql+asyncpg://")
 settings.mongo_db_name = TEST_DB
-settings.redis_url = re.sub(r"/\d+$", "", settings.redis_url) + "/15"
+settings.redis_url = re.sub(r"/\d+$", "", settings.redis_url) + "/" + os.environ.get(
+    "DEPHGRAPH_TEST_REDIS_DB", "15"
+)
 settings.supabase_jwt_secret = "test-jwt-secret-at-least-32-characters"
 settings.internal_cron_secret = "test-cron-secret"
 settings.rate_limit = "1000000/minute"  # test_polish lowers it per test
