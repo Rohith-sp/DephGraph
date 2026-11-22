@@ -195,48 +195,245 @@ when the transactions finish.
 
 ## Phase 6 — NoSQL
 
-The code currently configures indexes for five MongoDB collection names in
-`apps/api/app/models/mongo.py`. Four have active application write paths; `runtime_samples` has
-indexes and a TTL policy but no writer was found in the current API/services. It should therefore
-be described as a prepared/unused collection, not as live telemetry.
+Legend: **[implemented]** = in the code and checked on the running stack on 22 Nov 2026.
+**[design]** = a Unit V concept explained for DephGraph; not built or deployed here.
 
-| Store / collection | Current role and natural aggregate |
-|---|---|
-| MongoDB `raw_manifests` | One uploaded manifest document, keyed for deduplication by `(service_id, sha256)`, containing raw text and parsed-package snapshot. |
-| MongoDB `osv_advisories` | One advisory document per `osv_id`, keeping the verbatim upstream OSV payload together with its fetch timestamp. |
-| MongoDB `package_embeddings` | One computed embedding/UMAP point per package, with cluster id; recomputation replaces this derived document. |
-| MongoDB `review_responses` | One Stage 3 model response for a PR dependency, including prompt, response, model, and timestamp. It is best-effort audit/context data, not the authoritative verdict. |
-| MongoDB `runtime_samples` | Collection with service/scan and TTL indexes (90 days); no active writer found in the current code. |
-| Redis | A blast-radius result cached as JSON under a service id and generation key, with a 24-hour TTL; invalidation advances the generation and deletes old keys. |
+DephGraph is polyglot. PostgreSQL is the system of record (23 tables, constraints, joins). MongoDB
+is the raw layer (documents as received, plus derived vectors). Redis is cache and lock. The
+database name is `dephgraph` (`mongo_db_name` in `apps/api/app/config.py`).
 
-These Mongo documents are useful as aggregates because each is usually fetched or replaced as a
-whole: raw source payloads retain flexible upstream fields, embeddings are recomputable derived
-vectors, and review responses preserve a self-contained request/response record. Relational data
-such as service ownership, package versions, vulnerabilities, and verdicts remains in PostgreSQL
-because it needs constraints, joins, and transactional updates.
+### 1. NoSQL motivation (why not only Postgres)
 
-### Distribution concepts (not deployment claims)
+- Upstream payloads (OSV advisories, uploaded manifests) have a shape that changes without notice.
+  Storing them verbatim in a document avoids a schema migration every time OSV adds a field.
+- Some data is one blob read and written whole: a 384-number embedding, a model prompt/response.
+  Rows and joins add nothing for it.
+- Hot, disposable results (blast radius per service) need millisecond reads and expiry, which a
+  key-value store gives directly.
+- Cost: no foreign keys, no cross-document transactions in our usage, no joins. So nothing in
+  Mongo or Redis is authoritative.
 
-The repository configures MongoDB and Redis clients but does not prove that a production Atlas or
-Upstash deployment exists. A MongoDB replica set keeps copies of the same shard/collection data on
-multiple members for availability; a sharded cluster partitions data across shards and normally
-replicates each shard. A sharding key should follow dominant access patterns—for example service id
-for service-scoped uploads, or package id for package embeddings—and should account for hot keys
-and cross-shard queries. Redis replication/failover is a provider/runtime configuration, not
-something guaranteed by the application code. “Primary/replica” describes a common replication
-topology; peer-to-peer or multi-primary behavior must not be assumed without selecting and
-configuring a product that supports it.
+### 2. Aggregate data models [implemented]
 
-### Data types and scaling
+An aggregate is a unit that is read and written as a whole. Each Mongo document is one:
 
-- **Structured:** normalized PostgreSQL entities, keys, dependency edges, and vulnerability links.
-- **Semi-structured:** manifest JSON and OSV advisory documents, whose upstream fields can vary.
-- **Unstructured / vector-like:** package descriptions and model prompt/response text; embeddings
-  are numerical vectors used for similarity and clustering.
-- **At larger scale:** partitioned batch jobs could aggregate advisory exposure or recompute
-  embeddings. Hadoop/MapReduce is a possible historical/distributed-batch architecture, not a
-  current DephGraph dependency; the product currently uses PostgreSQL queries and application
-  services.
+- `raw_manifests`: one uploaded file plus its processing state.
+- `osv_advisories`: one advisory with its full upstream JSON.
+- `package_embeddings`: one package's vector and 2-D coordinates.
+- `runtime_samples`: one agent batch (many samples inside one document).
+- `review_responses`: one model prompt and its response.
+
+Embedding arrays inside the document (`samples`, `parsed_packages`) are the aggregate idea: the
+child items never need to be queried alone, so they live inside the parent. The dependency graph is
+the opposite case (many-to-many, queried by traversal), so it stays relational in `depends_on`.
+
+### 3. The five MongoDB collections [implemented]
+
+Indexes are created at startup by `ensure_indexes()` in `apps/api/app/models/mongo.py`.
+
+| Collection | Purpose | Writer | Key fields | Indexes |
+|---|---|---|---|---|
+| `raw_manifests` | Raw uploaded manifest, kept before anything reaches Postgres | `routers/ingest.py`: `_store_manifest` (upsert, status `received`), `_mark` (`projected` / `failed`) | `service_id`, `sha256`, `ecosystem`, `filename`, `raw_content`, `uploaded_at`, `status`, `deploy_seqs`, `parsed_packages`, `error` | `(service_id, uploaded_at desc)`; **unique** `(service_id, sha256)` |
+| `osv_advisories` | Verbatim OSV advisory JSON | `services/osv_fetcher.py`: `store_raw` (`replace_one`, upsert) | `osv_id`, `raw_osv`, `fetched_at` | **unique** `osv_id`; `fetched_at desc` |
+| `package_embeddings` | Derived vector per package, for clustering and the 2-D map | `services/cluster_engine.py`: recompute `bulk_write` of `UpdateOne` upserts | `package_id`, `embedding` (384 floats), `umap_2d`, `cluster_id` | **unique** `package_id`; `cluster_id` |
+| `runtime_samples` | Raw runtime-agent batch (which packages executed) | `services/runtime.py`: `_store_raw` (insert, status `pending`), `_mark_raw` (`projected` / `rejected`) | `service_id`, `deploy_seq`, `captured_at`, `received_at`, `complete`, `samples[]`, `status`, `scan_id` | `(service_id, scan_id)`; **TTL** `captured_at`, 90 days |
+| `review_responses` | Audit log of the PR-gate Stage 3 model call | `services/pr_gate_engine.py`: `stage3` (`insert_one`, skipped if `store_response=False`) | `service_id`, `pr_number`, `dep_name`, `model`, `prompt`, `response`, `responded_at` | `(service_id, pr_number)`; **TTL** `responded_at`, 30 days |
+
+Note: the older global unique index on `sha256` alone is dropped by `ensure_indexes()`, because it
+lost a second service's identical upload. Uniqueness is now per service. Live check:
+`raw_manifests` has indexes `service_id_1_uploaded_at_-1` and `service_id_1_sha256_1`;
+`runtime_samples` has `captured_at_1` with `expireAfterSeconds` 7776000 (90 days);
+`package_embeddings` has `package_id_1` (unique) and `cluster_id_1`.
+
+Why a document here and not rows:
+
+- `raw_manifests`: file text and parsed snapshot are written once and replayed whole. Postgres
+  keeps the normalised result (`package`, `resolves_to`, ...).
+- `osv_advisories`: OSV fields vary by advisory; Postgres keeps only the columns we query
+  (`vulnerability`, `affects`, `resolves`).
+- `package_embeddings`: a 384-float vector has no relational meaning and is fully recomputed.
+- `runtime_samples`: up to 5000 samples per batch, written as one insert; Postgres keeps the
+  aggregated `observes` rows.
+- `review_responses`: free text, self-contained, auto-expiring. The authoritative verdict is in
+  Postgres (`pr_risk_verdict`).
+
+### 4. One-way flow MongoDB to PostgreSQL [implemented]
+
+Postgres rows are only ever derived from Mongo documents, never the other way round.
+
+Manifest ingest (`POST /ingest/manifest`):
+
+1. Check the service exists (Postgres, short transaction).
+2. `_store_manifest`: upsert the raw document by `(service_id, sha256)`, set status `received`.
+   Identical re-upload reuses the document. If Mongo is down the request fails with 503 and
+   Postgres is not touched.
+3. `_project` parses the stored `raw_content`, then calls OSV and deps.dev with no database
+   transaction open.
+4. `osv_fetcher.store_raw(..., required=True)`: advisories are saved to `osv_advisories` before any
+   vulnerability row exists in Postgres.
+5. One Postgres transaction: per-service advisory lock, packages, metadata, vulnerabilities,
+   deployment with `resolves_to` closure, `scan_run`.
+6. On commit, `_mark(..., "projected")` records `deploy_seq`, `projected_at`, `parsed_packages`;
+   on any exception it records `failed` with `error`. Then the blast-radius cache is invalidated.
+7. `POST /ingest/replay/{manifest_id}` loads the stored document and runs step 3 onward again, as a
+   new deployment. This rebuilds Postgres from Mongo (422 bad id, 404 unknown, 503 Mongo down).
+
+Runtime samples (`POST /runtime/samples`, `services/runtime.py`):
+
+1. Resolve the service and deployment (404 / 409 on failure).
+2. `_store_raw`: insert the batch with status `pending`. Here a Mongo failure is only logged and
+   the batch is still projected (`raw_stored: false`), unlike ingest.
+3. One Postgres transaction inserts a `scan_run` and upserts `observes` rows (`exec_count`,
+   `is_live`). With `complete: true`, resolved packages missing from the batch get `exec_count` 0.
+4. The document is marked `projected` with `scan_id`, or `rejected` with `error` on a 404/409.
+
+Other paths: `POST /ingest/scan/{id}` also stores advisories first, but best-effort (a Mongo outage
+is logged and the scan continues). Cluster recompute writes Postgres first and Mongo
+embeddings after; this is not atomic, and a failed Mongo step heals on the next recompute (noted in
+a code comment).
+
+### 5. Redis: key-value model [implemented]
+
+| Key | Type | Value | Expiry |
+|---|---|---|---|
+| `dephgraph:blast_radius:gen` | string (counter) | generation number; absent means 0 | none |
+| `dephgraph:blast_radius:{service_id}:{gen}` | string | JSON blast-radius result | 24 h (`CACHE_TTL = 86400`) |
+| `dephgraph:lock:cluster_recompute` | string | random token of the lock holder | 900 s (`LOCK_TTL`) |
+
+Blast-radius cache (`services/blast_radius.py`): a reader reads the generation first, then
+`GET`s `{service}:{gen}`; on a miss it computes from Postgres and `SET ... EX 86400`. `invalidate()`
+does `INCR` on the generation and deletes old keys. A reader that started before an invalidation
+writes to the old generation, which nobody reads, so it cannot bring back stale data.
+
+Recompute lock (`services/cluster_engine.py`): acquired with `SET key token NX EX 900`, so only one
+recompute runs at a time. Release is a Lua script: delete only if the stored token is still ours,
+so a run that outlives its TTL cannot free a newer holder's lock.
+
+Live check:
+
+```
+$ docker exec dephgraph-redis-1 redis-cli --scan --pattern 'dephgraph:*' | head
+dephgraph:blast_radius:1:0
+$ docker exec dephgraph-redis-1 redis-cli ttl dephgraph:blast_radius:1:0
+82426
+$ docker exec dephgraph-redis-1 redis-cli exists dephgraph:blast_radius:gen
+0
+```
+
+`:0` means generation 0 (no invalidation yet, so the gen key does not exist). The TTL counts down
+from 86400 seconds. The value decodes to keys `service_id`, `vulnerable_packages` (6 entries),
+`total_vulns`, `critical_count`, `cached`.
+
+### 6. Sample documents
+
+Only `package_embeddings` holds data in the local stack today (617 documents); the other four
+collections were empty when checked on 22 Nov 2026, because no manifest, runtime batch or PR review
+had been run against this Mongo volume (they need OSV / Groq network access and an authenticated
+call, which was not done for this write-up). Their samples below are therefore **shapes built from
+the writer code, not fetched documents**; all values are illustrative.
+
+Live, `package_embeddings` (`db.package_embeddings.findOne()`, vector truncated; real length 384):
+
+```js
+{
+  _id: ObjectId('6b02a5296b98a12bf00a4a58'),
+  package_id: 1,
+  cluster_id: null,
+  embedding: [ -0.031668417155742645, 0.117001473903656, 0.05509955435991287, … ],
+  umap_2d: [ 2.4331276416778564, 9.228261947631836 ]
+}
+```
+
+Shape only, `raw_manifests` after a successful ingest (from `_store_manifest` and `_mark`):
+
+```js
+{
+  _id: ObjectId('…'), service_id: 1, sha256: '9f2c…', ecosystem: 'pypi',
+  filename: 'requirements.txt', raw_content: 'requests==2.19.0\nurllib3==1.24.1\n',
+  uploaded_at: ISODate('…'), received_at: ISODate('…'), updated_at: ISODate('…'),
+  status: 'projected', projected_at: ISODate('…'), deploy_seqs: [ 3 ],
+  parsed_packages: [ { name: 'requests', version: '2.19.0', … }, … ]
+}
+```
+
+Shape only, `osv_advisories` (`store_raw`):
+`{ osv_id: 'GHSA-…', raw_osv: { id, summary, aliases, affected: […], severity: […], … }, fetched_at: ISODate('…') }`
+
+Shape only, `runtime_samples` (`_store_raw`, then `_mark_raw`):
+`{ service_id: 1, deploy_seq: 3, captured_at, received_at, complete: true, samples: [ { name: 'requests', version: '2.19.0', exec_count: 120 }, … ], status: 'projected', scan_id: 7, projected_at }`
+
+Shape only, `review_responses` (`stage3`):
+`{ service_id: 1, pr_number: 42, dep_name: 'requests', model: '<settings.groq_model>', prompt: '…', response: '{"verdict": "ADVISORY", "reasoning": "…"}', responded_at: ISODate('…') }`
+
+### 7. Aggregation pipeline run on live data [implemented]
+
+Largest semantic clusters by number of packages, from `package_embeddings`:
+
+```js
+db.package_embeddings.aggregate([
+  { $match: { cluster_id: { $ne: null } } },
+  { $group: { _id: "$cluster_id", packages: { $sum: 1 } } },
+  { $sort: { packages: -1, _id: 1 } },
+  { $limit: 3 }
+])
+// [ { _id: 36, packages: 167 }, { _id: 26, packages: 25 }, { _id: 47, packages: 17 } ]
+```
+
+Same collection: 535 documents have a `cluster_id`, 82 have `null` (packages with no cluster), and
+`$avg` of `$size` on `embedding` is 384 across all 617. For `raw_manifests` the equivalent
+pipeline would be `[{ $group: { _id: { status: "$status", ecosystem: "$ecosystem" }, n: { $sum: 1 } } }]`;
+it returns `[]` on the local stack because that collection is empty.
+
+### 8. Replication, consistency and CAP [design]
+
+The Compose stack runs one standalone MongoDB and one Redis, so nothing here is deployed.
+
+- **Primary/secondary:** a MongoDB replica set has one primary taking writes; secondaries copy its
+  oplog. If the primary fails, an election picks a new one. Atlas M0 (the planned target in
+  `docs/DEPLOY.md`) is a managed replica set.
+- **Consistency trade-off:** reading from a secondary can return data a little behind the primary
+  (eventual consistency). DephGraph's raw-first write (step 2 above) should use write concern
+  `majority` and read from the primary, because step 3 reads back what step 2 wrote. Reads of
+  `package_embeddings` for the cluster map could tolerate secondaries.
+- **CAP:** under a network partition a system picks consistency or availability. A default MongoDB
+  replica set favours consistency: the minority side cannot elect a primary and refuses writes. A
+  cache like Redis is used the other way: if it is unreachable the code logs and falls through to
+  Postgres (`cache_read_failed`), so the dashboard stays available with stale-free but slower data.
+  Postgres stays the single source of truth in both cases.
+- **Redis:** replication and failover are provider settings (Upstash), not application code.
+
+### 9. Sharding [design]
+
+Sharding splits a collection across servers by a shard key, and each shard is normally itself a
+replica set. The current data volume does not need it. If it grew:
+
+- `raw_manifests`: shard key `service_id` (hashed) fits the dominant access pattern, which is
+  per-service, and matches the unique index `(service_id, sha256)` (a unique index on a sharded
+  collection must contain the shard key). Risk: one very large service is a hot shard.
+- `package_embeddings`: key `package_id`; the cluster job reads all documents, so it becomes a
+  scatter-gather across shards.
+- `osv_advisories`: key `osv_id`, looked up by exact id, so it targets a single shard.
+- Redis: key-based partitioning by service id would work, but the generation counter would then
+  need to stay on one node.
+
+### 10. Big data and MapReduce [design]
+
+Volume, velocity and variety map to DephGraph as: millions of package versions across ecosystems,
+frequent advisory updates, and mixed structured / semi-structured / text data. Nothing here uses
+Hadoop; the app runs Postgres queries and Python services.
+
+MapReduce idea applied to DephGraph: to count vulnerable services per package across many
+manifests, the map step reads one manifest and emits `(package@version, service_id)`, the shuffle
+groups by key, and the reduce step counts distinct services per key. The equivalent in this
+project is the SQL `GROUP BY` and the Mongo `$group` stage in section 7, which are the same
+group-and-reduce pattern on a single node.
+
+### 11. Data types and scale
+
+- **Structured:** normalised Postgres entities, keys, dependency edges, vulnerability links.
+- **Semi-structured:** manifest JSON/text and OSV advisories.
+- **Unstructured / vector:** package descriptions, model prompt and response text, 384-dimension
+  embeddings.
 
 ## Viva checkpoints
 

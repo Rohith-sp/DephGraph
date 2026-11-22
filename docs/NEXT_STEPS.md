@@ -124,12 +124,10 @@ written explanations are complete.
 
 ### 2.4 Phase 6 — NoSQL (Unit V)
 
-The model and distribution write-up is in
-[`docs/COURSEWORK.md`](COURSEWORK.md#phase-6--nosql). It records four active MongoDB write paths
-and distinguishes the indexed `runtime_samples` collection, which currently has no writer.
-
-No additional NoSQL implementation is required for the coursework; the code-backed explanation is
-complete in `docs/COURSEWORK.md`.
+Status: done, 22 Nov 2026. Write-up in [`docs/COURSEWORK.md`](COURSEWORK.md#phase-6--nosql):
+five Mongo collections (writers, indexes, TTLs), the one-way Mongo to Postgres flow, Redis keys and
+lock, a live aggregation, and replication / CAP / sharding / MapReduce marked as design only.
+Optional later: sample documents for four collections that are empty on the local stack.
 
 ### 2.5 Report and viva
 
