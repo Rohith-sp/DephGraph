@@ -1,30 +1,30 @@
 # Slim API runtime (Vercel function + Docker). Clustering lives in requirements-ml.txt, tests in -dev.
 # Web framework
-fastapi==0.162.0
-uvicorn[standard]==0.32.0
+fastapi==0.165.0
+uvicorn[standard]==0.54.0
 
 # PostgreSQL
-asyncpg==0.29.0
-sqlalchemy[asyncio]==2.0.36
+asyncpg==0.32.0
+sqlalchemy[asyncio]==2.1.9
 
 # MongoDB
 pymongo==4.20.1  # native asyncio API (AsyncMongoClient); replaces EOL motor
 
 # Cache (redis-py speaks to local redis and Upstash rediss://)
-redis==5.3.1
+redis==8.1.0
 
 # Validation & config
-pydantic==2.9.2
-pydantic-settings==2.6.1
+pydantic==2.14.4
+pydantic-settings==2.16.3
 
 # HTTP client
-httpx==0.27.2
+httpx==0.28.1
 
 # LLM (Stage 3)
-groq==0.12.0
+groq==1.7.0
 
 # Version parsing + CVSS scoring
-packaging==24.2
+packaging==26.3
 PyYAML==6.0.3  # lockfile parsers (pnpm, yarn berry); also a uvicorn[standard] dependency
 cvss==3.6
 
@@ -32,8 +32,8 @@ cvss==3.6
 pyjwt[crypto]==2.15.1
 
 # Error reporting (initialised only when SENTRY_DSN is set)
-sentry-sdk[fastapi]==2.74.0
+sentry-sdk[fastapi]==2.75.0
 
 # Logging & rate limiting
-structlog==24.4.0
+structlog==26.1.0
 limits==5.8.0  # per-IP rate limit (app/limiter.py)
