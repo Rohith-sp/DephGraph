@@ -166,9 +166,10 @@ async def _project(
 
 
 async def record_samples(
-    session: AsyncSession, body: RuntimeSamplesRequest, member: Member
+    session: AsyncSession, body: RuntimeSamplesRequest, member: Member | None
 ) -> dict[str, Any]:
     """MongoDB first, then one Postgres transaction, then the Mongo doc is marked projected.
+    `member` None: a service token, already checked against the service.
 
     Mongo down: the raw copy is skipped with a warning and the batch is still projected
     (`raw_stored: false`). Postgres is the system of record for liveness and the agent would

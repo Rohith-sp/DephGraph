@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _parents = Path(__file__).resolve().parents
@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""  # only the scripts use these two; the app never reads them
     supabase_service_role_key: str = ""
     supabase_jwt_secret: str = ""  # legacy HS256 projects
+    # Extra sign-in restriction: comma-separated email domains; empty = any verified email.
+    allowed_email_domains: str = ""
+    # Invite-only access: comma-separated emails of the organisation admins, the only people who may
+    # create teams. Everyone else needs a team invite. Empty = open (development and CI only).
+    org_admin_emails: str = ""
     github_webhook_secret: str = ""
     internal_cron_secret: str = ""
     groq_api_key: str = ""
@@ -38,6 +43,24 @@ class Settings(BaseSettings):
     trusted_proxy_hops: int = 1
     # Vercel sets VERCEL=1 in every deployment; true = serverless connection settings.
     serverless: bool = Field(default=False, validation_alias="VERCEL")
+
+    @model_validator(mode="after")
+    def production_needs_org_admins(self) -> "Settings":
+        if self.environment == "production" and not self.org_admins:
+            raise ValueError("ORG_ADMIN_EMAILS is required when ENVIRONMENT=production")
+        return self
+
+    @property
+    def org_admins(self) -> set[str]:
+        return {e.strip().lower() for e in self.org_admin_emails.split(",") if e.strip()}
+
+    @property
+    def email_domains(self) -> set[str]:
+        return {
+            d.strip().lower().lstrip("@")
+            for d in self.allowed_email_domains.split(",")
+            if d.strip()
+        }
 
 
 settings = Settings()

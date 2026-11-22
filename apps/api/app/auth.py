@@ -11,6 +11,7 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from redis.exceptions import RedisError
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import DbSession, get_redis
@@ -82,16 +83,88 @@ async def request_claims(request: Request, token: str) -> dict[str, Any]:
     return claims
 
 
-async def get_current_user(
+async def authenticated_claims(
     request: Request, creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]
 ) -> dict[str, Any]:
-    """Return the verified claims of the bearer token."""
+    """Verified claims of the bearer token, whatever the user's email domain (only /me uses this)."""
     if creds is None or not auth_configured():
         raise HTTPException(401, "Not authenticated")
     try:
         return await request_claims(request, creds.credentials)
     except jwt.PyJWTError:
         raise HTTPException(401, "Invalid token") from None
+
+
+_EMAIL_TTL = 60  # seconds; the same staleness bound as the membership cache
+_emails: dict[uuid.UUID, tuple[str | None, float]] = {}
+_has_auth_users: bool | None = (
+    None  # Supabase's auth.users exists (plain Postgres in compose/CI: no)
+)
+
+
+async def verified_email(claims: dict[str, Any], session: AsyncSession) -> str | None:
+    """Lower-cased email of the caller, only when it is confirmed.
+
+    user_metadata is writable by the user, so it is never trusted. On Supabase the email and its
+    confirmation come from auth.users (Dashboard -> Auth -> "Confirm email" must be ON, or anyone can
+    claim any address); without that table (compose, CI) the signed token's own email claim is used.
+    """
+    global _has_auth_users
+    uid = user_id_of(claims)
+    if _has_auth_users is None:
+        async with session.begin():
+            _has_auth_users = (
+                await session.execute(text("SELECT to_regclass('auth.users') IS NOT NULL"))
+            ).scalar_one()
+    if not _has_auth_users:
+        email = claims.get("email")
+        return email.lower() if isinstance(email, str) else None
+    hit = _emails.get(uid)
+    if hit and hit[1] > time.monotonic():
+        return hit[0]
+    async with session.begin():
+        found = (
+            await session.execute(
+                text(
+                    "SELECT lower(email), email_confirmed_at IS NOT NULL "
+                    "FROM auth.users WHERE id = :u"
+                ),
+                {"u": uid},
+            )
+        ).first()
+    email = found[0] if found and found[1] and found[0] else None
+    if len(_emails) >= 4096:
+        _emails.clear()
+    _emails[uid] = (email, time.monotonic() + _EMAIL_TTL)
+    return email
+
+
+def invite_only() -> bool:
+    return bool(settings.org_admins)
+
+
+async def is_org_admin(claims: dict[str, Any], session: AsyncSession) -> bool:
+    """May create teams: everyone while ORG_ADMIN_EMAILS is unset (dev/CI), else listed emails."""
+    if not invite_only():
+        return True
+    return (await verified_email(claims, session)) in settings.org_admins
+
+
+async def domain_allowed(claims: dict[str, Any], session: AsyncSession) -> bool:
+    """ALLOWED_EMAIL_DOMAINS gate: unset = everyone, else a confirmed email on one of the domains."""
+    if not (domains := settings.email_domains):
+        return True
+    email = await verified_email(claims, session)
+    return email is not None and email.rpartition("@")[2] in domains
+
+
+async def get_current_user(
+    claims: Annotated[dict[str, Any], Depends(authenticated_claims)], session: DbSession
+) -> dict[str, Any]:
+    """Verified claims of a user inside the allowed email domains (403 otherwise)."""
+    if not await domain_allowed(claims, session):
+        raise HTTPException(403, "Your email domain is not allowed")
+    return claims
 
 
 @dataclass(frozen=True)
@@ -113,7 +186,7 @@ MEMBER_TTL = 60  # seconds; bounds staleness when a membership changes without a
 async def teams_of(user_id: uuid.UUID, session: DbSession) -> frozenset[int]:
     """Teams of `user_id` from team_member (empty = no team, not an error).
 
-    Cached in Redis under the membership generation (scripts/add_team_member.py bumps it, so a new
+    Cached in Redis under the membership generation (the team endpoints and scripts/add_team_member.py bump it, so a new
     membership takes effect at once) and in-process for a moment (see app.services.cache). On a miss
     the lookup runs on the request's own session in a short transaction of its own, so the handler
     later opens its `session.begin()` on the same, already-pooled connection.
@@ -147,15 +220,22 @@ async def teams_of(user_id: uuid.UUID, session: DbSession) -> frozenset[int]:
     return teams
 
 
+def user_id_of(claims: dict[str, Any]) -> uuid.UUID:
+    try:
+        return uuid.UUID(str(claims.get("sub")))
+    except ValueError:
+        raise HTTPException(401, "Invalid token") from None
+
+
 async def current_member(
     claims: Annotated[dict[str, Any], Depends(get_current_user)], session: DbSession
 ) -> Member:
     """The authenticated caller and their teams."""
-    try:
-        user_id = uuid.UUID(str(claims.get("sub")))
-    except ValueError:
-        raise HTTPException(401, "Invalid token") from None
-    return Member(user_id, await teams_of(user_id, session))
+    user_id = user_id_of(claims)
+    teams = await teams_of(user_id, session)
+    if not teams and not await is_org_admin(claims, session):
+        raise HTTPException(403, "Access is by invitation: ask an admin to invite you")
+    return Member(user_id, teams)
 
 
 CurrentMember = Annotated[Member, Depends(current_member)]

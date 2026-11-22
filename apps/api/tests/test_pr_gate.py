@@ -793,8 +793,8 @@ async def test_monorepo_redundancy_is_judged_per_service(client, auth, reseed):
         sid = (
             await s.execute(
                 text(
-                    "INSERT INTO service (team_id, name, repo_url, language) SELECT team_id, 'other', "
-                    "repo_url, 'python' FROM service WHERE service_id = 1 RETURNING service_id"
+                    "INSERT INTO service (team_id, name, repo_url, root_path, language) SELECT team_id, 'other', "
+                    "repo_url, 'apps/other', 'python' FROM service WHERE service_id = 1 RETURNING service_id"
                 )
             )
         ).scalar_one()

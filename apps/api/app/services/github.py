@@ -53,6 +53,34 @@ async def installation_token(client: httpx.AsyncClient, installation_id: int) ->
         return None
 
 
+async def repo_access(client: httpx.AsyncClient, full_name: str) -> tuple[int, int] | None:
+    """(installation id, repository id) when the App is installed on `full_name`, else None.
+
+    Raises httpx.HTTPError when GitHub is unreachable or the installation token cannot be minted.
+    """
+    r = await http.request(
+        client,
+        "GET",
+        f"{API}/repos/{full_name}/installation",
+        headers={**HEADERS, "Authorization": f"Bearer {app_jwt()}"},
+    )
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    installation = int(r.json()["id"])
+    token = await installation_token(client, installation)
+    if token is None:
+        raise httpx.HTTPError("GitHub installation token unavailable")
+    repo = await http.request(
+        client,
+        "GET",
+        f"{API}/repos/{full_name}",
+        headers={**HEADERS, "Authorization": f"Bearer {token}"},
+    )
+    repo.raise_for_status()
+    return installation, int(repo.json()["id"])
+
+
 def ecosystem_of(filename: str) -> str | None:
     base = filename.rsplit("/", 1)[-1].lower()
     if base.startswith("requirements") and base.endswith(".txt"):

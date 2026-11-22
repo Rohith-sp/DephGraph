@@ -31,7 +31,7 @@ interface Envelope<T> {
 
 export async function api<T>(
   path: string,
-  init: { method?: "GET" | "POST" | "PATCH"; body?: unknown } = {},
+  init: { method?: "GET" | "POST" | "PATCH" | "DELETE"; body?: unknown } = {},
 ): Promise<T> {
   const jwt = await token();
   let res: Response;

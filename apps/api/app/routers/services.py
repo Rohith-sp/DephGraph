@@ -1,11 +1,24 @@
 import json
+from typing import Any
 
-from fastapi import APIRouter, Depends, Request, Response
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy.exc import IntegrityError
 
 from app.auth import CurrentMember, get_current_user
 from app.database import DbSession
 from app.schemas.analysis import GraphOut, PrunableOut, ServiceOut
-from app.schemas.common import BigId, Envelope
+from app.schemas.common import BigId, Envelope, ok
+from app.schemas.teams import (
+    Done,
+    ServiceBrief,
+    ServiceCreate,
+    ServicePatch,
+    TokenCreate,
+    TokenCreated,
+    TokenOut,
+)
+from app.services import cache, github, tokens
 from app.services.blast_radius import EDGES_SQL, NODES_SQL
 from app.services.cache import cached_json
 from app.services.queries import (
@@ -14,8 +27,10 @@ from app.services.queries import (
     json_rows,
     latest_seq,
     require_service,
+    rows,
     team_params,
 )
+from app.services.teams import require_admin
 
 router = APIRouter(prefix="/services", dependencies=[Depends(get_current_user)], tags=["services"])
 
@@ -39,7 +54,7 @@ async def list_services(request: Request, session: DbSession, member: CurrentMem
                                    WHERE w.vuln_id = a.vuln_id AND w.service_id = l.service_id
                                      AND (w.expires_on IS NULL OR w.expires_on >= CURRENT_DATE))
               LEFT JOIN vulnerability v ON v.vuln_id = a.vuln_id)
-            SELECT s.service_id, s.team_id, t.name AS team_name, s.name, s.language, s.repo_url,
+            SELECT s.service_id, s.team_id, t.name AS team_name, s.name, s.language, s.repo_url, s.root_path,
                    COUNT(DISTINCT (sv.package_id, sv.version_string))
                      FILTER (WHERE sv.package_id IS NOT NULL) AS package_count,
                    COUNT(DISTINCT sv.vuln_id) AS vuln_count,
@@ -102,3 +117,152 @@ async def service_prunable(
         )
 
     return await cached_json(request, build, member)
+
+
+SERVICE_COLUMNS = "service_id, team_id, name, repo_url, root_path"
+DUPLICATE = "This repository and directory is already registered, or the name is taken"
+
+
+async def _verify_repo(repo_url: str) -> tuple[int | None, int | None]:
+    """(installation id, repository id) of the GitHub App's access to the repository.
+
+    Registering a repository means receiving its PR data, so only repositories the App is installed
+    on (i.e. ones an owner granted access to) may be registered. Without a configured App (dev, CI)
+    there is nothing to check and both ids stay NULL.
+    """
+    if not github.configured():
+        return None, None
+    full_name = repo_url.removeprefix("https://github.com/")
+    async with httpx.AsyncClient(timeout=15) as client:
+        access = await github.repo_access(client, full_name)
+    if access is None:
+        raise HTTPException(422, f"Install the DephGraph GitHub App on {full_name} first")
+    return access
+
+
+@router.post("", response_model=Envelope[ServiceBrief], status_code=201)
+async def create_service(
+    body: ServiceCreate, session: DbSession, member: CurrentMember
+) -> dict[str, Any]:
+    """Register a repository (or a monorepo subdirectory of it) as a service; team admins only."""
+    async with session.begin():
+        await require_admin(session, member, body.team_id)
+    installation_id, repo_id = await _verify_repo(body.repo_url)
+    repo = body.repo_url.rsplit("/", 1)[1]
+    name = body.name or (f"{repo}/{body.root_path}" if body.root_path else repo)
+    try:
+        async with session.begin():
+            await require_admin(session, member, body.team_id)
+            created = (
+                await rows(
+                    session,
+                    "INSERT INTO service (team_id, name, repo_url, root_path, "
+                    "github_installation_id, github_repo_id) VALUES (:t, :n, :r, :p, :i, :g) "
+                    f"RETURNING {SERVICE_COLUMNS}",
+                    t=body.team_id,
+                    n=name[:120],
+                    r=body.repo_url,
+                    p=body.root_path,
+                    i=installation_id,
+                    g=repo_id,
+                )
+            )[0]
+    except IntegrityError:
+        raise HTTPException(409, DUPLICATE) from None
+    await cache.bump([body.team_id])
+    # Initial import of the repository's default branch goes here (needs created["service_id"]).
+    return ok(created)
+
+
+async def _admin_service(session: DbSession, service_id: int, member: CurrentMember) -> int:
+    """team_id of the service once the caller is confirmed admin of its team."""
+    team_id = (await require_service(session, service_id, member))["team_id"]
+    await require_admin(session, member, team_id)
+    return team_id
+
+
+@router.patch("/{service_id}", response_model=Envelope[ServiceBrief])
+async def update_service(
+    service_id: BigId, body: ServicePatch, session: DbSession, member: CurrentMember
+) -> dict[str, Any]:
+    changes = body.model_dump(exclude_none=True)
+    async with session.begin():
+        await _admin_service(session, service_id, member)
+    if "repo_url" in changes:  # a new repository is verified like a new registration
+        changes["github_installation_id"], changes["github_repo_id"] = await _verify_repo(
+            changes["repo_url"]
+        )
+    assignments = ", ".join(
+        f"{col} = :{col}" for col in changes
+    )  # column names are ours, not input
+    try:
+        async with session.begin():
+            team_id = await _admin_service(session, service_id, member)
+            updated = await rows(
+                session,
+                f"UPDATE service SET {assignments} WHERE service_id = :id "
+                f"RETURNING {SERVICE_COLUMNS}",
+                id=service_id,
+                **changes,
+            )
+    except IntegrityError:
+        raise HTTPException(409, DUPLICATE) from None
+    await cache.bump([team_id])
+    return ok(updated[0])
+
+
+@router.delete("/{service_id}", response_model=Envelope[Done])
+async def delete_service(
+    service_id: BigId, session: DbSession, member: CurrentMember
+) -> dict[str, Any]:
+    async with session.begin():
+        team_id = await _admin_service(session, service_id, member)
+        await rows(
+            session, "DELETE FROM service WHERE service_id = :id RETURNING 1 AS x", id=service_id
+        )
+    await cache.bump([team_id])
+    return ok({"ok": True})
+
+
+@router.get("/{service_id}/tokens", response_model=Envelope[list[TokenOut]])
+async def list_tokens(
+    service_id: BigId, session: DbSession, member: CurrentMember
+) -> dict[str, Any]:
+    async with session.begin():
+        await _admin_service(session, service_id, member)
+        found = await rows(
+            session,
+            "SELECT token_id, name, created_at, last_used_at, revoked_at FROM service_token "
+            "WHERE service_id = :s ORDER BY token_id",
+            s=service_id,
+        )
+    return ok(found)
+
+
+@router.post("/{service_id}/tokens", response_model=Envelope[TokenCreated], status_code=201)
+async def create_token(
+    service_id: BigId, body: TokenCreate, session: DbSession, member: CurrentMember
+) -> dict[str, Any]:
+    """Mint an ingest token for runtime collectors; the secret is in this response only."""
+    async with session.begin():
+        await _admin_service(session, service_id, member)
+        created = await tokens.create(session, service_id, body.name)
+    return ok(created)
+
+
+@router.delete("/{service_id}/tokens/{token_id}", response_model=Envelope[Done])
+async def revoke_token(
+    service_id: BigId, token_id: BigId, session: DbSession, member: CurrentMember
+) -> dict[str, Any]:
+    async with session.begin():
+        await _admin_service(session, service_id, member)
+        found = await rows(
+            session,
+            "UPDATE service_token SET revoked_at = coalesce(revoked_at, now()) "
+            "WHERE token_id = :t AND service_id = :s RETURNING token_id",
+            t=token_id,
+            s=service_id,
+        )
+    if not found:
+        raise HTTPException(404, "Token not found")
+    return ok({"ok": True})

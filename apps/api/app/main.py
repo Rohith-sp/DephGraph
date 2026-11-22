@@ -29,6 +29,7 @@ from app.routers import (
     runtime,
     services,
     stats,
+    teams,
     vulnerabilities,
 )
 from app.services import pr_gate_engine
@@ -93,5 +94,6 @@ for r in (
     clusters,
     pr_gate,
     runtime,
+    teams,
 ):
     app.include_router(r.router)

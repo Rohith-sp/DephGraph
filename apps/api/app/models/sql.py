@@ -44,12 +44,18 @@ class Team(Base):
 
 class Service(Base):
     __tablename__ = "service"
-    __table_args__ = (UniqueConstraint("team_id", "name"),)
+    __table_args__ = (
+        UniqueConstraint("team_id", "name"),
+        UniqueConstraint("repo_url", "root_path"),
+    )
     service_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     team_id: Mapped[int] = mapped_column(BigInteger, _fk("team.team_id"))
     name: Mapped[str] = mapped_column(String(120))
     repo_url: Mapped[str | None] = mapped_column(String(500))
     language: Mapped[str | None] = mapped_column(String(40))
+    root_path: Mapped[str] = mapped_column(Text, server_default="")
+    github_installation_id: Mapped[int | None] = mapped_column(BigInteger)
+    github_repo_id: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = _now()
 
 

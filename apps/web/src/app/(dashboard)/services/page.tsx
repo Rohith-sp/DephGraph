@@ -1,14 +1,27 @@
 import Link from "next/link";
+import { AddServiceForm } from "@/components/settings/Forms";
 import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
-import { api } from "@/lib/api";
+import { api, getMe } from "@/lib/api";
 import type { Service } from "@/lib/types";
 
 export default async function ServicesPage() {
-  const services = await api<Service[]>("/services");
+  const [services, me] = await Promise.all([api<Service[]>("/services"), getMe()]);
+  const adminTeams = me.teams.filter((t) => t.role === "admin");
   return (
     <>
       <h1>Services</h1>
+      {adminTeams.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Add service</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <AddServiceForm teams={adminTeams} />
+          </CardContent>
+        </Card>
+      )}
       {services.length === 0 ? (
         <p className="text-fg2">No services registered yet.</p>
       ) : (

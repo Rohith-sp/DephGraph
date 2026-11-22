@@ -93,6 +93,28 @@ export function AuthForm({ mode, initialError }: { mode: "login" | "register"; i
           Email me a magic link
         </Button>
       )}
+      <Button
+        type="button"
+        variant="outline"
+        className="w-full"
+        disabled={busy}
+        onClick={async () => {
+          if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+            return setError("Auth is not configured");
+          }
+          setBusy(true);
+          const { error: err } = await createClient().auth.signInWithOAuth({
+            provider: "github",
+            options: { redirectTo: `${window.location.origin}/auth/callback` },
+          });
+          if (err) {
+            setBusy(false);
+            setError(err.message);
+          }
+        }}
+      >
+        Continue with GitHub
+      </Button>
       <p className="text-fg2">
         {mode === "login" ? (
           <Link href="/register" className="hover:text-accent">
