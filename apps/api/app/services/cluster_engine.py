@@ -90,7 +90,9 @@ async def recompute() -> int:
     async with SessionLocal() as session:
         pkgs = await rows(
             session,
-            "SELECT package_id, name, description FROM package ORDER BY package_id",
+            "SELECT package_id, name, description FROM package "
+            # no description = no meaning to embed; such packages would only form noise clusters
+            "WHERE coalesce(btrim(description), '') <> '' ORDER BY package_id",
         )
     docs = [f"{p['name']}: {p['description'] or ''}" for p in pkgs]
     vectors = await asyncio.to_thread(encode, docs) if docs else np.zeros((0, 384))
