@@ -6,6 +6,7 @@ Nothing here is a hand-kept list or count: the expected schema is parsed from ap
 migration is checked the moment it exists. Private tables (API only) are the ones a migration REVOKEs
 from the Supabase roles; they must have RLS but no policy and no SELECT grant for `authenticated`.
 """
+
 import asyncio
 import re
 import sys
@@ -75,12 +76,23 @@ async def check(c: asyncpg.Connection) -> int:
         "WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname <> 'schema_migrations'"  # the runner's ledger
     )
     rls = {r["relname"]: r["relrowsecurity"] for r in have_tables}
-    for r in await c.fetch("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'"):
+    for r in await c.fetch(
+        "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'"
+    ):
         if r["table_name"] in tables:
             tables[r["table_name"]].add(r["column_name"])
-    views = {r[0] for r in await c.fetch("SELECT viewname FROM pg_views WHERE schemaname = 'public'")}
-    indexes = {r[0] for r in await c.fetch("SELECT indexname FROM pg_indexes WHERE schemaname = 'public'")}
-    with_policy = {r[0] for r in await c.fetch("SELECT DISTINCT tablename FROM pg_policies WHERE schemaname = 'public' AND cmd = 'SELECT'")}
+    views = {
+        r[0] for r in await c.fetch("SELECT viewname FROM pg_views WHERE schemaname = 'public'")
+    }
+    indexes = {
+        r[0] for r in await c.fetch("SELECT indexname FROM pg_indexes WHERE schemaname = 'public'")
+    }
+    with_policy = {
+        r[0]
+        for r in await c.fetch(
+            "SELECT DISTINCT tablename FROM pg_policies WHERE schemaname = 'public' AND cmd = 'SELECT'"
+        )
+    }
     readable = {
         r[0]
         for r in await c.fetch(
@@ -90,24 +102,38 @@ async def check(c: asyncpg.Connection) -> int:
     }
     fks = await c.fetch("SELECT conname, convalidated FROM pg_constraint WHERE contype = 'f'")
     try:
-        pending = [p.name for _, p, _ in (await migrate.state(c))[1]]
+        if await c.fetchval("SELECT to_regclass('supabase_migrations.schema_migrations')"):
+            # local `supabase start`/`db reset` records its own history (versions only, no checksum)
+            done = {
+                r[0]
+                for r in await c.fetch("SELECT version FROM supabase_migrations.schema_migrations")
+            }
+            pending = [p.name for v, p, _ in migrate.files() if v not in done]
+        else:
+            pending = [p.name for _, p, _ in (await migrate.state(c))[1]]
     except migrate.MigrationError as e:  # an applied file was edited
         pending = [str(e)]
 
     names = set(want["columns"])
     public = names - want["private"]
     column_drift = {
-        t: sorted(want["columns"][t] ^ tables[t]) for t in names & set(rls) if want["columns"][t] != tables[t]
+        t: sorted(want["columns"][t] ^ tables[t])
+        for t in names & set(rls)
+        if want["columns"][t] != tables[t]
     }
     problems = {  # check -> (what was found wrong); empty = fine
         f"Tables ({len(names)} in migrations)": sorted(names ^ set(rls)),
-        f"Columns of every table ({sum(map(len, want['columns'].values()))})": [f"{t}: {', '.join(d)}" for t, d in sorted(column_drift.items())],
+        f"Columns of every table ({sum(map(len, want['columns'].values()))})": [
+            f"{t}: {', '.join(d)}" for t, d in sorted(column_drift.items())
+        ],
         f"Views ({len(want['views'])})": sorted(want["views"] - views),
         f"Indexes ({len(want['indexes'])})": sorted(want["indexes"] - indexes),
         "Dropped indexes still present": sorted(want["dropped"] & indexes),
         f"RLS enabled ({len(names)})": sorted(t for t in names if not rls.get(t)),
         f"SELECT policies on the {len(public)} non-private tables": sorted(public - with_policy),
-        f"Private tables ({len(want['private'])}) without policy or grant": sorted((want["private"] & with_policy) | readable),
+        f"Private tables ({len(want['private'])}) without policy or grant": sorted(
+            (want["private"] & with_policy) | readable
+        ),
         "Migrations pending or changed": pending,
     }
     fk_bad = [f["conname"] for f in fks if not f["convalidated"]]

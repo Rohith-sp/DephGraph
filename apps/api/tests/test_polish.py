@@ -85,7 +85,11 @@ async def test_limit_keyed_per_verified_user(client, low_limit):
 
 async def test_forged_sub_falls_back_to_ip_bucket(client, low_limit):
     codes = [
-        (await client.get("/services", headers=_token(f"fake-{i}", "wrong-secret"))).status_code
+        (
+            await client.get(
+                "/services", headers=_token(f"fake-{i}", "wrong-secret-also-at-least-32-characters")
+            )
+        ).status_code
         for i in range(4)
     ]
     assert codes == [401, 401, 401, 429]  # rotating forged subs cannot dodge the limit
