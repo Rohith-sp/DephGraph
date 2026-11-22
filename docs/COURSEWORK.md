@@ -326,46 +326,78 @@ from 86400 seconds. The value decodes to keys `service_id`, `vulnerable_packages
 
 ### 6. Sample documents
 
-Only `package_embeddings` holds data in the local stack today (617 documents); the other four
-collections were empty when checked on 22 Nov 2026, because no manifest, runtime batch or PR review
-had been run against this Mongo volume (they need OSV / Groq network access and an authenticated
-call, which was not done for this write-up). Their samples below are therefore **shapes built from
-the writer code, not fetched documents**; all values are illustrative.
+Fetched from the local stack on 22 Nov 2026, after one real `POST /ingest/manifest` (the
+`tests/fixtures/requirements_flask.txt` manifest for service 1, which pulled 43 live advisories from
+OSV.dev), one `POST /runtime/samples` batch and one `POST /ingest/replay/{id}`. Long fields are
+trimmed with `…`. `review_responses` stays empty until stage 3 of the PR gate runs with a Groq key.
 
-Live, `package_embeddings` (`db.package_embeddings.findOne()`, vector truncated; real length 384):
-
-```js
-{
-  _id: ObjectId('6b02a5296b98a12bf00a4a58'),
-  package_id: 1,
-  cluster_id: null,
-  embedding: [ -0.031668417155742645, 0.117001473903656, 0.05509955435991287, … ],
-  umap_2d: [ 2.4331276416778564, 9.228261947631836 ]
-}
-```
-
-Shape only, `raw_manifests` after a successful ingest (from `_store_manifest` and `_mark`):
+`raw_manifests` (`raw_content` omitted; 2 of 8 parsed packages shown). `deploy_seqs: [3, 4]` shows the
+original projection (deployment 3) and the replay (deployment 4) of the same stored document:
 
 ```js
 {
-  _id: ObjectId('…'), service_id: 1, sha256: '9f2c…', ecosystem: 'pypi',
-  filename: 'requirements.txt', raw_content: 'requests==2.19.0\nurllib3==1.24.1\n',
-  uploaded_at: ISODate('…'), received_at: ISODate('…'), updated_at: ISODate('…'),
-  status: 'projected', projected_at: ISODate('…'), deploy_seqs: [ 3 ],
-  parsed_packages: [ { name: 'requests', version: '2.19.0', … }, … ]
+  _id: ObjectId('6b02c1fe6b98a12bf00aa39f'), service_id: 1,
+  sha256: 'b8deabe27372bb0dc0da25fdadf6190c0e01fe1daf349e157ec08089541e65c7',
+  ecosystem: 'pypi', filename: 'requirements.txt',
+  uploaded_at: ISODate('2026-11-22T10:20:45.974Z'), received_at: ISODate('2026-11-22T10:20:45.974Z'),
+  status: 'projected', projected_at: ISODate('2026-11-22T10:21:00.512Z'),
+  deploy_seq: 4, deploy_seqs: [ 3, 4 ],
+  parsed_packages: [ { name: 'flask', version: '2.0.1', is_direct: true },
+                     { name: 'werkzeug', version: '2.0.1', is_direct: true }, … ]
 }
 ```
 
-Shape only, `osv_advisories` (`store_raw`):
-`{ osv_id: 'GHSA-…', raw_osv: { id, summary, aliases, affected: […], severity: […], … }, fetched_at: ISODate('…') }`
+`osv_advisories` (the verbatim OSV JSON is kept under `raw_osv`; a few fields shown):
 
-Shape only, `runtime_samples` (`_store_raw`, then `_mark_raw`):
-`{ service_id: 1, deploy_seq: 3, captured_at, received_at, complete: true, samples: [ { name: 'requests', version: '2.19.0', exec_count: 120 }, … ], status: 'projected', scan_id: 7, projected_at }`
+```js
+{
+  osv_id: 'GHSA-29vq-49wr-vm6x', fetched_at: ISODate('2026-11-22T10:21:00.453Z'),
+  raw_osv: {
+    id: 'GHSA-29vq-49wr-vm6x',
+    summary: 'Werkzeug safe_join() allows Windows special device names',
+    aliases: [ 'CVE-2026-27199', 'PYSEC-2026-2320' ],
+    severity: [ { type: 'CVSS_V4', score: 'CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:N/VA:L/SC:N/SI:N/SA:N' } ],
+    affected: [ { package: { name: 'werkzeug', ecosystem: 'PyPI' },
+                  ranges: [ { type: 'ECOSYSTEM', events: [ { introduced: '0' }, { fixed: '3.1.6' } ] } ] } ],
+    …
+  }
+}
+```
 
-Shape only, `review_responses` (`stage3`):
-`{ service_id: 1, pr_number: 42, dep_name: 'requests', model: '<settings.groq_model>', prompt: '…', response: '{"verdict": "ADVISORY", "reasoning": "…"}', responded_at: ISODate('…') }`
+`runtime_samples` (2 of 4 samples shown). The batch reported 8 `observes` rows written (`complete:
+true` adds `exec_count` 0 rows for resolved packages not in the batch), 2 live packages, and 1 sample
+skipped because its name did not match a resolved package:
 
-### 7. Aggregation pipeline run on live data [implemented]
+```js
+{
+  _id: ObjectId('6b02c20abce8fbe8465937d6'), service_id: 1, deploy_seq: 3,
+  captured_at: ISODate('2026-11-22T10:20:58.015Z'), received_at: ISODate('2026-11-22T10:20:58.015Z'),
+  complete: true,
+  samples: [ { name: 'flask', version: '2.0.1', exec_count: 100 },
+             { name: 'werkzeug', version: '2.0.1', exec_count: 200 }, … ],
+  status: 'projected', scan_id: 8, projected_at: ISODate('2026-11-22T10:20:58.030Z')
+}
+```
+
+`package_embeddings` (vector truncated; real length 384):
+
+```js
+{ package_id: 2, cluster_id: 50, embedding: [ … 384 floats … ], umap_2d: [ 5.9729, 7.3226 ] }
+```
+
+`review_responses` (shape from `stage3`; written only when the Groq stage runs):
+`{ service_id, pr_number, dep_name, model, prompt, response: '{"verdict": …, "reasoning": …}', responded_at }`
+
+### 7. Aggregation pipelines run on live data [implemented]
+
+Raw manifests by status and ecosystem:
+
+```js
+db.raw_manifests.aggregate([
+  { $group: { _id: { status: "$status", ecosystem: "$ecosystem" }, n: { $sum: 1 } } }
+])
+// [ { _id: { status: 'projected', ecosystem: 'pypi' }, n: 1 } ]
+```
 
 Largest semantic clusters by number of packages, from `package_embeddings`:
 
@@ -376,13 +408,13 @@ db.package_embeddings.aggregate([
   { $sort: { packages: -1, _id: 1 } },
   { $limit: 3 }
 ])
-// [ { _id: 36, packages: 167 }, { _id: 26, packages: 25 }, { _id: 47, packages: 17 } ]
+// [ { _id: 55, packages: 17 }, { _id: 57, packages: 16 }, { _id: 54, packages: 13 } ]
 ```
 
-Same collection: 535 documents have a `cluster_id`, 82 have `null` (packages with no cluster), and
-`$avg` of `$size` on `embedding` is 384 across all 617. For `raw_manifests` the equivalent
-pipeline would be `[{ $group: { _id: { status: "$status", ecosystem: "$ecosystem" }, n: { $sum: 1 } } }]`;
-it returns `[]` on the local stack because that collection is empty.
+Cluster 55 is "web / requests / http", 57 "data / serialization / yaml", 54 "database / databases /
+sql". The collection holds 97 documents (only packages with a description are embedded); 88 have a
+`cluster_id` and 9 are HDBSCAN noise (`null`). Collection sizes: `raw_manifests` 1,
+`osv_advisories` 43, `runtime_samples` 1, `review_responses` 0.
 
 ### 8. Replication, consistency and CAP [design]
 
