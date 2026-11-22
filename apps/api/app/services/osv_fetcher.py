@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -188,9 +188,15 @@ async def upsert_advisories(
     return len(advisories)
 
 
-async def store_raw(advisories: dict[str, dict[str, Any]]) -> None:
-    """Best-effort copy of verbatim OSV JSON to Mongo."""
-    now = datetime.now().astimezone()
+async def store_raw(advisories: dict[str, dict[str, Any]], *, required: bool = False) -> bool:
+    """Write verbatim OSV JSON to Mongo `osv_advisories`, one upsert per osv_id (idempotent).
+
+    Mongo is the raw layer: callers store advisories here BEFORE projecting them into Postgres
+    with `upsert_advisories`. With required=False (scan / cron paths) a Mongo outage is logged
+    and False is returned, so the scan still projects; with required=True the PyMongoError is
+    re-raised so the caller can refuse to project data the raw layer does not hold.
+    """
+    now = datetime.now(UTC)
     try:
         for osv_id, raw in advisories.items():
             await osv_advisories().replace_one(
@@ -200,3 +206,7 @@ async def store_raw(advisories: dict[str, dict[str, Any]]) -> None:
             )
     except PyMongoError as e:
         log.warning("osv_raw_store_failed", error=str(e))
+        if required:
+            raise
+        return False
+    return True
