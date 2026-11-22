@@ -4,13 +4,17 @@
 **Version**: 1.0.0  
 **Date**: November 1, 2026  
 **Author**: Rakshak S (RVCE, 4th Sem CSE)  
-**Status**: Ready to Build  
+**Status**: Fully implemented and deployed (23 Nov 2026)  
 **Short name**: DephGraph  
 
-> **Note (23 Nov 2026):** this is the original build plan and is kept as written. The shipped product
-> differs in places: the API runs on Vercel (not Render), the PostgreSQL schema has grown to 31 tables
-> (23 core + 8 operational), and PR-gate stage 3 uses Groq `openai/gpt-oss-120b`. Current state:
-> [`README.md`](README.md), [`docs/DEPLOY.md`](docs/DEPLOY.md), [`docs/NEXT_STEPS.md`](docs/NEXT_STEPS.md).
+> **Note (23 Nov 2026):** this is the original build plan, kept as written. It is **fully implemented**:
+> all build phases 0–7 are done and the application is deployed. Where the shipped product differs from
+> this plan: the API runs on Vercel (not Render); the PostgreSQL schema has 31 tables (23 core + 8
+> operational); lockfile edges are stored per deployment in `deployment_edge`, not in the global
+> `depends_on`; the stage-2 ADVISORY band is CVSS 7.0–8.9 (BLOCK at 9.0 and above) and redundancy-only
+> findings skip stage 3; stage 3 uses Groq `openai/gpt-oss-120b`; MongoDB is reached through PyMongo's
+> async client (`AsyncMongoClient`). The final state is described in [`README.md`](README.md),
+> [`docs/DEPLOY.md`](docs/DEPLOY.md) and [`docs/STATUS.md`](docs/STATUS.md).
 
 ---
 

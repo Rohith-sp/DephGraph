@@ -34,14 +34,14 @@ answers these questions with SQL and a few targeted algorithms.
 
 | Capability | How it works |
 |---|---|
-| **Dependency ingest** | Parses manifests and lockfiles for PyPI, npm, crates.io and Go (see below), including transitive edges from lockfiles. |
+| **Dependency ingest** | Parses manifests and lockfiles for PyPI, npm, crates.io and Go (see below), including transitive edges from lockfiles, which are stored with each deployment (`deployment_edge`), never in the global `depends_on` table. |
 | **Vulnerability data** | Advisories from [OSV.dev](https://osv.dev), package metadata and licences from [deps.dev](https://deps.dev); synced daily. |
 | **Blast radius** | Recursive CTE over the `depends_on` graph: every service that reaches a vulnerable version, with the path. |
 | **Prune** | Runtime collectors report which packages actually load; anything resolved but never executed is flagged. |
 | **Minimum remediation** | Greedy set cover picks the smallest set of upgrades that fixes the most services. Plans and their progress are saved per team. |
 | **Consolidate** | Packages are embedded (sentence-transformers), reduced with UMAP and clustered with HDBSCAN; services that use several packages from one cluster are flagged as redundant. |
 | **Licence and abandonment risk** | Copyleft licences from deps.dev; an abandonment score from maintainer activity (PyPI, npm, crates.io registries) with a publish-date fallback. |
-| **PR gate** | Three stages per added dependency: (1) fast exit for known-clean versions, (2) a SQL rule table over CVSS, copyleft, abandonment and semantic redundancy, (3) an LLM review (Groq, `openai/gpt-oss-120b`) of `ADVISORY` results that may only keep or escalate the verdict, never downgrade it to `PASS`. Results are posted as GitHub Check Runs. |
+| **PR gate** | Three stages per added dependency: (1) fast exit for known-clean versions, (2) a SQL rule table over CVSS (`BLOCK` at 9.0 and above, `ADVISORY` for 7.0–8.9), copyleft, abandonment and semantic redundancy, (3) an LLM review (Groq, `openai/gpt-oss-120b`) of `ADVISORY` results that may only keep or escalate the verdict, never downgrade it to `PASS`; redundancy-only findings skip stage 3. Results are posted as GitHub Check Runs. |
 | **GitHub integration** | A GitHub App imports a service's manifests on push, posts PR Check Runs and opens issues for new vulnerability alerts. |
 
 ### Supported inputs
@@ -148,12 +148,13 @@ Step-by-step setup, the access model, smoke tests and restore instructions are i
 ## Security
 
 - **Invite-only teams.** Only organisation admins create teams; team admins invite members by email.
-- **Tenant isolation.** Every read and write is scoped to the caller's teams, backed by PostgreSQL
-  row-level security.
+- **Tenant isolation.** The API checks team membership itself and scopes every read and write to the
+  caller's teams. PostgreSQL row-level security guards direct database access (Supabase PostgREST).
 - **Authentication.** Supabase JWTs are verified on every request; collectors use per-service tokens.
 - **Webhooks and internal jobs.** GitHub webhooks are verified with HMAC signatures; internal routes need a
   shared cron secret.
-- **Hardening.** Rate limiting, Content-Security-Policy and HSTS headers, and production configuration
+- **Hardening.** Rate limiting per signed-in user (per client IP without a token, default 100 requests
+  per minute), Content-Security-Policy and HSTS headers, and production configuration
   guards: the API refuses to start in production with a default secret or a database URL that points at
   localhost.
 - **Secrets** are never committed; configuration comes from environment variables and gitignored
@@ -202,7 +203,7 @@ DephGraph/
 | [docs/DEPLOY.md](docs/DEPLOY.md) | Production deployment, access model, backups |
 | [docs/DEMO.md](docs/DEMO.md) | Demo runbook |
 | [docs/COURSEWORK.md](docs/COURSEWORK.md) | Course phases 4 to 6: SQL, transactions, NoSQL |
-| [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md) | Current status and open items |
+| [docs/STATUS.md](docs/STATUS.md) | Final status: what was built, tests, deployment |
 | [collectors/README.md](collectors/README.md) | Runtime collector setup |
 
 ## Course project

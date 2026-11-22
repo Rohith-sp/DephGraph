@@ -104,7 +104,7 @@ Optional: `scripts/tx_two_sessions.sh lostupdate` (plain SELECT loses an update,
        --dep pypi:httpx:0.27.0 --dep pypi:werkzeug:2.0.1 --dep npm:lodash:4.17.15
    ```
    Expected: httpx ADVISORY (redundant with requests/flask), werkzeug ADVISORY (CVEs + abandonment
-   55), lodash PASS (stage 1); with the key, ADVISORY rows reach stage 3 with an LLM reason. Say:
+   55), lodash PASS (stage 1); with the key, ADVISORY rows backed by CVEs, copyleft or abandonment reach stage 3 with an LLM reason (redundancy-only findings such as httpx stay at stage 2). Say:
    stage 1 = fast exit, stage 2 = SQL rule table (CVSS, copyleft, abandonment, redundancy), stage 3 =
    LLM may only escalate, never relax.
 

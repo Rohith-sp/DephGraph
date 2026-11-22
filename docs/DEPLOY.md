@@ -19,8 +19,7 @@ Every variable is documented in [`.env.example`](../.env.example).
 | Schedules | GitHub Actions secrets set; `cron.yml`, `cluster.yml` and `backup.yml` use them |
 
 Checked after the deploy: API `/health` answers `200 {"status":"ok"}` in about 0.3 s, `/me` without a token
-answers `401`, and the web `/login` page answers `200`. Still open: turn off open sign-up in Supabase (section 1)
-and rotate the MongoDB user's password, which was exposed during setup (section 2).
+answers `401`, and the web `/login` page answers `200`.
 
 Order: 1 Supabase, 2 Atlas, 3 Upstash, 4 Vercel API project, 5 Vercel web project, 6 GitHub (secrets, App,
 token), 7 smoke test. The API URL is needed for the web project and for GitHub, so deploy the API first.
@@ -40,8 +39,8 @@ edited: schema changes go in a new file with the next unused number. `--status` 
 A database that was set up by hand with 001..N (SQL editor, psql) needs `--baseline N` once, which records those
 files without running them after checking their tables exist. `python scripts/verify_schema.py` checks the result.
 
-Access is per team (`team_member`): the API limits every read and write to the caller's teams and the RLS
-policies in `010` mirror that. Disable open sign-up (Auth > Providers > Email > "Allow new users to sign up")
+Access is per team (`team_member`): the API checks membership itself and limits every read and write to the
+caller's teams. The RLS policies in `010` mirror that rule and guard direct database access (Supabase PostgREST). Disable open sign-up (Auth > Providers > Email > "Allow new users to sign up")
 and add people with `python scripts/add_team_member.py --team-slug <slug> --user-id <uuid>` (or `--email`).
 
 New projects sign tokens with ES256/RS256; the API verifies them against
@@ -118,7 +117,7 @@ Optional: `SENTRY_DSN` (errors are reported only when set; request bodies, cooki
 `X-Hub-Signature-256` and `X-Cron-Secret` headers are stripped) and `SENTRY_TRACES_SAMPLE_RATE` (default `0.1`),
 `RATE_LIMIT` (default `100/minute`), `TRUSTED_PROXY_HOPS` (default `1`). Vercel sets `VERCEL=1` itself.
 
-Rate limiting is per authenticated user (verified JWT `sub`), else per client IP, as a fixed window in Redis
+Rate limiting is per signed-in user (verified JWT `sub`), or per client IP for requests without a token (default 100/minute), as a fixed window in Redis
 shared by all instances (in-memory fallback when Redis errors). Vercel overwrites `X-Forwarded-For` with the
 client's IP and does not forward client-supplied values, so the default `TRUSTED_PROXY_HOPS=1` is right;
 raise it only if you add another proxy. `/health` and `/pr-gate/webhook` are exempt.
@@ -149,7 +148,7 @@ processing_ms, deps}`, which the route only logs; GitHub sees the result as a Ch
 Deliveries are durable once they reach the API: it stores each `pull_request`, `push` and installation delivery (`pr_gate_delivery`, keyed by
 `X-GitHub-Delivery`) before reviewing it. A redelivery of the same id is a no-op (`{"duplicate": true}`), and a review
 that fails or whose function dies is retried with backoff (2, 4, 8, 16 minutes, 5 attempts) by `retry.yml`, which calls
-`POST /internal/pr-gate/retry`. Rows older than 30 days are purged. The one remaining gap is a delivery that never
+`POST /internal/pr-gate/retry`. Rows older than 30 days are purged. The one case the queue cannot cover is a delivery that never
 reaches the API: the web route retries the forward twice (2 s, 8 s) and then logs/reports the failure; use "Redeliver" in
 the GitHub App's Advanced tab to replay it.
 
