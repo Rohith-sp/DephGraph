@@ -78,7 +78,7 @@ async def webhook(
         )
         deps = await github.pr_added_deps(client, repo["full_name"], number, token)
         async with session.begin():
-            results = await pr_gate_engine.evaluate_all(session, deps)
+            results = await pr_gate_engine.evaluate_all(session, deps, service_id)
         verdict, stage = await pr_gate_engine.refine(results, service_id, number)
         async with session.begin():
             await lock_service(session, service_id)

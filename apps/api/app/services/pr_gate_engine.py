@@ -4,6 +4,12 @@ Decisions: a vuln with NULL cvss_score is ADVISORY (unknown severity, never sile
 overall PR verdict = worst dependency verdict; Stage 1 only fast-exits when the version has no
 `affects` row AND is neither copyleft nor abandoned >= 40 (§8: 40-79 is ADVISORY, >= 80 BLOCK). NULL abandonment (no version row;
 the view COALESCEs a missing publish date to 50) counts as 0.
+
+Semantic redundancy (third signal): the added package shares a `semantic_cluster` with a DIFFERENT
+package of the same ecosystem that the service's latest deployment already resolves -> ADVISORY. It is checked before the
+Stage 1 fast exit, so a clean-but-redundant dependency still reaches Stage 2. The cluster comes
+from the added version's row; if that version is not in the DB (or is unclustered), the clusters
+of the package's other versions are used. Unknown package or no cluster -> no signal.
 """
 
 import asyncio
@@ -28,6 +34,7 @@ log = structlog.get_logger()
 
 RANK = {"PASS": 0, "ADVISORY": 1, "BLOCK": 2}
 MAX_PROMPT_CHARS = 1200  # ~300 tokens at chars/4
+MAX_REDUNDANCY_CHARS = 200  # redundancy facts' share of the prompt; vulns get the rest
 LLM_ATTEMPTS = 4
 GROQ_TIMEOUT = 8  # seconds per request
 GROQ_CONCURRENCY = 3
@@ -45,13 +52,37 @@ class DepVerdict:
     facts: dict[str, Any] = field(default_factory=dict)
 
 
+REDUNDANT_NAMES_SHOWN = 3  # per cluster in the reasoning; the rest become "+N more"
+
+
+def redundancy_reasons(redundancy: list[dict[str, Any]]) -> list[str]:
+    """[{package, cluster_label}, ...] -> one "same job as ..." reason per cluster (pure)."""
+    by_cluster: dict[str, list[str]] = {}
+    for r in redundancy:
+        names = by_cluster.setdefault(str(r["cluster_label"]), [])
+        if str(r["package"]) not in names:
+            names.append(str(r["package"]))
+    out = []
+    for label, names in by_cluster.items():
+        shown = ", ".join(names[:REDUNDANT_NAMES_SHOWN])
+        more = len(names) - REDUNDANT_NAMES_SHOWN
+        extra = f" +{more} more" if more > 0 else ""
+        out.append(f"same job as {shown}{extra} (cluster '{label}')")
+    return out
+
+
 def stage2(
     cvss: list[Decimal | None],
     fixed: list[bool],
     copyleft: bool,
     abandonment: int | None,
+    redundancy: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
-    """Pure rule table. cvss/fixed are parallel per-vuln lists."""
+    """Pure rule table. cvss/fixed are parallel per-vuln lists.
+
+    redundancy = packages of the same semantic cluster already in the service's latest deployment
+    ({package, cluster_label} dicts); any entry makes the dependency at least ADVISORY.
+    """
     block, advisory = [], []
     if copyleft:
         block.append("copyleft license")
@@ -68,6 +99,7 @@ def stage2(
             advisory.append(f"CVSS {score} in 6.0-8.9")
         if not has_fix:
             advisory.append("vulnerability with no fixed version")
+    advisory.extend(redundancy_reasons(redundancy or []))
     if block:
         return "BLOCK", "; ".join(dict.fromkeys(block))
     if advisory:
@@ -94,7 +126,52 @@ async def _signals(session: AsyncSession, eco: str, name: str, ver: str) -> dict
     return found[0] if found else {"copyleft": False, "abandonment": None}
 
 
-async def evaluate(session: AsyncSession, eco: str, name: str, ver: str) -> DepVerdict:
+async def _redundancy(
+    session: AsyncSession, service_id: int | None, eco: str, name: str, ver: str
+) -> list[dict[str, Any]]:
+    """Other packages in the service's LATEST deployment that share a cluster with eco/name.
+
+    Same ecosystem only: an npm and a pypi package in one cluster do not do the same job inside
+    one runtime (clusters are built from descriptions and can mix ecosystems).
+    """
+    if service_id is None:
+        return []
+    return await rows(
+        session,
+        """
+        WITH dep_clusters AS (
+          SELECT DISTINCT pv.cluster_id
+          FROM package p
+          JOIN package_version pv ON pv.package_id = p.package_id
+          WHERE p.ecosystem = :eco AND p.name = :name AND pv.cluster_id IS NOT NULL
+            AND (pv.version_string = :ver OR NOT EXISTS (
+                  SELECT 1 FROM package_version x
+                  WHERE x.package_id = p.package_id AND x.version_string = :ver
+                    AND x.cluster_id IS NOT NULL))
+        ),
+        latest AS (SELECT MAX(deploy_seq) AS deploy_seq FROM deployment WHERE service_id = :sid)
+        SELECT DISTINCT p2.name AS package, sc.cluster_id, sc.label AS cluster_label
+        FROM resolves_to rt
+        JOIN latest ld ON rt.deploy_seq = ld.deploy_seq
+        JOIN package_version pv2 ON (pv2.package_id, pv2.version_string)
+                                  = (rt.package_id, rt.version_string)
+        JOIN dep_clusters dc ON dc.cluster_id = pv2.cluster_id
+        JOIN semantic_cluster sc ON sc.cluster_id = pv2.cluster_id
+        JOIN package p2 ON p2.package_id = rt.package_id
+        WHERE rt.service_id = :sid AND p2.ecosystem = :eco AND p2.name <> :name
+        ORDER BY sc.cluster_id, p2.name
+        """,
+        sid=service_id,
+        eco=eco,
+        name=name,
+        ver=ver,
+    )
+
+
+async def evaluate(
+    session: AsyncSession, eco: str, name: str, ver: str, service_id: int | None = None
+) -> DepVerdict:
+    """Stages 1-2 for one dependency; service_id enables the redundancy signal."""
     dep = DepVerdict(name, ver)
     has_affects = await rows(
         session,
@@ -105,7 +182,13 @@ async def evaluate(session: AsyncSession, eco: str, name: str, ver: str) -> DepV
         ver=ver,
     )
     sig = await _signals(session, eco, name, ver)
-    if not has_affects and not sig["copyleft"] and (sig["abandonment"] or 0) < 40:
+    redundancy = await _redundancy(session, service_id, eco, name, ver)
+    if (
+        not has_affects
+        and not sig["copyleft"]
+        and (sig["abandonment"] or 0) < 40
+        and not redundancy
+    ):
         dep.reasoning = "no known vulnerabilities (stage 1)"
         return dep
     vulns = await rows(
@@ -123,9 +206,10 @@ async def evaluate(session: AsyncSession, eco: str, name: str, ver: str) -> DepV
         [v["fixed_in"] is not None for v in vulns],
         sig["copyleft"],
         sig["abandonment"],
+        redundancy,
     )
     dep.stage_reached = 2
-    dep.facts = {**sig, "vulns": vulns}
+    dep.facts = {**sig, "vulns": vulns, "redundancy": redundancy}
     return dep
 
 
@@ -141,10 +225,14 @@ def build_prompt(dep: DepVerdict) -> str:
         f"{v['osv_id']} cvss={v['cvss_score']} fixed_in={v['fixed_in']}"
         for v in dep.facts.get("vulns", [])
     )
-    room = MAX_PROMPT_CHARS - len(head) - len(tail)
+    redundant = "; ".join(redundancy_reasons(dep.facts.get("redundancy") or []))
+    if len(redundant) > MAX_REDUNDANCY_CHARS:
+        redundant = redundant[: MAX_REDUNDANCY_CHARS - 1] + "…"
+    mid = f". Redundant with packages already deployed: {redundant or 'none'}"
+    room = MAX_PROMPT_CHARS - len(head) - len(mid) - len(tail)
     if len(vulns) > room:
         vulns = vulns[: room - 1] + "…"
-    return head + (vulns or "none") + tail
+    return head + (vulns or "none") + mid + tail
 
 
 _groq: AsyncGroq | None = None
@@ -182,8 +270,12 @@ async def _ask_groq(prompt: str) -> str:
     raise AssertionError("unreachable")
 
 
-async def stage3(dep: DepVerdict, service_id: int, pr_number: int) -> None:
-    """Refine an ADVISORY with Groq; any failure keeps the Stage 2 verdict (stage_reached=2)."""
+async def stage3(
+    dep: DepVerdict, service_id: int, pr_number: int, store_response: bool = True
+) -> None:
+    """Refine an ADVISORY with Groq; any failure keeps the Stage 2 verdict (stage_reached=2).
+
+    store_response=False skips the Mongo `review_responses` log (offline dry runs)."""
     if not settings.groq_api_key:
         return
     prompt = build_prompt(dep)
@@ -199,6 +291,8 @@ async def stage3(dep: DepVerdict, service_id: int, pr_number: int) -> None:
     dep.verdict, dep.stage_reached = verdict, 3
     dep.reasoning = str(out.get("reasoning", ""))[:1000] or dep.reasoning
     dep.context_tokens = len(prompt) // 4
+    if not store_response:
+        return
     try:
         await get_mongo()["review_responses"].insert_one(
             {
@@ -215,18 +309,24 @@ async def stage3(dep: DepVerdict, service_id: int, pr_number: int) -> None:
         log.warning("review_response_not_stored", error=str(e))
 
 
-async def evaluate_all(session: AsyncSession, deps: list[tuple[str, str, str]]) -> list[DepVerdict]:
+async def evaluate_all(
+    session: AsyncSession,
+    deps: list[tuple[str, str, str]],
+    service_id: int | None = None,
+) -> list[DepVerdict]:
     """Stages 1-2 (DB reads only). deps = (ecosystem, name, version)."""
-    return [await evaluate(session, *d) for d in deps]
+    return [await evaluate(session, *d, service_id=service_id) for d in deps]
 
 
-async def refine(out: list[DepVerdict], service_id: int, pr_number: int) -> tuple[str, int]:
+async def refine(
+    out: list[DepVerdict], service_id: int, pr_number: int, store_responses: bool = True
+) -> tuple[str, int]:
     """Stage 3 for ADVISORY deps, concurrently, no DB transaction open. Returns (overall, stage)."""
     sem = asyncio.Semaphore(GROQ_CONCURRENCY)
 
     async def one(d: DepVerdict) -> None:
         async with sem:
-            await stage3(d, service_id, pr_number)
+            await stage3(d, service_id, pr_number, store_responses)
 
     todo = [one(d) for d in out if d.verdict == "ADVISORY"]
     try:
