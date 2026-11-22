@@ -70,6 +70,8 @@ class Maintainer(Base):
     username: Mapped[str] = mapped_column(String(120))
     platform: Mapped[str] = mapped_column(String(40), server_default="github")
     profile_url: Mapped[str | None] = mapped_column(String(500))
+    # migration 007; filled by services/maintainers.py, NULL = unknown
+    last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class SemanticCluster(Base):
