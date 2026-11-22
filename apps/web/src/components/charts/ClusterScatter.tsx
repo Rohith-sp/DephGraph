@@ -51,7 +51,9 @@ export function ClusterScatter({ clusters }: { clusters: Cluster[] }) {
         </div>
       ) : (
         <p className="rounded-xl border border-dashed border-line-strong p-5 text-fg2">
-          No 2D projection yet. Coordinates appear after the next cluster recompute.
+          {clusters.some((c) => !c.embeddings_available)
+            ? "Cluster coordinates are unavailable: the embedding store could not be reached."
+            : "No 2D projection has been computed for these clusters yet."}
         </p>
       )}
       <ul aria-label="Cluster legend" className="grid gap-x-6 gap-y-3 sm:grid-cols-2">

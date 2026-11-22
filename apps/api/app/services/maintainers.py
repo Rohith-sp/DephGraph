@@ -3,6 +3,10 @@
 Feeds v_abandonment (migration 007): single-maintainer exposure + days since last activity.
 
 Per ecosystem:
+Every registry call also yields the package description (npm `description`, PyPI `info.summary`,
+crates.io `crate.description`), stored in package.description: the semantic clustering and the
+redundancy signal are built from it. Go has no description source and is skipped.
+
 - npm:      GET registry.npmjs.org/<name>          -> `maintainers[].name`, `time.modified`
 - pypi:     GET pypi.org/pypi/<name>/json          -> `info.maintainer` or else `info.author`
             (free-text names, comma separated; PyPI's JSON API does not list account owners),
@@ -22,6 +26,7 @@ caller's transaction.
 """
 
 import asyncio
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -29,11 +34,11 @@ from urllib.parse import quote
 
 import httpx
 import structlog
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.sql import MaintainedBy, Maintainer
+from app.models.sql import MaintainedBy, Maintainer, Package
 from app.services.http import request
 from app.services.queries import chunks
 
@@ -45,6 +50,7 @@ CRATES_URL = "https://crates.io/api/v1/crates"
 USER_AGENT = "dephgraph-course-project (maintainer abandonment scoring)"
 CONCURRENCY = 8
 SUPPORTED = ("npm", "pypi", "cargo")
+DESCRIPTION_MAX = 1000
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,7 @@ class PackageMaintainers:
     platform: str  # maintainer.platform ('npm' | 'pypi' | 'crates.io')
     people: tuple[Person, ...]
     last_active_at: datetime | None
+    description: str | None = None
 
 
 def _ts(value: Any) -> datetime | None:
@@ -68,6 +75,10 @@ def _ts(value: Any) -> datetime | None:
         return datetime.fromisoformat(value)  # 3.11+: accepts "Z"
     except ValueError:
         return None
+
+
+def _desc(value: Any) -> str | None:
+    return (value.strip()[:DESCRIPTION_MAX] or None) if isinstance(value, str) else None
 
 
 def _dedupe(people: list[Person]) -> tuple[Person, ...]:
@@ -85,7 +96,12 @@ def parse_npm(doc: dict[str, Any]) -> PackageMaintainers:
         for m in doc.get("maintainers") or []
         if isinstance(m, dict) and isinstance(m.get("name"), str)
     ]
-    return PackageMaintainers("npm", _dedupe(people), _ts((doc.get("time") or {}).get("modified")))
+    return PackageMaintainers(
+        "npm",
+        _dedupe(people),
+        _ts((doc.get("time") or {}).get("modified")),
+        _desc(doc.get("description")),
+    )
 
 
 def parse_pypi(doc: dict[str, Any]) -> PackageMaintainers:
@@ -105,7 +121,7 @@ def parse_pypi(doc: dict[str, Any]) -> PackageMaintainers:
     last = newest(doc.get("urls") or [])
     if last is None:
         last = newest([f for files in (doc.get("releases") or {}).values() for f in files or []])
-    return PackageMaintainers("pypi", _dedupe(people), last)
+    return PackageMaintainers("pypi", _dedupe(people), last, _desc(info.get("summary")))
 
 
 def parse_crates(owners: dict[str, Any], crate: dict[str, Any]) -> PackageMaintainers:
@@ -114,8 +130,9 @@ def parse_crates(owners: dict[str, Any], crate: dict[str, Any]) -> PackageMainta
         for u in owners.get("users") or []
         if isinstance(u, dict) and isinstance(u.get("login"), str)
     ]
+    meta = crate.get("crate") or {}
     return PackageMaintainers(
-        "crates.io", _dedupe(people), _ts((crate.get("crate") or {}).get("updated_at"))
+        "crates.io", _dedupe(people), _ts(meta.get("updated_at")), _desc(meta.get("description"))
     )
 
 
@@ -167,12 +184,34 @@ async def fetch_all(
     return {pid: m for pid, m in results if m is not None}
 
 
-async def upsert(session: AsyncSession, found: dict[int, PackageMaintainers]) -> int:
-    """Upsert maintainer (+ last_active_at) and maintained_by; caller owns the transaction.
+async def upsert(
+    session: AsyncSession,
+    found: dict[int, PackageMaintainers],
+    attempted: Collection[int] = (),
+) -> int:
+    """Upsert descriptions, maintainer (+ last_active_at) and maintained_by; caller owns the
+    transaction. `attempted` package ids get registry_synced_at = now() (found or not).
 
     For every package with at least one maintainer from the registry, maintained_by is replaced by
     exactly that set (registry is the source of truth). Returns the number of maintainers upserted.
     """
+    for chunk in chunks(sorted({*attempted, *found})):
+        await session.execute(
+            update(Package)
+            .where(Package.package_id.in_(chunk))
+            .values(registry_synced_at=func.now())
+        )
+    described = [
+        {"p": pid, "d": m.description} for pid, m in sorted(found.items()) if m.description
+    ]
+    if described:
+        await session.execute(
+            text(
+                "UPDATE package SET description = :d WHERE package_id = :p "
+                "AND description IS DISTINCT FROM :d"
+            ),
+            described,
+        )
     found = {pid: m for pid, m in found.items() if m.people}
     if not found:
         return 0

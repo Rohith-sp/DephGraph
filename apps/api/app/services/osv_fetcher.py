@@ -217,6 +217,14 @@ async def upsert_advisories(
             "ku": [k[2] for k in keep],
         },
     )
+    await session.execute(
+        text(
+            "UPDATE package_version pv SET osv_checked_at = now() FROM unnest("
+            "CAST(:rp AS BIGINT[]), CAST(:rv AS TEXT[])) AS q(p, v) "
+            "WHERE (pv.package_id, pv.version_string) = (q.p, q.v)"
+        ),
+        {"rp": [r.package_id for r in refs], "rv": [r.version for r in refs]},
+    )
     return len(advisories)
 
 

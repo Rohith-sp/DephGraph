@@ -21,7 +21,7 @@ from app.schemas.teams import (
     TokenOut,
 )
 from app.services import cache, github, github_import, tokens
-from app.services.blast_radius import EDGES_SQL, NODES_SQL
+from app.services.blast_radius import EDGES_SQL, NODES_SQL, closure_truncated
 from app.services.cache import cached_json
 from app.services.queries import (
     LATEST,
@@ -85,7 +85,9 @@ async def service_graph(
         seq = await latest_seq(session, service_id)
         params = {"s": service_id, "q": seq}
         nodes = edges = "[]"
+        truncated = False
         if seq is not None:
+            truncated = await closure_truncated(session, service_id, seq)
             nodes = await json_rows(
                 session,
                 f"SELECT package_id || '@' || version AS id, n.* FROM ({NODES_SQL}) n",
@@ -100,7 +102,10 @@ async def service_graph(
                 **params,
             )
         service = {"service_id": svc["service_id"], "name": svc["name"]}
-        return f'{{"service":{json.dumps(service)},"nodes":{nodes},"edges":{edges}}}'
+        return (
+            f'{{"service":{json.dumps(service)},"nodes":{nodes},"edges":{edges},'
+            f'"truncated":{json.dumps(truncated)}}}'
+        )
 
     return await cached_json(request, build, member)
 

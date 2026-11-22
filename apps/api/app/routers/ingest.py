@@ -24,9 +24,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentMember, get_current_user
+from app.config import settings
 from app.database import DbSession
 from app.models.mongo import raw_manifests
-from app.models.sql import DeploymentEdge, Package, PackageVersion
+from app.models.sql import DeploymentEdge
 from app.schemas.common import BigId, Envelope, ok
 from app.schemas.ingest import IngestRequest, IngestResult, ScanResult
 from app.services import cache, osv_fetcher
@@ -37,41 +38,12 @@ from app.services.manifest_parser import (
     is_lockfile,
     parse_manifest,
 )
+from app.services.packages import upsert_packages as _upsert_packages
 from app.services.queries import chunks, latest_seq, lock_service, require_service, rows
 
 log = structlog.get_logger()
 T = TypeVar("T")
 router = APIRouter(prefix="/ingest", dependencies=[Depends(get_current_user)], tags=["ingest"])
-
-
-async def _upsert_packages(
-    session: AsyncSession, ecosystem: str, parsed: list[ParsedPackage]
-) -> tuple[list[PkgRef], int]:
-    """Ensure package + package_version rows exist; returns (refs, new version rows)."""
-    # sorted inserts: consistent row-lock order across concurrent ingests avoids deadlocks
-    names = sorted({p.name for p in parsed})
-    ids: dict[str, int] = {}
-    for chunk in chunks([{"ecosystem": ecosystem, "name": n} for n in names]):
-        stmt = insert(Package).values(chunk)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["ecosystem", "name"], set_={"name": stmt.excluded.name}
-        ).returning(Package.name, Package.package_id)
-        ids.update((await session.execute(stmt)).all())
-    refs = [PkgRef(ids[p.name], ecosystem, p.name, p.version) for p in parsed]
-    versions = [
-        {"package_id": pid, "version_string": v}
-        for pid, v in sorted({(r.package_id, r.version) for r in refs})
-    ]
-    inserted = 0
-    for chunk in chunks(versions):
-        ins = (
-            insert(PackageVersion)
-            .values(chunk)
-            .on_conflict_do_nothing()
-            .returning(PackageVersion.package_id)
-        )
-        inserted += len((await session.execute(ins)).all())
-    return refs, inserted
 
 
 async def _record_edges(
@@ -202,10 +174,31 @@ async def _record_deployment(
                   FROM depends_on d
                   JOIN c ON (d.dep_package_id, d.dep_version_string)
                           = (c.package_id, c.version_string)
-                  WHERE c.depth < 10)
+                  WHERE c.depth < :cap)
                 SELECT :s, :q, package_id, version_string, MIN(depth), FALSE FROM c
                 GROUP BY package_id, version_string
                 ON CONFLICT DO NOTHING
+                """),
+            {
+                "s": service_id,
+                "q": seq,
+                "ecos": manifest_ecosystems,
+                "cap": settings.max_transitive_depth,
+            },
+        )
+        # something still hangs below the deepest node we kept: the closure is partial
+        await session.execute(
+            text("""
+                UPDATE deployment SET closure_truncated = EXISTS (
+                  SELECT 1 FROM resolves_to rt
+                  JOIN package p ON p.package_id = rt.package_id
+                  JOIN depends_on d ON (d.dep_package_id, d.dep_version_string)
+                                     = (rt.package_id, rt.version_string)
+                  WHERE rt.service_id = :s AND rt.deploy_seq = :q AND p.ecosystem = ANY(:ecos)
+                    AND NOT EXISTS (SELECT 1 FROM resolves_to r2
+                      WHERE (r2.service_id, r2.deploy_seq, r2.package_id, r2.version_string)
+                          = (:s, :q, d.ref_package_id, d.ref_version_string)))
+                WHERE service_id = :s AND deploy_seq = :q
                 """),
             {"s": service_id, "q": seq, "ecos": manifest_ecosystems},
         )

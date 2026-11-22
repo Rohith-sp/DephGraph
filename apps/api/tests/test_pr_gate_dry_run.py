@@ -47,14 +47,9 @@ async def test_dry_run_read_only_then_save(reseed):
         report = await dr.dry_run(s, 1, deps, pr_number=4242)
     assert report["service_id"] == 1 and report["saved"] is False and report["groq"] is False
     assert [d["name"] for d in report["deps"]] == ["unknownpkg", "lodash"]
-    assert report["deps"][0] == {
-        "ecosystem": "pypi",
-        "name": "unknownpkg",
-        "version": "1.0.0",
-        "verdict": "PASS",
-        "stage_reached": 1,
-        "reasoning": "no known vulnerabilities (stage 1)",
-    }
+    first = report["deps"][0]  # not in the DB and live lookup off: unverified, never PASS
+    assert (first["verdict"], first["stage_reached"]) == ("ADVISORY", 2)
+    assert first["reasoning"].startswith("could not verify unknownpkg: ")
     assert report["verdict"] in ("PASS", "ADVISORY", "BLOCK")
     assert await _count(4242) == 0  # nothing written
 
@@ -106,6 +101,6 @@ async def test_main_json_and_errors(monkeypatch, capsys):
     monkeypatch.setattr(database, "close_all", noop)  # keep the shared test engine open
     assert await dr.main(["--service", "1", "--dep", "pypi:unknownpkg:1.0.0", "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["verdict"] == "PASS" and out["deps"][0]["stage_reached"] == 1
+    assert out["verdict"] == "ADVISORY" and out["deps"][0]["stage_reached"] == 2
     assert await dr.main(["--service", "999999", "--dep", "pypi:x:1"]) == 2
     assert "not found" in capsys.readouterr().err

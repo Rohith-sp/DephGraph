@@ -2,8 +2,14 @@
 
 Decisions: a vuln with NULL cvss_score is ADVISORY (unknown severity, never silently PASS);
 overall PR verdict = worst dependency verdict; Stage 1 only fast-exits when the version has no
-`affects` row AND is neither copyleft nor abandoned >= 40 (§8: 40-79 is ADVISORY, >= 80 BLOCK). NULL abandonment (no version row;
-the view COALESCEs a missing publish date to 50) counts as 0.
+`affects` row AND is neither copyleft nor abandoned >= the advisory threshold (settings.gate_*;
+defaults 40-79 ADVISORY, >= 80 BLOCK) AND everything is verified.
+
+Unknown is never safe: a version that is not in the DB, whose OSV data is older than
+settings.gate_osv_max_age_hours, whose license is unknown, or whose abandonment cannot be computed
+(no publish date and no maintainer activity) is asked live (OSV + deps.dev, `refresh_stale`) and
+stored. What stays unverified after that (lookup failed, or the registries have no data) makes the
+dependency at least ADVISORY with a "could not verify" reason.
 
 Semantic redundancy (third signal): the added package shares a `semantic_cluster` with a DIFFERENT
 package of the same ecosystem that the service's latest deployment already resolves -> ADVISORY. It is checked before the
@@ -16,12 +22,14 @@ bump of a package its latest deployment already resolves adds no redundancy.
 import asyncio
 import json
 import random
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from hashlib import sha256
 from typing import Any
 
+import httpx
 import structlog
 from groq import APIError, AsyncGroq, RateLimitError
 from pymongo.errors import PyMongoError
@@ -30,8 +38,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database import get_mongo, get_redis
-from app.services import http
+from app.database import SessionLocal, get_mongo, get_redis
+from app.services import http, osv_fetcher
+from app.services.deps_dev_client import apply_metadata, fetch_metadata
+from app.services.manifest_parser import ParsedPackage, PkgRef
+from app.services.packages import upsert_packages
 from app.services.queries import rows
 
 log = structlog.get_logger()
@@ -44,6 +55,8 @@ GROQ_TIMEOUT = 8  # seconds per request
 GROQ_CONCURRENCY = 3
 STAGE3_BUDGET = 15  # seconds for all Stage 3 calls together (runs in a background task)
 PROMPT_CACHE_TTL = 604800  # PRD: Redis `prompts`, 7 days
+LIVE_BUDGET = 20  # seconds for the live OSV + deps.dev lookups of one PR (verdict < 30 s)
+Dep = tuple[str, str, str]  # (ecosystem, name, version)
 
 
 @dataclass
@@ -82,41 +95,57 @@ def stage2(
     copyleft: bool,
     abandonment: int | None,
     redundancy: list[dict[str, Any]] | None = None,
+    unverified: list[str] | None = None,
 ) -> tuple[str, str]:
-    """Pure rule table. cvss/fixed are parallel per-vuln lists.
+    """Pure rule table. cvss/fixed are parallel per-vuln lists; thresholds from settings.gate_*.
 
     redundancy = packages of the same semantic cluster already in the service's latest deployment
     ({package, cluster_label} dicts); any entry makes the dependency at least ADVISORY.
+    unverified = facts we could not establish ("could not verify ..."); same effect, never PASS.
     """
     block, advisory = [], []
+    hi_ab, lo_ab = settings.gate_block_abandonment, settings.gate_advisory_abandonment
     if copyleft:
         block.append("copyleft license")
-    if abandonment is not None and abandonment >= 80:
-        block.append(f"abandonment score {abandonment} >= 80")
-    elif abandonment is not None and abandonment >= 40:
-        advisory.append(f"abandonment score {abandonment} in 40-79")
+    if abandonment is not None and abandonment >= hi_ab:
+        block.append(f"abandonment score {abandonment} >= {hi_ab}")
+    elif abandonment is not None and abandonment >= lo_ab:
+        advisory.append(f"abandonment score {abandonment} in {lo_ab}-{hi_ab - 1}")
     for score, has_fix in zip(cvss, fixed):
         if score is None:
             advisory.append("vulnerability with unknown CVSS")
-        elif score >= 9:
-            block.append(f"CVSS {score} >= 9.0")
-        elif score >= 6:
-            advisory.append(f"CVSS {score} in 6.0-8.9")
+        elif score >= settings.gate_block_cvss:
+            block.append(f"CVSS {score} >= {settings.gate_block_cvss:g}")
+        elif score >= settings.gate_advisory_cvss:
+            advisory.append(
+                f"CVSS {score} in {settings.gate_advisory_cvss:g}-{settings.gate_block_cvss:g}"
+            )
         if not has_fix:
             advisory.append("vulnerability with no fixed version")
     advisory.extend(redundancy_reasons(redundancy or []))
+    advisory.extend(unverified or [])
     if block:
         return "BLOCK", "; ".join(dict.fromkeys(block))
     if advisory:
         return "ADVISORY", "; ".join(dict.fromkeys(advisory))
-    return "PASS", ("no vulnerabilities" if not cvss else "all CVSS < 6.0 with a fix available")
+    return "PASS", (
+        "no vulnerabilities"
+        if not cvss
+        else f"all CVSS < {settings.gate_advisory_cvss:g} with a fix available"
+    )
 
 
 async def _signals(session: AsyncSession, eco: str, name: str, ver: str) -> dict[str, Any]:
+    """copyleft / abandonment plus what is unknown about them (None = unknown, not safe)."""
     found = await rows(
         session,
         """
-        SELECT COALESCE(l.is_copyleft, FALSE) AS copyleft, ab.abandonment_score AS abandonment
+        SELECT COALESCE(l.is_copyleft, FALSE) AS copyleft, ab.abandonment_score AS abandonment,
+               pv.license_id IS NULL AS license_unknown,
+               (pv.published_at IS NULL AND NOT EXISTS (
+                  SELECT 1 FROM maintained_by mb JOIN maintainer m USING (maintainer_id)
+                  WHERE mb.package_id = p.package_id AND m.last_active_at IS NOT NULL
+               )) AS abandonment_unknown
         FROM package p
         JOIN package_version pv ON pv.package_id = p.package_id AND pv.version_string = :ver
         LEFT JOIN license l ON l.license_id = pv.license_id
@@ -128,7 +157,103 @@ async def _signals(session: AsyncSession, eco: str, name: str, ver: str) -> dict
         name=name,
         ver=ver,
     )
-    return found[0] if found else {"copyleft": False, "abandonment": None}
+    if not found:
+        return {
+            "copyleft": False,
+            "abandonment": None,
+            "known": False,
+            "license_unknown": True,
+            "abandonment_unknown": True,
+        }
+    sig = {**found[0], "known": True}
+    if sig["abandonment_unknown"]:  # the view's fallback of 50 is a placeholder, not a score
+        sig["abandonment"] = None
+    return sig
+
+
+def _unverified(dep: DepVerdict, sig: dict[str, Any], why: str | None) -> list[str]:
+    """What could not be established, as "could not verify <pkg>: ..." reasons."""
+    reasons = []
+    if why:
+        reasons.append(why)
+    if not sig["known"]:
+        reasons.append("package version is not in the database")
+    else:
+        if sig["license_unknown"]:
+            reasons.append("license unknown")
+        if sig["abandonment_unknown"]:
+            reasons.append("abandonment unknown (no publish date or maintainer activity)")
+    return [f"could not verify {dep.name}: {'; '.join(reasons)}"] if reasons else []
+
+
+def _stale_sql() -> str:
+    return (
+        "SELECT q.eco, q.name, q.ver FROM unnest(CAST(:e AS TEXT[]), CAST(:n AS TEXT[]), "
+        "CAST(:v AS TEXT[])) AS q(eco, name, ver) "
+        "LEFT JOIN package p ON (p.ecosystem, p.name) = (q.eco, q.name) "
+        "LEFT JOIN package_version pv ON pv.package_id = p.package_id AND pv.version_string = q.ver "
+        "WHERE pv.osv_checked_at IS NULL "
+        "OR pv.osv_checked_at < now() - make_interval(hours => :h) "
+        "OR pv.license_id IS NULL OR pv.published_at IS NULL"
+    )
+
+
+async def refresh_stale(deps: list[Dep]) -> dict[Dep, str]:
+    """Ask OSV + deps.dev live about dependencies the DB cannot vouch for, and store the answers.
+
+    Stale = version unknown, OSV not queried within settings.gate_osv_max_age_hours, or license /
+    publish date missing. Returns {dep: why} for those that remain unverified (lookup disabled or
+    failed); never raises for network errors. deps.dev being down only leaves the license and
+    publish date unknown, which `evaluate` reports.
+    """
+    uniq = sorted(set(deps))
+    if not uniq:
+        return {}
+    async with SessionLocal() as session, session.begin():
+        stale = [
+            (r["eco"], r["name"], r["ver"])
+            for r in await rows(
+                session,
+                _stale_sql(),
+                e=[d[0] for d in uniq],
+                n=[d[1] for d in uniq],
+                v=[d[2] for d in uniq],
+                h=settings.gate_osv_max_age_hours,
+            )
+        ]
+    if not stale:
+        return {}
+    if not settings.gate_live_lookup:
+        return {d: "live lookup is disabled and the stored data is missing or old" for d in stale}
+    refs = [PkgRef(0, *d) for d in stale]
+    try:
+        async with asyncio.timeout(LIVE_BUDGET):
+            hits, advisories = await osv_fetcher.fetch_advisories(refs)
+            meta = await fetch_metadata(refs)
+    except (httpx.HTTPError, ValueError, KeyError, TimeoutError) as e:
+        log.warning("gate_live_lookup_failed", error=str(e) or type(e).__name__)
+        return {d: f"OSV lookup failed ({type(e).__name__})" for d in stale}
+    await osv_fetcher.store_raw(advisories)  # best effort, like the cron paths
+    by_eco = defaultdict(list)
+    for eco, name, ver in stale:
+        by_eco[eco].append(ParsedPackage(name, ver))
+    async with SessionLocal() as session, session.begin():
+        real = [
+            r
+            for eco, parsed in sorted(by_eco.items())
+            for r in (await upsert_packages(session, eco, parsed))[0]
+        ]
+        key = {(r.ecosystem, r.name, r.version): r for r in real}
+        await apply_metadata(
+            session, {key[(k.ecosystem, k.name, k.version)]: m for k, m in meta.items()}
+        )
+        await osv_fetcher.upsert_advisories(
+            session,
+            real,
+            {key[(k.ecosystem, k.name, k.version)]: v for k, v in hits.items()},
+            advisories,
+        )
+    return {}
 
 
 async def _redundancy(
@@ -180,9 +305,15 @@ async def _redundancy(
 
 
 async def evaluate(
-    session: AsyncSession, eco: str, name: str, ver: str, service_id: int | None = None
+    session: AsyncSession,
+    eco: str,
+    name: str,
+    ver: str,
+    service_id: int | None = None,
+    unverified: str | None = None,
 ) -> DepVerdict:
-    """Stages 1-2 for one dependency; service_id enables the redundancy signal."""
+    """Stages 1-2 for one dependency; service_id enables the redundancy signal; `unverified` is
+    the reason `refresh_stale` could not bring its vulnerability data up to date."""
     dep = DepVerdict(name, ver)
     has_affects = await rows(
         session,
@@ -194,11 +325,13 @@ async def evaluate(
     )
     sig = await _signals(session, eco, name, ver)
     redundancy = await _redundancy(session, service_id, eco, name, ver)
+    unknowns = _unverified(dep, sig, unverified)
     if (
         not has_affects
         and not sig["copyleft"]
-        and (sig["abandonment"] or 0) < 40
+        and (sig["abandonment"] or 0) < settings.gate_advisory_abandonment
         and not redundancy
+        and not unknowns
     ):
         dep.reasoning = "no known vulnerabilities (stage 1)"
         return dep
@@ -218,9 +351,10 @@ async def evaluate(
         sig["copyleft"],
         sig["abandonment"],
         redundancy,
+        unknowns,
     )
     dep.stage_reached = 2
-    dep.facts = {**sig, "vulns": vulns, "redundancy": redundancy}
+    dep.facts = {**sig, "vulns": vulns, "redundancy": redundancy, "unverified": unknowns}
     return dep
 
 
@@ -288,7 +422,8 @@ def _redundancy_only(dep: DepVerdict) -> bool:
         f.get("redundancy")
         and not f.get("vulns")
         and not f.get("copyleft")
-        and (f.get("abandonment") or 0) < 40
+        and (f.get("abandonment") or 0) < settings.gate_advisory_abandonment
+        and not f.get("unverified")
     )
 
 
@@ -300,15 +435,22 @@ async def _cached_reply(key: str) -> str | None:
         return None
 
 
+def _skipped(dep: DepVerdict, why: str) -> None:
+    dep.reasoning = f"{dep.reasoning} | LLM review skipped ({why})"
+
+
 async def stage3(
     dep: DepVerdict, service_id: int, pr_number: int, store_response: bool = True
 ) -> None:
     """Refine an ADVISORY with Groq; any failure keeps the Stage 2 verdict (stage_reached=2).
 
     Replies are cached by prompt hash for 7 days (redelivery/synchronize of unchanged deps).
-    store_response=False skips the Mongo `review_responses` log (offline dry runs)."""
-    if not settings.groq_api_key or _redundancy_only(dep):
-        return
+    store_response=False skips the Mongo `review_responses` log (offline dry runs).
+    Whenever the review does not happen the reasoning says why ("LLM review skipped (...)")."""
+    if not settings.groq_api_key:
+        return _skipped(dep, "no GROQ_API_KEY configured")
+    if _redundancy_only(dep):
+        return _skipped(dep, "redundancy-only finding, advisory by nature")
     prompt = build_prompt(dep)
     key = f"dephgraph:prompts:{sha256(prompt.encode()).hexdigest()}"
     raw = await _cached_reply(key)
@@ -322,7 +464,7 @@ async def stage3(
             raise ValueError(f"bad verdict {verdict!r}")
     except (APIError, ValueError, KeyError, TypeError) as e:
         log.warning("stage3_failed", dep=dep.name, error=str(e))
-        return
+        return _skipped(dep, f"{type(e).__name__}; rule-based verdict kept")
     llm = str(out.get("reasoning", "")).strip()
     dep.verdict, dep.stage_reached = verdict, 3
     dep.reasoning = f"{dep.reasoning[:300]} | LLM: {llm[:600]}" if llm else dep.reasoning
@@ -352,10 +494,17 @@ async def stage3(
 
 
 async def evaluate_all(
-    session: AsyncSession, deps: list[tuple[str, str, str]], service_id: int | None = None
+    session: AsyncSession,
+    deps: list[Dep],
+    service_id: int | None = None,
+    unverified: dict[Dep, str] | None = None,
 ) -> list[DepVerdict]:
-    """Stages 1-2 (DB reads only). deps = (ecosystem, name, version)."""
-    return [await evaluate(session, *d, service_id=service_id) for d in deps]
+    """Stages 1-2 (DB reads only). deps = (ecosystem, name, version); `unverified` is what
+    `refresh_stale` returned (call it first, outside any transaction)."""
+    return [
+        await evaluate(session, *d, service_id=service_id, unverified=(unverified or {}).get(d))
+        for d in deps
+    ]
 
 
 async def refine(
@@ -373,6 +522,9 @@ async def refine(
         await asyncio.wait_for(asyncio.gather(*todo), STAGE3_BUDGET)
     except TimeoutError:  # unfinished deps keep their Stage 2 verdict
         log.warning("stage3_budget_exceeded", budget=STAGE3_BUDGET)
+        for d in out:
+            if d.verdict == "ADVISORY" and d.stage_reached < 3 and "LLM review" not in d.reasoning:
+                _skipped(d, f"time budget of {STAGE3_BUDGET}s exceeded")
     return overall(out)
 
 

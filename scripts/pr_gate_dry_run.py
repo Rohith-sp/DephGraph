@@ -6,6 +6,8 @@
 
 Uses the real database from the environment (DATABASE_URL, MONGO_URI, ... as apps/api settings,
 or apps/api/.env.local). Stages 1-2 always run; Stage 3 (Groq) runs only when GROQ_API_KEY is set.
+Dependencies the database cannot vouch for are asked live (OSV, deps.dev) and cached, like the
+gate does (GATE_LIVE_LOOKUP=false turns that off: they are then reported as unverified).
 Read-only by default: pr_review / pr_risk_verdict rows (and the Mongo review_responses log) are
 written only with --save.
 """
@@ -47,13 +49,14 @@ async def dry_run(
     save: bool = False,
 ) -> dict[str, Any]:
     """Stages 1-2 (one read transaction), Stage 3 if a Groq key is set, optional save."""
+    unverified = await pr_gate_engine.refresh_stale(deps)  # live OSV/deps.dev for unknown deps
     async with session.begin():
         svc = await rows(
             session, "SELECT service_id, name FROM service WHERE service_id = :id", id=service_id
         )
         if not svc:
             raise LookupError(f"service {service_id} not found")
-        results = await pr_gate_engine.evaluate_all(session, deps, service_id)
+        results = await pr_gate_engine.evaluate_all(session, deps, service_id, unverified)
     verdict, stage = await pr_gate_engine.refine(
         results, service_id, pr_number, store_responses=save
     )

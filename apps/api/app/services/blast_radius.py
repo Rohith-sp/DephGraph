@@ -23,15 +23,14 @@ NODES_SQL = """
         WHERE rt.service_id = :s AND rt.deploy_seq = :q
         ORDER BY rt.depth, p.name
         """
-# depends_on edges count for the ecosystems the deployment took from manifests; an unlocked
-# deployment written outside ingest (seeds, manual rows) records none and is all manifest-sourced.
+# depends_on edges count only for the ecosystems the deployment took from manifests
+# (deployment.manifest_ecosystems; every writer of a deployment must set it).
 EDGES_SQL = """
         SELECT d.dep_package_id, d.dep_version_string, d.ref_package_id, d.ref_version_string
         FROM depends_on d
         JOIN deployment dp ON dp.service_id = :s AND dp.deploy_seq = :q
         JOIN package dpk ON dpk.package_id = d.dep_package_id
-                        AND (dpk.ecosystem = ANY(dp.manifest_ecosystems)
-                             OR (NOT dp.locked AND dp.manifest_ecosystems = '{}'))
+                        AND dpk.ecosystem = ANY(dp.manifest_ecosystems)
         JOIN resolves_to a ON (a.package_id, a.version_string)
                             = (d.dep_package_id, d.dep_version_string)
                           AND a.service_id = :s AND a.deploy_seq = :q
@@ -50,6 +49,17 @@ async def load_closure(session: AsyncSession, service_id: int, seq: int) -> tupl
     nodes = await rows(session, NODES_SQL, s=service_id, q=seq)
     edges = await rows(session, EDGES_SQL, s=service_id, q=seq)
     return nodes, edges
+
+
+async def closure_truncated(session: AsyncSession, service_id: int, seq: int) -> bool:
+    """True when the deployment's transitive closure stopped at the depth cap (partial graph)."""
+    found = await rows(
+        session,
+        "SELECT closure_truncated FROM deployment WHERE service_id = :s AND deploy_seq = :q",
+        s=service_id,
+        q=seq,
+    )
+    return bool(found and found[0]["closure_truncated"])
 
 
 def shortest_paths(nodes: Rows, edges: Rows) -> dict[tuple[int, str], list[str]]:
@@ -82,11 +92,13 @@ async def compute(session: AsyncSession, service_id: int) -> dict[str, Any]:
         "vulnerable_packages": [],
         "total_vulns": 0,
         "critical_count": 0,
+        "truncated": False,
         "cached": False,
     }
     if seq is None:
         return out
     nodes, edges = await load_closure(session, service_id, seq)
+    out["truncated"] = await closure_truncated(session, service_id, seq)
     paths = shortest_paths(nodes, edges)
     hits = await rows(
         session,

@@ -273,9 +273,12 @@ async def main(dsn: str = DSN) -> None:
         # deployments (service 1 has two), scans, and the materialized closure (BFS, min depth)
         deployments = [(s, 1) for s in range(1, 6)] + [(1, 2)]
         await c.executemany(
-            "INSERT INTO deployment (service_id, deploy_seq, environment, deployed_at) "
-            "VALUES ($1, $2, $3, $4)",
-            [(s, q, "production" if q == 1 else "staging", ts(30 - q)) for s, q in deployments],
+            "INSERT INTO deployment (service_id, deploy_seq, environment, deployed_at, "
+            "manifest_ecosystems) VALUES ($1, $2, $3, $4, $5)",
+            [
+                (s, q, "production" if q == 1 else "staging", ts(30 - q), [SERVICES[s - 1][3]])
+                for s, q in deployments
+            ],
         )
         await c.executemany(
             "INSERT INTO scan_run (service_id, started_at, completed_at, source) VALUES ($1, $2, $3, $4)",

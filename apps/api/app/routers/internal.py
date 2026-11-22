@@ -110,7 +110,8 @@ class MaintainerSyncOut(BaseModel):
 
 @router.post("/maintainers-sync", response_model=Envelope[MaintainerSyncOut])
 async def maintainers_sync(session: DbSession) -> dict[str, object]:
-    """Cron: refresh maintainers + last activity (npm, PyPI, crates.io) for every package.
+    """Cron: refresh descriptions, maintainers + last activity (npm, PyPI, crates.io) for the
+    registry_sync_batch least recently synced packages (the rest follow on later runs).
 
     Feeds v_abandonment (migration 007). Go/maven/nuget are skipped (no keyless registry data).
     Registry calls run outside the transaction, bounded by maintainers.CONCURRENCY.
@@ -118,14 +119,15 @@ async def maintainers_sync(session: DbSession) -> dict[str, object]:
     async with session.begin():
         found = await rows(
             session,
-            "SELECT package_id, ecosystem, name FROM package "
-            "WHERE ecosystem = ANY(:ecos) ORDER BY package_id",
+            "SELECT package_id, ecosystem, name FROM package WHERE ecosystem = ANY(:ecos) "
+            "ORDER BY registry_synced_at NULLS FIRST, package_id LIMIT :n",
             ecos=list(maintainers.SUPPORTED),
+            n=settings.registry_sync_batch,
         )
     pkgs = [(r["package_id"], r["ecosystem"], r["name"]) for r in found]
     fetched = await maintainers.fetch_all(pkgs) if pkgs else {}
     async with session.begin():
-        upserted = await maintainers.upsert(session, fetched)
+        upserted = await maintainers.upsert(session, fetched, [p[0] for p in pkgs])
     await cache.bump(catalog=True)
     return ok(
         {

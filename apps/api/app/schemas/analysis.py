@@ -49,6 +49,7 @@ class GraphOut(BaseModel):
     service: GraphService
     nodes: list[GraphNode]
     edges: list[GraphEdge]
+    truncated: bool = False  # transitive closure stopped at the depth cap
 
 
 class PrunableOut(BaseModel):
@@ -81,6 +82,7 @@ class BlastRadiusOut(BaseModel):
     vulnerable_packages: list[VulnerablePackage]
     total_vulns: int
     critical_count: int
+    truncated: bool = False  # transitive closure stopped at the depth cap: some paths are missing
     cached: bool = False
 
 
@@ -185,6 +187,7 @@ class ClusterOut(BaseModel):
     keywords: list[str]
     member_count: int
     members: list[ClusterMember]
+    embeddings_available: bool = True  # False: the embedding store could not be read
 
 
 class RedundancyOut(BaseModel):

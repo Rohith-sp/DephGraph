@@ -100,7 +100,7 @@ export default async function SettingsPage() {
           <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-[8rem_1fr]">
             <dt className="text-fg2">API URL</dt>
             <dd className="break-all font-mono text-xs">
-              {process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}
+              {process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "Not configured"}
             </dd>
             <dt className="text-fg2">Auth</dt>
             <dd>{authDisabled() ? "Disabled (dev mode, shared dev token)" : "Supabase"}</dd>

@@ -81,7 +81,8 @@ async def mkpkg(name, cvss=None, fixed="1.1.0", vuln=True, copyleft=False, age=0
         await s.execute(
             text(
                 "INSERT INTO package_version (package_id, version_string, license_id, published_at, "
-                "is_yanked) VALUES (:p, '1.0.0', :l, now() - make_interval(secs => :age), :y)"
+                "is_yanked, osv_checked_at) "
+                "VALUES (:p, '1.0.0', :l, now() - make_interval(secs => :age), :y, now())"
             ),
             {"p": pid, "l": 3 if copyleft else 1, "age": age, "y": yanked},
         )
@@ -155,7 +156,8 @@ def groq_reply(verdict: str, reasoning: str) -> dict:
     [
         ([], [], False, 0, "PASS"),
         ([D("5.9")], [True], False, 39, "PASS"),
-        ([D("6.0")], [True], False, 0, "ADVISORY"),
+        ([D("6.9")], [True], False, 0, "PASS"),  # MEDIUM
+        ([D("7.0")], [True], False, 0, "ADVISORY"),  # HIGH
         ([D("8.9")], [True], False, 0, "ADVISORY"),
         ([D("9.0")], [True], False, 0, "BLOCK"),
         ([], [], False, 40, "ADVISORY"),
@@ -219,14 +221,15 @@ async def test_spec_phase6_block_and_persist(client, auth, reseed):
 async def test_stage1_pass_and_worst_verdict(client, auth, reseed):
     await mkpkg("lowrisk", cvss=3.0)
     await mkpkg("copyleftpkg", vuln=False, copyleft=True)
-    files("lowrisk", "unknownpkg")
+    await mkpkg("cleanpkg", vuln=False)
+    files("lowrisk", "cleanpkg")
     d = await review(client, auth)
     assert d["verdict"] == "PASS"
     by = {x["name"]: x for x in d["deps"]}
-    assert by["unknownpkg"]["stage_reached"] == 1 and by["lowrisk"]["stage_reached"] == 2
+    assert by["cleanpkg"]["stage_reached"] == 1 and by["lowrisk"]["stage_reached"] == 2
 
     respx.clear()
-    files("unknownpkg", "copyleftpkg")
+    files("cleanpkg", "copyleftpkg")
     d = await review(client, auth, payload("synchronize"))
     assert d["verdict"] == "BLOCK"  # copyleft reachable without any vuln
 
@@ -241,7 +244,7 @@ async def test_stage3_groq_refines_advisory(client, auth, monkeypatch, reseed):
     d = await review(client, auth)
     assert d["verdict"] == "BLOCK" and d["stage_reached"] == 3
     assert d["deps"][0]["reasoning"].endswith("| LLM: Exploitable in auth path.")
-    assert d["deps"][0]["reasoning"].startswith("CVSS 7.00 in 6.0-8.9")  # rule reason kept
+    assert d["deps"][0]["reasoning"].startswith("CVSS 7.00 in 7-9")  # rule reason kept
     prompt = json.loads(route.calls[0].request.content)["messages"][0]["content"]
     assert len(prompt) <= 1200
     stored = await get_mongo()["review_responses"].find_one({"dep_name": "midrisk"})
@@ -360,7 +363,7 @@ async def _verdicts(client, auth):
 
 @respx.mock
 async def test_same_name_deps_keep_worst_and_redelivery_replaces(client, auth, reseed):
-    await mkpkg("dupe", cvss=9.8)  # 1.0.0 BLOCK; 2.0.0 is unknown -> PASS
+    await mkpkg("dupe", cvss=9.8)  # 1.0.0 BLOCK; 2.0.0 is not in the DB -> unverified ADVISORY
 
     def hunk(ver):
         return "@@ -1 +1,2 @@\n flask==2.0.0\n+dupe==" + ver + "\n"
@@ -380,7 +383,7 @@ async def test_same_name_deps_keep_worst_and_redelivery_replaces(client, auth, r
     patch = "@@ -1 +1,2 @@\n flask==2.0.0\n+dupe==2.0.0\n"
     respx.get(FILES).respond(200, json=[{"filename": "requirements.txt", "patch": patch}])
     await review(client, auth, payload("synchronize"))
-    assert await _verdicts(client, auth) == {"dupe": "PASS"}
+    assert await _verdicts(client, auth) == {"dupe": "ADVISORY"}
 
 
 def test_prompt_keeps_instruction_with_many_vulns():
@@ -466,7 +469,7 @@ async def mkcluster_pkgs(layout: dict[str, list[str]], deployed: list[str], olde
                 await s.execute(
                     text(
                         "INSERT INTO package_version (package_id, version_string, license_id, "
-                        "cluster_id, published_at) VALUES (:p, '1.0.0', 1, :c, now())"
+                        "cluster_id, published_at, osv_checked_at) VALUES (:p, '1.0.0', 1, :c, now(), now())"
                     ),
                     {"p": pid, "c": cid},
                 )
@@ -546,7 +549,7 @@ async def test_redundancy_no_signal_cases(reseed):
         await s.execute(
             text(
                 "INSERT INTO package_version (package_id, version_string, license_id, "
-                "published_at) SELECT package_id, '1.0.0', 1, now() FROM package "
+                "published_at, osv_checked_at) SELECT package_id, '1.0.0', 1, now(), now() FROM package "
                 "WHERE ecosystem = 'pypi' AND name = 'nocl'"
             )
         )
@@ -556,15 +559,17 @@ async def test_redundancy_no_signal_cases(reseed):
         await s.execute(
             text(
                 "INSERT INTO package_version (package_id, version_string, license_id, "
-                "cluster_id, published_at) SELECT p.package_id, '1.0.0', 1, "
+                "cluster_id, published_at, osv_checked_at) SELECT p.package_id, '1.0.0', 1, "
                 "(SELECT cluster_id FROM semantic_cluster WHERE label = 'web / http / client' "
-                "ORDER BY cluster_id DESC LIMIT 1), now() FROM package p "
+                "ORDER BY cluster_id DESC LIMIT 1), now(), now() FROM package p "
                 "WHERE ecosystem = 'npm' AND name = 'njs'"
             )
         )
         cross = await pr_gate_engine.evaluate(s, "npm", "njs", "1.0.0", service_id=1)
-    for d in (other, same, unknown, unclustered, cross):
+    for d in (other, same, unclustered, cross):
         assert (d.verdict, d.stage_reached) == ("PASS", 1), d
+    # no cluster signal for it, but a package we know nothing about is unverified, not safe
+    assert (unknown.verdict, unknown.facts["redundancy"]) == ("ADVISORY", [])
 
 
 @respx.mock
@@ -724,7 +729,10 @@ async def test_synchronize_redelivery_replaces_verdicts_and_notes(client, auth, 
         200, json=[{"filename": "requirements.txt", "patch": req_patch("unknownthing==1.0.0")}]
     )
     second = await review(client, auth, payload("synchronize"))
-    assert second["verdict"] == "PASS" and [x["name"] for x in second["deps"]] == ["unknownthing"]
+    # not in the DB and live lookup is off: unverified, never PASS
+    assert second["verdict"] == "ADVISORY" and [x["name"] for x in second["deps"]] == [
+        "unknownthing"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -949,7 +957,8 @@ async def test_version_bump_of_deployed_package_is_not_redundant(reseed):  # B3
         bump = await pr_gate_engine.evaluate(s, "pypi", "bhttp", "1.0.0", service_id=1)
         bump2 = await pr_gate_engine.evaluate(s, "pypi", "bhttp", "2.0.0", service_id=1)
         new = await pr_gate_engine.evaluate(s, "pypi", "bnew", "1.0.0", service_id=1)
-    assert (bump.verdict, bump2.verdict) == ("PASS", "PASS")
+    assert bump.verdict == "PASS"
+    assert bump2.facts["redundancy"] == []  # an unknown version is unverified, not redundant
     assert new.verdict == "ADVISORY" and {r["package"] for r in new.facts["redundancy"]} == {
         "breq",
         "bhttp",

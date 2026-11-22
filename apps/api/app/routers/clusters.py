@@ -31,6 +31,7 @@ async def list_clusters(request: Request, session: DbSession) -> Response:
             )
         )
         coords: dict[tuple[int, int], list[float]] = {}
+        available = True
         try:  # one query for every cluster's embeddings
             async for d in get_mongo()["package_embeddings"].find(
                 {"cluster_id": {"$in": [c["cluster_id"] for c in clusters]}},
@@ -39,7 +40,9 @@ async def list_clusters(request: Request, session: DbSession) -> Response:
                 coords[(d["cluster_id"], d["package_id"])] = d["umap_2d"]
         except PyMongoError as e:
             log.warning("embeddings_unavailable", error=str(e))
+            available = False
         for c in clusters:
+            c["embeddings_available"] = available
             for m in c["members"]:
                 m["x"], m["y"] = coords.get((c["cluster_id"], m["package_id"]), (None, None))
         return json.dumps(clusters)
