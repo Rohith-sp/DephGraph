@@ -47,7 +47,7 @@
 - asyncpg uses $1 $2 placeholders, NOT %s (that's psycopg2)
 - Supabase RLS blocks ALL by default — add policies for new tables
 - ReactFlow needs <ReactFlowProvider> wrapping — can't use hooks outside it
-- Render free tier has NO persistent disk — don't write files in production
+- Vercel functions have NO persistent disk — don't write files in production
 - Groq free: 30 req/min — add exponential backoff with jitter
 - SBERT model (80MB) downloads on first run — download at startup, not per-request
 

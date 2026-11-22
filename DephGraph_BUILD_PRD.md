@@ -7,6 +7,11 @@
 **Status**: Ready to Build  
 **Short name**: DephGraph  
 
+> **Note (23 Nov 2026):** this is the original build plan and is kept as written. The shipped product
+> differs in places: the API runs on Vercel (not Render), the PostgreSQL schema has grown to 31 tables
+> (23 core + 8 operational), and PR-gate stage 3 uses Groq `openai/gpt-oss-120b`. Current state:
+> [`README.md`](README.md), [`docs/DEPLOY.md`](docs/DEPLOY.md), [`docs/NEXT_STEPS.md`](docs/NEXT_STEPS.md).
+
 ---
 
 ## 0. The One-Liner

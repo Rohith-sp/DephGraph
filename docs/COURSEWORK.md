@@ -198,7 +198,8 @@ when the transactions finish.
 Legend: **[implemented]** = in the code and checked on the running stack on 22 Nov 2026.
 **[design]** = a Unit V concept explained for DephGraph; not built or deployed here.
 
-DephGraph is polyglot. PostgreSQL is the system of record (23 tables, constraints, joins). MongoDB
+DephGraph is polyglot. PostgreSQL is the system of record (31 tables: the 23 core tables of the course design plus 8
+operational ones; constraints, joins). MongoDB
 is the raw layer (documents as received, plus derived vectors). Redis is cache and lock. The
 database name is `dephgraph` (`mongo_db_name` in `apps/api/app/config.py`).
 
@@ -426,11 +427,13 @@ sql". The collection holds 97 documents (only packages with a description are em
 
 ### 8. Replication, consistency and CAP [design]
 
-The Compose stack runs one standalone MongoDB and one Redis, so nothing here is deployed.
+The local Compose stack runs one standalone MongoDB and one Redis, so none of this is visible there. The
+production deployment (23 Nov 2026, see `docs/DEPLOY.md`) uses MongoDB Atlas M0 and Upstash Redis, where
+replication is managed by the provider; the application code does not configure it.
 
 - **Primary/secondary:** a MongoDB replica set has one primary taking writes; secondaries copy its
-  oplog. If the primary fails, an election picks a new one. Atlas M0 (the planned target in
-  `docs/DEPLOY.md`) is a managed replica set.
+  oplog. If the primary fails, an election picks a new one. Atlas M0 (used by the production
+  deployment, `docs/DEPLOY.md`) is a managed replica set.
 - **Consistency trade-off:** reading from a secondary can return data a little behind the primary
   (eventual consistency). DephGraph's raw-first write (step 2 above) should use write concern
   `majority` and read from the primary, because step 3 reads back what step 2 wrote. Reads of

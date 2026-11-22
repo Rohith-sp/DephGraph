@@ -1,183 +1,232 @@
-# DephGraph
+# DephGraph: Tracing Transitive Dependency Vulnerabilities
 
-**Software supply-chain risk intelligence.**
+Software supply-chain risk intelligence. DephGraph stores every service's full dependency graph and tells
+you which packages are vulnerable, which never run, which are redundant or copyleft, which are at risk of
+abandonment, and which few upgrades fix the most services.
 
-> Every tool tells you which packages have vulnerabilities. DephGraph tells you which ones you can delete, which ones are redundant, and which single upgrade fixes the most services, across the whole organisation.
+[![CI](https://github.com/Rohith-sp/DephGraph/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Rohith-sp/DephGraph/actions/workflows/ci.yml)
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
+![Next.js 15](https://img.shields.io/badge/Next.js-15-black)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-system%20of%20record-336791)
 
-DephGraph ingests dependency manifests (`requirements.txt`, `package.json`, `Cargo.toml`, `go.mod`) from many services, stores the complete dependency graph in a relational database, and pulls real vulnerability data from [OSV.dev](https://osv.dev) and [deps.dev](https://deps.dev). On top of that graph it answers the questions a security team actually has to act on.
-
-![DephGraph ER diagram](er-diagram/images/er_diagram_full.png)
-
----
-
-## What it answers
-
-| Question | How |
+| | |
 |---|---|
-| **Blast radius**: which services reach this vulnerable package, and through which path? | Recursive CTE over the `depends_on` graph |
-| **Prune**: which dependencies ship to production but never execute? | Anti-join between resolved packages and runtime observations |
-| **Minimum remediation**: which upgrades clear the most CVEs across the most services? | Greedy set cover |
-| **Consolidate**: which services pull in several packages that do the same job? | Semantic clustering of packages (SBERT, UMAP, HDBSCAN) |
-| **PR gate**: is the dependency this pull request adds safe? | 3-stage filter: manifest check, SQL verdict, LLM advisory |
+| Dashboard | https://dephgraph-loki.vercel.app |
+| API | https://dephgraph-loki-api.vercel.app (`GET /health` returns `200 {"status":"ok"}`) |
+| Access | Invite-only. Sign in with GitHub or email; an admin adds you to a team. |
 
 ---
 
-## Database design
+## Why DephGraph
 
-The core of the project is a 23-table relational schema designed from a Chen ER model.
+Most scanners stop at "this package has a CVE". A security team needs to know more before it can act:
 
-- 14 entities, 5 of them weak (`deployment`, `package_version`, `remediation_action`, `pr_review`, `pr_risk_verdict`)
-- A recursive M:N relationship, `DEPENDS_ON`, on `package_version`
-- A ternary relationship, `OBSERVES` (deployment × package version × scan window), for runtime liveness evidence
-- Multivalued attributes (`package_alias`, `maintainer_email`) and derived attributes computed as views
+- Which services reach the vulnerable package, and through which transitive path?
+- Which dependencies ship to production but never load, so they can simply be removed?
+- Which services pull in several packages that do the same job?
+- Which upgrades should go first so the fewest changes clear the most exposure?
+- Is the dependency a pull request is about to add safe to merge?
 
-The full ER diagrams, the relational mapping and the SQL schema are in [`er-diagram/`](er-diagram/).
+DephGraph keeps the whole graph, across every service of an organisation, in a relational database and
+answers these questions with SQL and a few targeted algorithms.
 
----
+## Features
 
-## Planned tech stack
+| Capability | How it works |
+|---|---|
+| **Dependency ingest** | Parses manifests and lockfiles for PyPI, npm, crates.io and Go (see below), including transitive edges from lockfiles. |
+| **Vulnerability data** | Advisories from [OSV.dev](https://osv.dev), package metadata and licences from [deps.dev](https://deps.dev); synced daily. |
+| **Blast radius** | Recursive CTE over the `depends_on` graph: every service that reaches a vulnerable version, with the path. |
+| **Prune** | Runtime collectors report which packages actually load; anything resolved but never executed is flagged. |
+| **Minimum remediation** | Greedy set cover picks the smallest set of upgrades that fixes the most services. Plans and their progress are saved per team. |
+| **Consolidate** | Packages are embedded (sentence-transformers), reduced with UMAP and clustered with HDBSCAN; services that use several packages from one cluster are flagged as redundant. |
+| **Licence and abandonment risk** | Copyleft licences from deps.dev; an abandonment score from maintainer activity (PyPI, npm, crates.io registries) with a publish-date fallback. |
+| **PR gate** | Three stages per added dependency: (1) fast exit for known-clean versions, (2) a SQL rule table over CVSS, copyleft, abandonment and semantic redundancy, (3) an LLM review (Groq, `openai/gpt-oss-120b`) of `ADVISORY` results that may only keep or escalate the verdict, never downgrade it to `PASS`. Results are posted as GitHub Check Runs. |
+| **GitHub integration** | A GitHub App imports a service's manifests on push, posts PR Check Runs and opens issues for new vulnerability alerts. |
+
+### Supported inputs
+
+| Ecosystem | Manifests | Lockfiles |
+|---|---|---|
+| PyPI | `requirements.txt`, `pyproject.toml` | `uv.lock`, `poetry.lock` |
+| npm | `package.json` | `package-lock.json` (v2/v3), `pnpm-lock.yaml`, `yarn.lock` |
+| crates.io | `Cargo.toml` | `Cargo.lock` |
+| Go | `go.mod` | |
+
+Runtime collectors for Python and Node live in [`collectors/`](collectors/README.md). Each is a single
+dependency-free file that reports loaded packages to `POST /runtime/samples` with a service token.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    GH[GitHub App<br/>push, pull_request] -->|HMAC-signed webhook| WEB
+    U[Browser] --> WEB[Next.js 15 dashboard<br/>Vercel]
+    WEB -->|JWT| API[FastAPI API<br/>Vercel]
+    COL[Runtime collectors<br/>Python, Node] -->|service token| API
+    API --> PG[(PostgreSQL<br/>Supabase, system of record)]
+    API --> MG[(MongoDB Atlas<br/>raw documents)]
+    API --> RD[(Upstash Redis<br/>cache, locks, rate limits)]
+    API --> EXT[OSV.dev, deps.dev, Groq]
+    GA[GitHub Actions<br/>sync, clustering, backup] --> API
+    GA --> PG
+```
+
+- **PostgreSQL** is the system of record: 31 tables (the 23 core tables from the ER design plus 8
+  operational ones), views for derived values and row-level security. Schema changes are numbered
+  migrations `001`–`017` in [`apps/api/migrations/`](apps/api/migrations), applied by `scripts/migrate.py`.
+- **MongoDB** holds the raw layer: `raw_manifests`, `osv_advisories`, `package_embeddings`,
+  `runtime_samples` and `review_responses`. Data flows one way, from MongoDB into PostgreSQL, and a stored
+  manifest can be re-projected with `POST /ingest/replay/{id}`.
+- **Redis** caches read endpoints (invalidated by a generation counter on every write), LLM replies and
+  team memberships, and holds rate-limit counters and job locks.
+
+## Tech stack
 
 | Layer | Technology |
 |---|---|
-| Frontend | Next.js 15, TypeScript, Tailwind CSS, shadcn/ui, ReactFlow, Recharts |
-| Backend | FastAPI, SQLAlchemy 2 (async), Pydantic v2 |
-| Primary database | PostgreSQL (Supabase); MySQL 8 schema for the DBMS coursework |
-| Document store and cache | MongoDB Atlas, Upstash Redis |
-| Clustering | sentence-transformers, UMAP, HDBSCAN (a batch job: `apps/api/app/jobs/cluster.py`) |
-| PR gate LLM | Groq (LLaMA 3.1 70B) |
-| Hosting | Vercel Hobby (frontend and API, Mumbai), GitHub Actions (clustering and scheduled syncs); see [docs/DEPLOY.md](docs/DEPLOY.md) |
+| Frontend | Next.js 15, React 19, TypeScript, Tailwind CSS, shadcn/ui, React Flow, Recharts |
+| Backend | FastAPI, SQLAlchemy 2 (async), Pydantic v2, structlog |
+| Data | PostgreSQL (Supabase), MongoDB Atlas M0, Upstash Redis |
+| Auth | Supabase Auth (GitHub sign-in and email) |
+| Clustering | sentence-transformers, UMAP, HDBSCAN (batch job `apps/api/app/jobs/cluster.py`) |
+| PR gate LLM | Groq, `openai/gpt-oss-120b` |
+| Hosting | Vercel (two projects, region `bom1`), GitHub Actions for schedules |
+| Monorepo | npm workspaces, Turborepo |
 
----
+## Quick start (local)
 
-## Repository layout
+Needs Docker with Compose.
+
+```bash
+git clone https://github.com/Rohith-sp/DephGraph.git
+cd DephGraph
+docker compose up -d --build --wait
+```
+
+This starts PostgreSQL, MongoDB and Redis, an `init` step that applies migrations, seeds an empty
+database and mints a development token, the API on http://localhost:8000 and the dashboard on
+http://localhost:3000. All ports bind to `127.0.0.1`; the local web container runs without Supabase
+auth, so do not expose it.
+
+```bash
+docker compose --profile ml run --rm cluster   # optional: clustering job (larger ML image)
+docker compose down                            # stop, keep data
+docker compose down -v                         # stop and wipe data
+```
+
+Ports can be moved with `PG_PORT`, `MONGO_PORT`, `REDIS_PORT`, `API_PORT` and `WEB_PORT`. Every
+environment variable is documented in [`.env.example`](.env.example).
+
+### With real sign-in (local Supabase)
+
+To run the full product with Supabase Auth locally, install the
+[Supabase CLI](https://supabase.com/docs/guides/local-development) and run `supabase start` from the repo
+root. It applies `apps/api/migrations` through the `supabase/migrations` link and keeps its own migration
+history, so do not run `scripts/migrate.py` against that database. Copy the values from
+`supabase status -o env` into the gitignored `.env.local` files, then `scripts/demo.py` seeds the
+database, creates a demo user and walks through the whole product. The demo runbook is in
+[docs/DEMO.md](docs/DEMO.md).
+
+## Deployment
+
+Production runs on Vercel (web and API as two projects in Mumbai, `bom1`), Supabase, MongoDB Atlas and
+Upstash Redis. GitHub Actions handles everything scheduled:
+
+| Workflow | Purpose |
+|---|---|
+| `ci.yml` | Backend tests with coverage gate, schema check, generated API types, collector tests, lint, typecheck, build, Playwright |
+| `cron.yml` | Daily OSV sync, weekly maintainer sync, keep-alive ping for the free-tier databases |
+| `cluster.yml` | Daily semantic clustering job (also dispatched on demand from the API) |
+| `retry.yml` | Retries failed PR-gate deliveries every 10 minutes |
+| `backup.yml` | Weekly encrypted PostgreSQL dump |
+| `audit.yml` | Weekly and on-change vulnerability scan of DephGraph's own dependencies |
+
+Step-by-step setup, the access model, smoke tests and restore instructions are in
+[docs/DEPLOY.md](docs/DEPLOY.md).
+
+## Security
+
+- **Invite-only teams.** Only organisation admins create teams; team admins invite members by email.
+- **Tenant isolation.** Every read and write is scoped to the caller's teams, backed by PostgreSQL
+  row-level security.
+- **Authentication.** Supabase JWTs are verified on every request; collectors use per-service tokens.
+- **Webhooks and internal jobs.** GitHub webhooks are verified with HMAC signatures; internal routes need a
+  shared cron secret.
+- **Hardening.** Rate limiting, Content-Security-Policy and HSTS headers, and production configuration
+  guards: the API refuses to start in production with a default secret or a database URL that points at
+  localhost.
+- **Secrets** are never committed; configuration comes from environment variables and gitignored
+  `.env.local` files.
+
+## Testing and quality
+
+| Suite | Result on current `main` |
+|---|---|
+| Backend (pytest) | 744 passed, 4 skipped |
+| Backend coverage | 97.66 % (CI fails below 70 %) |
+| End-to-end (Playwright) | 46 passed |
+| CI | green |
+
+```bash
+scripts/test_api.sh                    # backend tests in the API image, isolated test database per run
+cd apps/web && npx playwright test     # e2e, against a built and running web app
+```
+
+## Project structure
 
 ```
 DephGraph/
-├── DephGraph_BUILD_PRD.md     # Product requirements, architecture and build phases
-└── er-diagram/
-    ├── README.md              # ER model explained: entities, relationships, mapping
-    ├── schema.sql             # MySQL 8 schema: 23 tables, views, signature queries
-    ├── er_crowsfoot.mmd       # Crow's-foot diagram (Mermaid)
-    ├── er_chen.mmd            # Chen diagram (Mermaid)
-    ├── er_chen.drawio         # Chen diagram, editable
-    ├── er_chen_overview.drawio
-    └── images/                # Rendered ER diagrams
-└── relational-model/
-    ├── README.md              # Phase 2: step-by-step ER-to-relational mapping, sample tables
-    └── relational_schema.mmd  # Relational schema diagram (23 relations, PK/FK)
-├── normalization/
-│   └── README.md              # Phase 3a: FDs, minimal cover, 1NF → BCNF, lossless join
-├── relational-algebra/
-│   └── README.md              # Phase 3b: constraints, update violations, queries in relational algebra
-├── sql/                       # Phase 4: seed data, constraint demos, Q1–Q7 and complex SQL on MySQL
-└── transactions/
-    └── README.md              # Phase 5: ACID, schedules, 2PL, deadlocks, isolation levels (with demos)
+├── apps/
+│   ├── api/                 FastAPI backend: routers, services, jobs, migrations, tests
+│   └── web/                 Next.js 15 dashboard
+├── collectors/              Runtime collectors (Python, Node)
+├── scripts/                 Migrations runner, seeding, dev tokens, demo, test runner, MySQL helpers
+├── supabase/                Local Supabase configuration
+├── docs/                    Deploy, demo, coursework and status documents
+├── er-diagram/              ER model, diagrams, MySQL course schema
+├── relational-model/        ER-to-relational mapping
+├── normalization/           Functional dependencies, normal forms
+├── relational-algebra/      Constraints and relational algebra queries
+├── sql/                     Course SQL: seed data, constraint demos, queries
+├── transactions/            Transactions and concurrency
+├── .github/workflows/       CI and scheduled jobs
+└── docker-compose.yml       Full local stack
 ```
 
----
+## Documentation
 
-## Try the schema
+| Document | Contents |
+|---|---|
+| [DephGraph_BUILD_PRD.md](DephGraph_BUILD_PRD.md) | Product requirements, architecture and build phases |
+| [docs/DEPLOY.md](docs/DEPLOY.md) | Production deployment, access model, backups |
+| [docs/DEMO.md](docs/DEMO.md) | Demo runbook |
+| [docs/COURSEWORK.md](docs/COURSEWORK.md) | Course phases 4 to 6: SQL, transactions, NoSQL |
+| [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md) | Current status and open items |
+| [collectors/README.md](collectors/README.md) | Runtime collector setup |
 
-```bash
-mysql -u root -p < er-diagram/schema.sql
-```
+## Course project
 
-This creates the `dephgraph` database with all tables, constraints and views. The five signature queries are at the end of `schema.sql`.
+DephGraph is the course project for Database Management Systems (CD252IA) at RV College of Engineering.
+The database design was done first and the application was built on it. The MySQL 8.4 course schema has
+the same 23 core tables; the mapping to the PostgreSQL product schema is in
+[er-diagram/README.md](er-diagram/README.md#course-schema-and-product-schema).
 
----
+| Phase | Folder |
+|---|---|
+| ER model (14 entities, 16 relationships, recursive `DEPENDS_ON`, ternary `OBSERVES`) | [er-diagram/](er-diagram/) |
+| ER-to-relational mapping (23 relations) | [relational-model/](relational-model/) |
+| Normalization (all relations in BCNF) | [normalization/](normalization/) |
+| Constraints and relational algebra | [relational-algebra/](relational-algebra/) |
+| SQL implementation | [sql/](sql/README.md) |
+| Transactions and concurrency | [transactions/](transactions/README.md) |
 
-## Run with Docker (one command)
+![DephGraph Chen ER diagram](er-diagram/images/er_chen.png)
 
-```bash
-docker compose up -d --build --wait   # postgres, mongo, redis, init (seeds an empty DB + mints a dev token), api :8000, web :3000
-docker compose --profile ml run --rm cluster   # optional: the clustering job (ML image, about 2.3 GB)
-```
+## Team
 
-Ports bind to 127.0.0.1 and can be moved with `PG_PORT`, `MONGO_PORT`, `REDIS_PORT`, `API_PORT`, `WEB_PORT`; `RATE_LIMIT` (default `600/minute`, shared by all dashboard visitors) and `WEB_CONCURRENCY` (default 1) tune the API. The API image is slim (no torch); clustering runs only through the `ml` profile job above. Data lives in named volumes: `docker compose down` keeps it, `down -v` wipes it (the next `up` reseeds). The web container runs without Supabase (`AUTH_DISABLED`) using the token written by `init`; do not expose it beyond localhost.
+- Rakshak S (1RV24CS220)
+- Rohith Kumar L (1RV24CS233)
+- Rohith S Panchamukhi (1RV24CS234)
 
----
-
-## Run locally
-
-Needs Docker, Python 3.12 (with [uv](https://docs.astral.sh/uv/)) and Node 22+.
-
-```bash
-docker compose up -d postgres mongo redis  # databases only (the full stack incl. api/web is plain `docker compose up -d`; don't mix it with the steps below, ports clash)
-# Schema changes go through scripts/migrate.py (below); the full-stack `init` service runs it too.
-# A volume created before the runner existed has no history: apps/api/.venv/bin/python scripts/migrate.py --baseline <last applied version, e.g. 010>
-# .env.local (gitignored): defaults already match the compose services, so only secrets are needed; never overwrites an existing file
-[ -f .env.local ] || printf 'SUPABASE_JWT_SECRET=dev-only-jwt-secret-change-me-0123456789\nINTERNAL_CRON_SECRET=dev-only-cron-secret\n' > .env.local
-
-uv venv -p 3.12 apps/api/.venv
-uv pip install -p apps/api/.venv -r apps/api/requirements.txt   # slim API; tests: add -r apps/api/requirements-dev.txt -r apps/api/requirements-ml.txt (CPU torch first, see that file)
-apps/api/.venv/bin/python scripts/migrate.py   # applies pending apps/api/migrations/*.sql, each once; --status / --dry-run
-apps/api/.venv/bin/python scripts/seed_db.py
-
-cd apps/api && .venv/bin/uvicorn app.main:app --reload   # API on :8000
-```
-
-In a second terminal:
-
-```bash
-npm install
-apps/api/.venv/bin/python scripts/make_dev_token.py     # prints a dev JWT
-# apps/web/.env.local: AUTH_DISABLED=true and DEV_API_TOKEN=<that token>
-npm run build -w apps/web && npm run start -w apps/web   # dashboard on :3000 (use this for demos; `npm run dev -w apps/web` is slow per page)
-```
-
-API notes:
-- `GET /clusters` returns each cluster with its `members` inline; `GET /clusters/{id}/members` no longer exists.
-- `GET /remediation/plan/{team_id}` steps carry `plan_id`, `action_seq`, `action_status` (null without a saved plan), so the UI restores saved progress after a reload.
-- Tenancy: every read and write is limited to the caller's teams (`team_member`; others get 404, a user with no team gets empty lists). `GET /me` returns the caller's teams. Add people with `python scripts/add_team_member.py --team-slug platform --user-id <uuid> | --email <addr>`; the dev token's user is a member of every seeded team (`make_dev_token.py --user-id` mints a token for any other user).
-- Only a service's latest `production` deployment is analysed; `POST /ingest/manifest` takes `environment` (`production` default, `staging`, `preview`) and non-production ingests never change risk numbers.
-- `POST /pr-gate/webhook` reviews synchronously and answers `200 {pr_number, verdict, stage_reached, processing_ms, deps}` (a failed review is a `502` plus a neutral Check Run). On Vercel, GitHub talks to the web route `/api/webhooks/github`, which acknowledges at once and forwards inside `after()`. Stored verdicts: `GET /pr-gate/verdicts/{service_id}`.
-- Clustering is a job, not an API task: `python -m app.jobs.cluster` (needs `requirements-ml.txt`) or the `cluster.yml` workflow. `POST /clusters/recompute` and `/internal/cluster-recompute` dispatch that workflow as the GitHub App (`GITHUB_REPOSITORY`; the App needs Actions: write) and answer `202 {"status": "dispatched" | "already_running"}`, or `503` when not configured.
-- Ids must be positive and in range, else `422`. Vulnerability timestamps use `+00:00`, not `Z`.
-- Latency: read endpoints are cached in Redis under a generation counter (any write bumps it). Rate-limit counters live in Redis (in-memory fallback when Redis errors); team memberships are cached for 60 s per data generation.
-
-### Supabase locally (real auth)
-
-Runs the full product against a local Supabase stack (Postgres, Auth, Studio, Mailpit) with real
-sign-in. Needs the [Supabase CLI](https://supabase.com/docs/guides/local-development); ports 55320-55329.
-
-```bash
-supabase start        # applies apps/api/migrations via the supabase/migrations symlink (the CLI keeps its own history: do not run scripts/migrate.py on that database)
-supabase status -o env  # keys for .env.local: SUPABASE_URL=http://127.0.0.1:55321, SUPABASE_ANON_KEY,
-                        # SUPABASE_SERVICE_ROLE_KEY, SUPABASE_JWT_SECRET, DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:55322/postgres
-                        # apps/web/.env.local: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY (leave AUTH_DISABLED unset)
-apps/api/.venv/bin/python scripts/demo.py   # reset + seed, creates demo@dephgraph.local, runs the whole product
-```
-
-Studio is on http://127.0.0.1:55323, sign-in emails (magic links) in Mailpit on http://127.0.0.1:55324.
-The demo calls live OSV, deps.dev and GitHub (unauthenticated, low rate limit; the PR-gate step prints a
-note if GitHub refuses). E2E with real auth: build and start the web app, then
-`cd apps/web && npx playwright test` with `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` exported (it
-creates the e2e users and logs in through `/login`); `AUTH_DISABLED=true DEV_API_TOKEN=... npx playwright test` is the no-Supabase CI mode.
-
-Tests: `apps/api/.venv/bin/pytest apps/api/tests/`. Deployment: [`docs/DEPLOY.md`](docs/DEPLOY.md).
-
----
-
-## Status
-
-The design phases and the application build (build phases 0 to 7) are done. See [`DephGraph_BUILD_PRD.md`](DephGraph_BUILD_PRD.md) for the plan.
-
-| Phase | Scope | Status |
-|---|---|---|
-| Design 1: ER model | Chen ER diagram, 14 entities, 16 relationships | Done |
-| Design 2: Relational model | 7-step ER-to-relational mapping, 23 relations ([`relational-model/`](relational-model/)) | Done |
-| Design 3a: Normalization | Functional dependencies, minimal cover, 1NF → BCNF, all 23 relations in BCNF ([`normalization/`](normalization/)) | Done |
-| Design 3b: Relational algebra | Constraints, update violations, 7 queries in relational algebra ([`relational-algebra/`](relational-algebra/)) | Done |
-| Course 4: SQL | MySQL seed, 12 constraint demos, Q1–Q7 and 25 complex queries ([`sql/`](sql/README.md)) | Done |
-| Course 5: Transactions | ACID, schedules, precedence graphs, 2PL, deadlock and isolation demos ([`transactions/`](transactions/README.md)) | Done |
-| Build 0-1: Setup and schema | Monorepo, Postgres schema, RLS, seed data, CI | Done |
-| Build 2: Ingestion | Manifest parsing, OSV and deps.dev sync | Done |
-| Build 3: Analysis | Blast radius, set cover, prune | Done |
-| Build 4: Dashboard | Next.js UI with interactive dependency graph | Done |
-| Build 5: Clustering | Semantic package clusters | Done |
-| Build 6: PR gate | GitHub Checks integration | Done |
-| Build 7: Polish | Rate limiting, structured logging, error envelope, deploy docs ([`docs/DEPLOY.md`](docs/DEPLOY.md)) | Done (cloud deploy not performed) |
-
-Coursework Phase 4–6 explanations are in [`docs/COURSEWORK.md`](docs/COURSEWORK.md), and the
-executable course SQL is in [`sql/queries.sql`](sql/queries.sql). Live cloud deployment and
-submission-specific screenshots/report-template work remain external steps.
+Guide: Dr. Pratiba D, Associate Professor, Department of CSE, RV College of Engineering.

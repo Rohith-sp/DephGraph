@@ -1,6 +1,6 @@
 # DephGraph — Where things stand and what is left
 
-*Status as of 22 November 2026: course Phases 1–6 done, report written. Product: production build in progress on `fix/full-review` (see 3.1). Left: viva prep, finish the build, production deploy. PostgreSQL is the system of record; the MySQL schema is the course demonstration.*
+*Status as of 23 November 2026: course Phases 1–6 done, report written. Product: built, merged to `main` and deployed to production on 23 Nov 2026 (see 3.1). Left: disable open sign-up, rotate the exposed MongoDB password, live acceptance checks, viva. PostgreSQL is the system of record; the MySQL schema is the course demonstration.*
 
 There are two tracks:
 
@@ -34,18 +34,21 @@ Postgres, MongoDB and Redis. The team setup is `docker compose up` (README, "Run
 |---|---|---|
 | 0. Setup | API `/health`, frontend type-check + production build | ✅ `{"status":"ok"}`, build passes (10 routes) |
 | 1. Schema + seed | `scripts/verify_schema.py`, `scripts/seed_db.py` | ✅ schema verified by `verify_schema.py` (counts change with every migration; run it for the current numbers); seed data creates demo teams, services and packages only |
-| 2–6. Ingestion, analysis, dashboard, clustering, PR gate | backend test suite | ✅ passed at that date (final test and coverage numbers are recorded after the final gate; CI enforces ≥ 70 % coverage) |
+| 2–6. Ingestion, analysis, dashboard, clustering, PR gate | backend test suite | ✅ passed at that date; current CI numbers are below the table (CI enforces ≥ 70 % coverage) |
 | 4. Dashboard | every page opened in a browser | ✅ overview, service graph (38 nodes / 67 edges for api-gateway), vulnerabilities, remediation plan, clusters |
-| 7. Production deploy | — | ❌ not done |
+| 7. Production deploy | `/health`, `/me`, web `/login` on the live URLs | ✅ done 23 Nov 2026 (see 3.1) |
 
-GitHub Actions CI is also green on the app commits.
+GitHub Actions CI is also green on the app commits. Latest CI on `main` (commit `f50e67c`): 744 backend
+tests passed (4 skipped), 97.66 % coverage; 46 Playwright end-to-end tests passed. The app's PostgreSQL
+schema now has 31 tables (migrations 001–017: the 23 core tables plus 8 operational ones).
 
 ---
 
 ### Completion work (22 November 2026)
 
-Everything the synopsis promised, except deployment, is built and tested
-(CI green; final test and coverage numbers are recorded after the final gate):
+Everything the synopsis promised is built and tested (CI green; current numbers in section 1). The
+synopsis named a local Ollama model for PR-gate stage 3; the implementation uses Groq
+(`openai/gpt-oss-120b`, `max_tokens` 1024) instead:
 
 | Synopsis item | What was added | Where |
 |---|---|---|
@@ -70,7 +73,8 @@ document their mapping. The explanation is now in
 [`er-diagram/README.md`](../er-diagram/README.md#course-schema-and-product-schema); neither schema
 nor the app migrations were changed.
 
-The two schemas have the same 23 tables and nearly the same keys, but only 3 tables (`affects`,
+The two schemas share the same 23 core tables and nearly the same keys (the app adds 8 operational
+tables, 31 in total), but only 3 core tables (`affects`,
 `package_alias`, `resolves`) have identical columns. In a viva, *"is this the schema you designed?"* needs
 one clear answer.
 
@@ -159,43 +163,35 @@ Optional later: sample documents for four collections that are empty on the loca
 
 ## 3. Product track — what is left
 
-### 3.1 Handoff: production build status (22 November 2026, branch `fix/full-review`)
+### 3.1 Production deploy ✅ done 23 November 2026
 
-Target: an internal tool for one organisation, hosted entirely on free tiers (Vercel Hobby, Supabase,
-MongoDB Atlas M0, Upstash). Nothing simulated ships: no seed data in production, and dev bypasses
-refuse to run on Vercel.
+Target: an internal tool for one organisation, hosted entirely on free tiers. Nothing simulated ships: no
+seed data in production, and dev bypasses refuse to run on Vercel. Steps and settings are in
+[`DEPLOY.md`](DEPLOY.md#current-deployment-23-november-2026).
 
-**Built on this branch, tests passing (backend 717/718 before the final fix, 98 % coverage; web lint,
-type check and build clean):**
-
-| Area | What |
+| Part | State |
 |---|---|
-| Reliability | Durable PR-gate delivery queue with retry sweeper (011); `scripts/migrate.py` runner with checksums (`--status`, `--dry-run`, `--baseline`) |
-| Access | Invite-only: `ORG_ADMIN_EMAILS` create teams, admins invite by email (7-day expiry), verified email read from `auth.users`, optional `ALLOWED_EMAIL_DOMAINS`, GitHub sign-in (012) |
-| Services | Self-serve create/patch/delete; repo must be reachable by the DephGraph GitHub App; one team per repo + subfolder (`root_path`) |
-| GitHub | Push to the default branch auto-imports all manifests as one production deployment; `installation` events import new repos; App-scoped tokens per repo; cluster dispatch through the App |
-| Parsing | `pyproject.toml`, `uv.lock`, `poetry.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `Cargo.lock`; lockfile edges kept per deployment (014, 015) |
-| Alerts | One GitHub Issue per serious CVE reaching a production service, closed on fix; opt-in per team (013) |
-| Runtime | Python and Node collectors (`collectors/`) with per-service `dgs_` tokens |
-| Ops | Security headers + CSP, pip-audit/npm audit/Dependabot, Sentry (opt-in), free-tier keep-alive, weekly encrypted `pg_dump` backup |
-| Checks | `verify_schema.py` and the schema tests derive expectations from the migrations (no literal counts) |
+| Web | Vercel project `dephgraph-loki` (Root Directory `apps/web`, `bom1`): https://dephgraph-loki.vercel.app, `/login` answers 200 |
+| API | Vercel project `dephgraph-loki-api` (Root Directory `apps/api`, `bom1`): https://dephgraph-loki-api.vercel.app, `/health` 200 in about 0.3 s, `/me` without a token 401 |
+| Postgres + Auth | Supabase; GitHub sign-in enabled; Site URL and redirect URL set to the web URL |
+| MongoDB / Redis | Atlas M0 and Upstash Redis, both Mumbai, added through the Vercel Marketplace; values copied into `MONGO_URI` / `REDIS_URL` |
+| GitHub | App `dephgraph-rohith` (public), webhook to the web route, events Push and Pull request; Actions secrets set for `cron.yml`, `cluster.yml`, `backup.yml` |
 
-**In progress (not yet on this branch):** real package descriptions for clustering, live OSV/deps.dev
-lookups in the PR gate for unscanned dependencies, "unverified" / "LLM review skipped" verdict text
-instead of a silent PASS, configurable verdict thresholds, depth-limit `truncated` flag.
+Problem found during the deploy and fixed: Vercel detected Turborepo in the API project, ran `npm install`
+and `turbo run build`, and never installed the Python packages (`ModuleNotFoundError: No module named
+'httpx'` at runtime). Fix: Framework Preset FastAPI, Install Command `pip install -r requirements.txt`, empty
+Build Command. This is now a required step in `DEPLOY.md` section 4.
+
+The production build work that used to be listed here (durable PR-gate deliveries, invite-only access,
+self-serve services, push imports, lockfile parsers, alert issues, runtime collectors, security headers,
+backups, migration runner) is merged into `main` and is what is deployed.
 
 **Left, in order:**
 
-1. Merge the in-progress work, then one full gate: backend suite, web lint/tsc/build, e2e twice.
-2. Merge `fix/full-review` into `main`.
-3. Deploy (see [`DEPLOY.md`](DEPLOY.md)): Vercel projects `dephgraph-api` and `dephgraph-web`;
-   Supabase, Atlas and Upstash on free plans; `python scripts/migrate.py`; fresh random secrets;
-   **no seed scripts in production**.
-4. GitHub App, created by the repo owner (private, installed on this repo). Permissions: Actions RW,
-   Checks RW, Contents R, Issues RW, Metadata R, Pull requests R, Email addresses R. Events:
-   Pull request, Push, Installation, Installation repositories. Its client id/secret also power
-   Supabase "Sign in with GitHub". Credentials go only into Vercel environment variables.
-5. Live acceptance on production with this repo: GitHub sign-in, create team, invite, add service,
+1. Supabase: turn off open sign-up (Authentication > Email > "Allow new users to sign up").
+2. Rotate the MongoDB Atlas database user's password, which was exposed during setup, then update
+   `MONGO_URI` on the API project and in the GitHub Actions secrets.
+3. Live acceptance on production with this repo: GitHub sign-in, create team, invite, add service,
    push to main imports, PR gets a Check Run, collector sample lands, alert issue opens and closes,
    backup artifact restores.
 
@@ -204,8 +200,8 @@ instead of a silent PASS, configurable verdict thresholds, depth-limit `truncate
 The CI gaps for coverage enforcement and browser testing are now closed in
 `.github/workflows/ci.yml`: backend tests fail below 70% coverage, and a Playwright job provisions
 the test services, applies migrations/seeds the database, starts the API, and runs the existing
-no-Supabase browser suite. The three real-auth browser tests are intentionally skipped in that no-Supabase mode;
-final test and coverage numbers are recorded after the final gate.
+no-Supabase browser suite. The three real-auth browser tests are intentionally skipped in that no-Supabase mode.
+Current numbers are in section 1.
 
 | Gap | Fix |
 |---|---|
@@ -246,5 +242,6 @@ One-time login setup on Windows, so no password is ever typed into a script:
 
 ## 5. Suggested order
 
-1. Viva rehearsal.
-2. Production deploy (3.1), if time allows. Set `GROQ_MODEL=openai/gpt-oss-120b` (Groq retired the llama-3.x ids).
+1. Disable open sign-up and rotate the MongoDB password (3.1, items 1–2).
+2. Viva rehearsal ([`DEMO.md`](DEMO.md), now with a short live-deployment part).
+3. Live acceptance checks on production (3.1, item 3), if time allows.

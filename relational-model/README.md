@@ -492,7 +492,7 @@ PK columns are underlined; FK columns are in italics.
 ### 3. SCAN_RUN
 | <ins>scan_id</ins> | source_tool | started_at | ended_at |
 |---|---|---|---|
-| 500 | ebpf-agent | 2026-08-01 00:00 | 2026-08-31 00:00 |
+| 500 | ebpf-agent | 2026-09-01 11:00 | 2026-09-30 00:00 |
 | 501 | osv-sync | 2026-09-01 02:00 | 2026-09-01 02:04 |
 
 ### 4. PACKAGE

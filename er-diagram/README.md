@@ -318,6 +318,11 @@ explains this change and uses the table below as the mapping between the two.
 | Dependency edge | Role-named `dependent_*` / `dependency_*` columns and `scope` | `dep_*` / `ref_*` columns; directness is represented on resolution rows | The product API uses its own query and ingestion conventions. |
 | Naming and supporting attributes | Names such as `team_name`, `service_name`, `package_name`, `cluster_label`, `handle`; includes coursework contact, criticality and observation attributes | Common `name`, `label`, `username` attributes plus product fields such as `team.slug`, package descriptions, yanked versions and cluster centroids | Each schema retains attributes needed by its own deliverables. |
 
+Besides the 23 core tables, the PostgreSQL schema (migrations 001–017, 31 tables in total) has 8
+operational tables that the course design does not need: `team_member`, `team_invite`,
+`service_token`, `service_import`, `deployment_edge`, `pr_gate_delivery`, `alert_issue` and
+`alert_skip` (access control, GitHub imports and the PR-gate delivery queue).
+
 These are intentional physical-model differences, not claims that the schemas are interchangeable.
 The course queries and sample data target the MySQL schema; the running application targets the
 PostgreSQL migrations and ORM. A viva answer can therefore distinguish the conceptual design from
