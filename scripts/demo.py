@@ -1,7 +1,7 @@
 """End-to-end demo against the running API with a real Supabase user token.
 
 Prereqs: `supabase start`, uvicorn on :8000 (README "Run locally"). Rerunnable: it truncates and
-reseeds the SQL tables first. Live OSV / deps.dev / GitHub calls (no tokens needed).
+reseeds the SQL tables first (local DB only; --force overrides). Live OSV / deps.dev / GitHub calls (no tokens needed).
 """
 
 import asyncio
@@ -9,8 +9,10 @@ import hashlib
 import hmac
 import json
 import os
+import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import asyncpg
 import httpx
@@ -53,7 +55,20 @@ async def sign_in() -> str:
         return r.json()["access_token"]
 
 
-async def main() -> None:
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "postgres", "db"}  # + docker-compose service names
+
+
+def reset_allowed(dsn: str, force: bool) -> bool:
+    """seed_db TRUNCATEs every table: only on a local DB unless --force."""
+    return force or urlsplit(dsn).hostname in LOCAL_HOSTS
+
+
+async def main(force: bool = False) -> None:
+    if not reset_allowed(DSN, force):
+        sys.exit(
+            f"refusing to TRUNCATE {urlsplit(DSN).hostname}: not a local database "
+            "(pass --force to wipe it anyway)"
+        )
     step(f"Reset + seed ({DSN.rsplit('@', 1)[1]})")
     await seed_db.main()
     token = await sign_in()
@@ -183,16 +198,19 @@ async def main() -> None:
                 "limit? retry later)"
             )
         else:
-            d = r.json()["data"]
-            print(
-                f"verdict={d.get('verdict')} stage={d.get('stage_reached')} "
-                f"{d.get('processing_ms')}ms (Check Run skipped: no GitHub App creds)"
-            )
-            for dep in d.get("deps", []):
-                print(f"  {dep['name']} {dep['version']}: {dep['verdict']} - {dep['reasoning']}")
-            v = await get(f"/pr-gate/verdicts/{svc['checkout-web']['service_id']}")
-            print(f"stored verdicts for checkout-web: {len(v)}")
+            print(f"webhook -> {r.status_code} {r.json()['data']} (review runs in the background)")
+            sid = svc["checkout-web"]["service_id"]
+            deadline = time.monotonic() + 90
+            while True:
+                mine = [v for v in await get(f"/pr-gate/verdicts/{sid}") if v["pr_number"] == PR_NUMBER]
+                if mine or time.monotonic() > deadline:
+                    break
+                await asyncio.sleep(2)
+            if not mine:
+                print("  no verdict after 90s (GitHub rate limit? check the API log)")
+            for v in mine:
+                print(f"  {v['dep_name']}: {v['verdict']} (stage {v['stage_reached']}) - {v['reasoning']}")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main(force="--force" in sys.argv[1:]))

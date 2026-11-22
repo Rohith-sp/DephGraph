@@ -16,10 +16,10 @@ export default async function ServiceDetailPage({ params }: { params: Promise<{ 
   });
   return (
     <>
-      <h1 className="text-2xl font-bold">{graph.service.name}</h1>
+      <h1>{graph.service.name}</h1>
       <DependencyGraph graph={graph} />
-      <section aria-labelledby="prunable-h" className="space-y-2">
-        <h2 id="prunable-h" className="text-lg font-semibold">
+      <section aria-labelledby="prunable-h" className="space-y-3">
+        <h2 id="prunable-h">
           Prunable packages
         </h2>
         <PrunableTable rows={prunable} />

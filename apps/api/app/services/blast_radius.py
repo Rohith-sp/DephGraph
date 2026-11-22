@@ -1,51 +1,16 @@
-"""Transitive vulnerability exposure per service (v_blast_radius), Redis-cached 24h."""
+"""Transitive vulnerability exposure per service: closure from resolves_to/depends_on, BFS paths
+(the v_blast_radius view is not queried here), cached through app.services.cache."""
 
 import json
 from collections import deque
 from typing import Any
 
-import structlog
-from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_redis
+from app.services import cache
 from app.services.queries import Rows, latest_seq, rows
 
-log = structlog.get_logger()
-
-CACHE_TTL = 86400
-
-
-PREFIX = "dephgraph:blast_radius:"
-GEN_KEY = f"{PREFIX}gen"
-
-
-async def cache_key(service_id: int) -> str:
-    """Keyed by a generation counter: a reader that computed before an invalidation writes to a
-    stale generation nobody reads, so it can never resurrect old data."""
-    return f"{PREFIX}{service_id}:{await get_redis().get(GEN_KEY) or 0}"
-
-
-async def invalidate() -> None:
-    """Vulnerability/affects rows are shared across services, so drop every entry.
-
-    Cache errors never propagate.
-    """
-    redis = get_redis()
-    try:
-        await redis.incr(GEN_KEY)
-        keys = [k async for k in redis.scan_iter(f"{PREFIX}*") if k != GEN_KEY]
-        if keys:
-            await redis.delete(*keys)
-    except (RedisError, OSError) as e:
-        log.warning("cache_invalidate_failed", error=str(e))
-
-
-async def load_closure(session: AsyncSession, service_id: int, seq: int) -> tuple[Rows, Rows]:
-    """(nodes, edges) of the service's dependency closure at deployment `seq`."""
-    nodes = await rows(
-        session,
-        """
+NODES_SQL = """
         SELECT rt.package_id, p.name, p.ecosystem, rt.version_string AS version, rt.depth,
                rt.is_direct,
                (SELECT count(*) FROM affects a WHERE (a.package_id, a.version_string)
@@ -56,13 +21,8 @@ async def load_closure(session: AsyncSession, service_id: int, seq: int) -> tupl
         FROM resolves_to rt JOIN package p ON p.package_id = rt.package_id
         WHERE rt.service_id = :s AND rt.deploy_seq = :q
         ORDER BY rt.depth, p.name
-        """,
-        s=service_id,
-        q=seq,
-    )
-    edges = await rows(
-        session,
         """
+EDGES_SQL = """
         SELECT d.dep_package_id, d.dep_version_string, d.ref_package_id, d.ref_version_string
         FROM depends_on d
         JOIN resolves_to a ON (a.package_id, a.version_string)
@@ -71,10 +31,13 @@ async def load_closure(session: AsyncSession, service_id: int, seq: int) -> tupl
         JOIN resolves_to b ON (b.package_id, b.version_string)
                             = (d.ref_package_id, d.ref_version_string)
                           AND b.service_id = :s AND b.deploy_seq = :q
-        """,
-        s=service_id,
-        q=seq,
-    )
+        """
+
+
+async def load_closure(session: AsyncSession, service_id: int, seq: int) -> tuple[Rows, Rows]:
+    """(nodes, edges) of the service's dependency closure at deployment `seq`."""
+    nodes = await rows(session, NODES_SQL, s=service_id, q=seq)
+    edges = await rows(session, EDGES_SQL, s=service_id, q=seq)
     return nodes, edges
 
 
@@ -160,18 +123,8 @@ async def compute(session: AsyncSession, service_id: int) -> dict[str, Any]:
 
 
 async def get_blast_radius(session: AsyncSession, service_id: int) -> dict[str, Any]:
-    redis = get_redis()
-    key: str | None = None
-    try:
-        key = await cache_key(service_id)  # read the generation BEFORE computing
-        if raw := await redis.get(key):
-            return {**json.loads(raw), "cached": True}
-    except (RedisError, OSError, ValueError) as e:
-        log.warning("cache_read_failed", error=str(e))
-    data = await compute(session, service_id)
-    if key:
-        try:
-            await redis.set(key, json.dumps(data), ex=CACHE_TTL)
-        except (RedisError, OSError) as e:
-            log.warning("cache_write_failed", error=str(e))
-    return data
+    async def build() -> str:
+        return json.dumps(await compute(session, service_id))
+
+    body, hit = await cache.read_through(f"blast_radius:{service_id}", build)
+    return {**json.loads(body), "cached": hit}

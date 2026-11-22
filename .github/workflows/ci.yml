@@ -19,13 +19,19 @@ jobs:
       mongo:
         image: mongo:7
         ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-interval 10s --health-timeout 5s --health-retries 5
       redis:
         image: redis:7
         ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s --health-timeout 5s --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12", cache: "pip", cache-dependency-path: apps/api/requirements.txt }
       # CPU wheel avoids the multi-GB CUDA download
       - run: pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
@@ -54,10 +60,11 @@ jobs:
       NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
       NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: "20", cache: "npm" }
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "22", cache: "npm" }
       - run: npm ci
+      - run: npm run lint --workspace=apps/web
       - run: npm run typecheck --workspace=apps/web
       - run: npm run build --workspace=apps/web
 
@@ -92,13 +99,14 @@ jobs:
       ENVIRONMENT: test
       GROQ_API_KEY: test_key
       AUTH_DISABLED: "true"
+      RATE_LIMIT: 10000/minute  # the suite sends well over 100 requests/min from one IP
       API_URL: http://127.0.0.1:8000
       NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
       NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
       NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12", cache: "pip", cache-dependency-path: apps/api/requirements.txt }
       # Match backend CI and avoid downloading CUDA-enabled torch wheels.
       - run: pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
@@ -110,8 +118,8 @@ jobs:
           done
       - name: Seed E2E data
         run: python scripts/seed_db.py
-      - uses: actions/setup-node@v4
-        with: { node-version: "20", cache: npm }
+      - uses: actions/setup-node@v5
+        with: { node-version: "22", cache: npm }
       - run: npm ci
       - name: Generate development JWT
         run: echo "DEV_API_TOKEN=$(python scripts/make_dev_token.py)" >> "$GITHUB_ENV"

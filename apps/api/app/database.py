@@ -9,7 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.config import settings
 
 # All clients connect lazily: the app boots even if Mongo/Redis are down.
-engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+# No pool_pre_ping (a ping round trip per checkout): connections idle past POOL_RECYCLE are replaced
+# on checkout, and when one still dies SQLAlchemy invalidates the pool so only that request fails.
+POOL_RECYCLE = 300
+engine = create_async_engine(
+    settings.database_url, pool_size=10, max_overflow=5, pool_recycle=POOL_RECYCLE
+)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 mongo_client: AsyncIOMotorClient = AsyncIOMotorClient(
     settings.mongo_uri, serverSelectionTimeoutMS=2000

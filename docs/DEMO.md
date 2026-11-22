@@ -7,7 +7,7 @@ from the repo root. Expected outputs are what we saw on 22 November 2026.
 ## 0. Setup (30 minutes before)
 
 ```bash
-cd ~/Desktop/projects/"5th sem dbms el"/dephgraph && git pull
+git pull
 docker compose up -d                       # wait until api and web are "healthy": docker compose ps
 scripts/mysql.sh up                        # course MySQL 8.4
 scripts/mysql.sh run er-diagram/schema.sql && scripts/mysql.sh run sql/seed.sql   # reset course DB
@@ -23,8 +23,8 @@ T=$(docker exec dephgraph-web-1 cat /shared/dev_token)
 curl -s -X POST -H "Authorization: Bearer $T" localhost:8000/clusters/recompute   # ~1 min
 ```
 
-An older volume created before migration 007 needs it once:
-`docker exec -i dephgraph-postgres-1 psql -U dephgraph dephgraph < apps/api/migrations/007_maintainer_activity.sql`
+An older volume only has the migrations that existed when it was created (through 009 today). Apply each newer file once, e.g.:
+`docker exec -i dephgraph-postgres-1 psql -U dephgraph dephgraph < apps/api/migrations/<NNN_name>.sql`
 
 Open in the browser: http://localhost:3000, and the ER figures from `er-diagram/images/`.
 Keep two terminals open. In the second one set the variables used in part B:

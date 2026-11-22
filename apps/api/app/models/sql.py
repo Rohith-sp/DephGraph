@@ -170,6 +170,8 @@ class PrReview(Base):
     pr_url: Mapped[str | None] = mapped_column(String(500))
     author: Mapped[str | None] = mapped_column(String(120))
     opened_at: Mapped[datetime] = _now()
+    head_sha: Mapped[str | None] = mapped_column(String(64))
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class PrRiskVerdict(Base):

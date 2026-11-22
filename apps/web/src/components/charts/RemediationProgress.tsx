@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { setActionStatus } from "@/app/actions";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import type { ActionStatus, RemediationPlan } from "@/lib/types";
 
 export function RemediationProgress({ plan }: { plan: RemediationPlan }) {
@@ -20,30 +21,33 @@ export function RemediationProgress({ plan }: { plan: RemediationPlan }) {
     });
 
   return (
-    <div className="space-y-3">
+    <section aria-label="Saved plan" className="space-y-4 rounded-xl border border-line bg-card p-5">
       <div
         role="progressbar"
         aria-label="Plan progress"
         aria-valuenow={pct}
         aria-valuemin={0}
         aria-valuemax={100}
-        className="h-2 w-full rounded bg-slate-200"
+        className="h-1 w-full rounded-full bg-raised"
       >
-        <div className="h-2 rounded bg-green-600" style={{ width: `${pct}%` }} />
+        <div className="h-1 rounded-full bg-accent" style={{ width: `${pct}%` }} />
       </div>
-      <p className="text-sm text-slate-600">
+      <p className="tabular-nums text-fg2">
         {done} of {actions.length} actions done ({pct}%)
       </p>
-      <ul className="space-y-1 text-sm">
+      <ul className="divide-y divide-line">
         {actions.map((a) => (
-          <li key={a.action_seq} className="flex items-center justify-between gap-2">
-            <span>
-              {a.action_seq}. {a.description} <em className="text-slate-500">[{a.status}]</em>
+          <li key={a.action_seq} className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
+            <span className="min-w-0">
+              <span className="mr-2 tabular-nums text-fg3">{a.action_seq}.</span>
+              <span className={cn(a.status === "DONE" && "text-fg3 line-through")}>{a.description ?? "Untitled action"}</span>
+              <span className="ml-2 font-mono text-xs text-fg3">{a.status}</span>
             </span>
             <Button
               size="sm"
               variant="outline"
               disabled={pending}
+              aria-label={`${a.status === "DONE" ? "Undo" : "Mark done"} action ${a.action_seq}`}
               onClick={() => mark(a.action_seq, a.status === "DONE" ? "PENDING" : "DONE")}
             >
               {a.status === "DONE" ? "Undo" : "Mark done"}
@@ -51,6 +55,6 @@ export function RemediationProgress({ plan }: { plan: RemediationPlan }) {
           </li>
         ))}
       </ul>
-    </div>
+    </section>
   );
 }

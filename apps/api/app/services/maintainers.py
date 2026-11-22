@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.sql import MaintainedBy, Maintainer
 from app.services.http import request
+from app.services.queries import chunks
 
 log = structlog.get_logger()
 
@@ -84,9 +85,7 @@ def parse_npm(doc: dict[str, Any]) -> PackageMaintainers:
         for m in doc.get("maintainers") or []
         if isinstance(m, dict) and isinstance(m.get("name"), str)
     ]
-    return PackageMaintainers(
-        "npm", _dedupe(people), _ts((doc.get("time") or {}).get("modified"))
-    )
+    return PackageMaintainers("npm", _dedupe(people), _ts((doc.get("time") or {}).get("modified")))
 
 
 def parse_pypi(doc: dict[str, Any]) -> PackageMaintainers:
@@ -99,17 +98,13 @@ def parse_pypi(doc: dict[str, Any]) -> PackageMaintainers:
 
     def newest(files: list[Any]) -> datetime | None:
         times = [
-            t
-            for f in files
-            if isinstance(f, dict) and (t := _ts(f.get("upload_time_iso_8601")))
+            t for f in files if isinstance(f, dict) and (t := _ts(f.get("upload_time_iso_8601")))
         ]
         return max(times, default=None)
 
     last = newest(doc.get("urls") or [])
     if last is None:
-        last = newest(
-            [f for files in (doc.get("releases") or {}).values() for f in files or []]
-        )
+        last = newest([f for files in (doc.get("releases") or {}).values() for f in files or []])
     return PackageMaintainers("pypi", _dedupe(people), last)
 
 
@@ -162,16 +157,12 @@ async def fetch_all(
     """packages = [(package_id, ecosystem, name)]. Never raises; failed lookups are absent."""
     sem = asyncio.Semaphore(CONCURRENCY)
 
-    async def bounded(
-        pid: int, eco: str, name: str
-    ) -> tuple[int, PackageMaintainers | None]:
+    async def bounded(pid: int, eco: str, name: str) -> tuple[int, PackageMaintainers | None]:
         async with sem:
             return pid, await fetch_one(client, eco, name)
 
     wanted = [p for p in packages if p[1] in SUPPORTED]
-    async with httpx.AsyncClient(
-        timeout=15, headers={"User-Agent": USER_AGENT}
-    ) as client:
+    async with httpx.AsyncClient(timeout=15, headers={"User-Agent": USER_AGENT}) as client:
         results = await asyncio.gather(*(bounded(*p) for p in wanted))
     return {pid: m for pid, m in results if m is not None}
 
@@ -200,30 +191,25 @@ async def upsert(session: AsyncSession, found: dict[int, PackageMaintainers]) ->
                 },
             )
             if m.last_active_at and (
-                row["last_active_at"] is None
-                or m.last_active_at > row["last_active_at"]
+                row["last_active_at"] is None or m.last_active_at > row["last_active_at"]
             ):
                 row["last_active_at"] = m.last_active_at
-    stmt = insert(Maintainer).values(
-        [people[k] for k in sorted(people)]
-    )  # sorted: lock order
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["platform", "username"],
-        set_={
-            "profile_url": func.coalesce(
-                stmt.excluded.profile_url, Maintainer.profile_url
-            ),
-            "last_active_at": func.greatest(
-                Maintainer.last_active_at, stmt.excluded.last_active_at
-            ),
-        },
-    ).returning(Maintainer.platform, Maintainer.username, Maintainer.maintainer_id)
-    ids = {(pf, u): i for pf, u, i in (await session.execute(stmt)).all()}
+    ids: dict[tuple[str, str], int] = {}
+    for chunk in chunks([people[k] for k in sorted(people)]):  # sorted: lock order
+        stmt = insert(Maintainer).values(chunk)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["platform", "username"],
+            set_={
+                "profile_url": func.coalesce(stmt.excluded.profile_url, Maintainer.profile_url),
+                "last_active_at": func.greatest(
+                    Maintainer.last_active_at, stmt.excluded.last_active_at
+                ),
+            },
+        ).returning(Maintainer.platform, Maintainer.username, Maintainer.maintainer_id)
+        ids.update(((pf, u), i) for pf, u, i in (await session.execute(stmt)).all())
 
     links = {
-        (pid, ids[(m.platform, p.username)]): p.role
-        for pid, m in found.items()
-        for p in m.people
+        (pid, ids[(m.platform, p.username)]): p.role for pid, m in found.items() for p in m.people
     }
     for pid in sorted(found):
         keep = [mid for (p, mid) in links if p == pid]
@@ -232,16 +218,14 @@ async def upsert(session: AsyncSession, found: dict[int, PackageMaintainers]) ->
                 MaintainedBy.package_id == pid, MaintainedBy.maintainer_id.not_in(keep)
             )
         )
-    ins = insert(MaintainedBy).values(
-        [
-            {"package_id": p, "maintainer_id": m, "role": r}
-            for (p, m), r in sorted(links.items())
-        ]
-    )
-    await session.execute(
-        ins.on_conflict_do_update(
-            index_elements=["package_id", "maintainer_id"],
-            set_={"role": ins.excluded.role},
+    for chunk in chunks(
+        [{"package_id": p, "maintainer_id": m, "role": r} for (p, m), r in sorted(links.items())]
+    ):
+        ins = insert(MaintainedBy).values(chunk)
+        await session.execute(
+            ins.on_conflict_do_update(
+                index_elements=["package_id", "maintainer_id"],
+                set_={"role": ins.excluded.role},
+            )
         )
-    )
     return len(ids)

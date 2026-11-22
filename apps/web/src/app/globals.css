@@ -1,3 +1,73 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Graphite ramp, dark by default (an on-call console is read at night); light follows the OS.
+   Channels are space-separated RGB so Tailwind can apply opacity (bg-fg/10, border-crit/60). */
+@layer base {
+  :root {
+    color-scheme: dark;
+    --side: 15 15 16;
+    --bg: 20 20 21;
+    --card: 25 25 27;
+    --raised: 35 35 37;
+    --fg: 237 237 237;
+    --fg2: 161 161 166;
+    --fg3: 133 133 139;
+    --accent: 76 195 217;
+    --on-accent: 10 12 14;
+    --crit: 242 88 92;
+    --high: 238 122 58;
+    --med: 214 169 58;
+    --low: 139 147 167;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --side: 245 245 246;
+      --bg: 250 250 250;
+      --card: 255 255 255;
+      --raised: 236 236 238;
+      --fg: 23 23 23;
+      --fg2: 82 82 82;
+      --fg3: 115 115 115;
+      --accent: 14 116 144;
+      --on-accent: 255 255 255;
+      --crit: 220 38 38;
+      --high: 194 65 12;
+      --med: 161 98 7;
+      --low: 100 116 139;
+    }
+  }
+
+  body {
+    @apply bg-bg font-sans text-sm text-fg antialiased;
+  }
+  h1 {
+    @apply text-[28px] font-medium leading-[1.15];
+  }
+  h2 {
+    @apply text-base font-medium;
+  }
+  :focus-visible {
+    @apply outline outline-2 outline-offset-2 outline-accent;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+    }
+  }
+}
+
+
+/* React Flow's attribution badge defaults to a light chip. */
+.react-flow__attribution {
+  background: transparent !important;
+}
+.react-flow__attribution a {
+  color: rgb(var(--fg3));
+}

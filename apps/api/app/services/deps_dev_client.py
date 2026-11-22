@@ -7,11 +7,11 @@ from urllib.parse import quote
 
 import httpx
 import structlog
-from sqlalchemy import update
+from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.sql import License, PackageVersion
+from app.models.sql import License
 from app.services.http import request
 from app.services.manifest_parser import PkgRef
 
@@ -83,17 +83,23 @@ async def apply_metadata(session: AsyncSession, meta: dict[PkgRef, Metadata]) ->
             index_elements=["spdx_id"], set_={"name": stmt.excluded.name}
         ).returning(License.spdx_id, License.license_id)
         ids = {s: i for s, i in (await session.execute(stmt)).all()}
+    if not meta:
+        return
     # sorted: consistent row-lock order across concurrent ingests avoids deadlocks
-    for ref, m in sorted(meta.items(), key=lambda kv: (kv[0].package_id, kv[0].version)):
-        await session.execute(
-            update(PackageVersion)
-            .where(
-                PackageVersion.package_id == ref.package_id,
-                PackageVersion.version_string == ref.version,
-            )
-            .values(
-                license_id=ids.get(m.license) if m.license else PackageVersion.license_id,
-                published_at=m.published_at or PackageVersion.published_at,
-                is_yanked=m.is_yanked,
-            )
-        )
+    await session.execute(
+        text(
+            "UPDATE package_version SET license_id = COALESCE(:lic, license_id), "
+            "published_at = COALESCE(:pub, published_at), is_yanked = :yanked "
+            "WHERE package_id = :pid AND version_string = :ver"
+        ),
+        [
+            {
+                "pid": ref.package_id,
+                "ver": ref.version,
+                "lic": ids.get(m.license) if m.license else None,
+                "pub": m.published_at,
+                "yanked": m.is_yanked,
+            }
+            for ref, m in sorted(meta.items(), key=lambda kv: (kv[0].package_id, kv[0].version))
+        ],
+    )

@@ -1,12 +1,11 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
-export const MetricCard = ({ title, value }: { title: string; value: number }) => (
-  <Card>
-    <CardHeader>
-      <CardTitle>{title}</CardTitle>
-    </CardHeader>
-    <CardContent>
-      <p className="text-3xl font-bold">{value.toLocaleString()}</p>
-    </CardContent>
+export const MetricCard = ({ title, value, tone }: { title: string; value: number; tone?: "crit" }) => (
+  <Card className="p-5">
+    <p className="text-fg2">{title}</p>
+    <p className={cn("mt-3 font-mono text-[32px] font-medium leading-none tabular-nums", tone === "crit" && value > 0 && "text-crit")}>
+      {value.toLocaleString("en-US")}
+    </p>
   </Card>
 );

@@ -33,6 +33,8 @@ async def _count(pr: int) -> int:
 
 def test_parse_dep():
     assert dr.parse_dep("PyPI:httpx:0.27.0") == ("pypi", "httpx", "0.27.0")
+    assert dr.parse_dep("pypi:Flask_Login:0.6") == ("pypi", "flask-login", "0.6")  # PEP 503
+    assert dr.parse_dep("npm:Flask_Login:0.6") == ("npm", "Flask_Login", "0.6")
     assert dr.parse_dep("go:github.com/a/b:v1.0.0+x:y") == ("go", "github.com/a/b", "v1.0.0+x:y")
     for bad in ("httpx", "pypi:httpx", "pypi::1.0"):
         with pytest.raises(argparse.ArgumentTypeError):

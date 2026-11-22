@@ -3,9 +3,8 @@
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { ECOSYSTEMS, SEVERITIES } from "@/lib/severity";
 
-const ECOSYSTEMS = ["pypi", "npm", "maven", "go", "cargo"];
-const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
 
 export function VulnFilters() {
   const router = useRouter();
@@ -22,7 +21,7 @@ export function VulnFilters() {
 
   return (
     <form role="search" className="flex flex-wrap items-end gap-3" onSubmit={(e) => e.preventDefault()}>
-      <label className="flex flex-col gap-1 text-sm">
+      <label className="flex flex-col gap-1.5 text-fg2">
         Severity
         <Select value={params.get("severity") ?? ""} onChange={(e) => set("severity", e.target.value)}>
           <option value="">All</option>
@@ -33,7 +32,7 @@ export function VulnFilters() {
           ))}
         </Select>
       </label>
-      <label className="flex flex-col gap-1 text-sm">
+      <label className="flex flex-col gap-1.5 text-fg2">
         Ecosystem
         <Select value={params.get("ecosystem") ?? ""} onChange={(e) => set("ecosystem", e.target.value)}>
           <option value="">All</option>
@@ -44,7 +43,7 @@ export function VulnFilters() {
           ))}
         </Select>
       </label>
-      <label className="flex flex-col gap-1 text-sm">
+      <label className="flex min-w-0 flex-1 flex-col gap-1.5 text-fg2 sm:max-w-xs">
         Search
         <Input
           type="search"

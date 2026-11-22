@@ -12,6 +12,7 @@
 !.env.example
 .git
 .claude
+.codegraph
 supabase
 docs
 er-diagram

@@ -525,6 +525,11 @@ C20c v_package_abandonment (top 5)
 +------------+-----------------+------------------+---------------+-----------+-------------------+
 ```
 
+The C20c table above was captured before `v_package_abandonment` treated unknown activity (no
+maintainer, or no `last_active_at`) as 730 days idle. Packages with no maintainer now score 100.0
+too and join the tie at the top, so a re-run lists more than the four 100.0 rows shown; re-run
+`sql/complex_queries.sql` to refresh it.
+
 ### Updatable view with CHECK OPTION (C22)
 
 ```sql

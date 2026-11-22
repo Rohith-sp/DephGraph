@@ -7,8 +7,8 @@ import { RemediationProgress } from "@/components/charts/RemediationProgress";
 import { Button } from "@/components/ui/button";
 import type { RemediationPlan } from "@/lib/types";
 
-export function SavePlan({ teamId }: { teamId: number }) {
-  const [plan, setPlan] = useState<RemediationPlan | null>(null);
+export function SavePlan({ teamId, saved }: { teamId: number; saved: RemediationPlan | null }) {
+  const [plan, setPlan] = useState(saved);
   const [pending, start] = useTransition();
 
   const save = () =>
@@ -20,7 +20,7 @@ export function SavePlan({ teamId }: { teamId: number }) {
     });
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <Button onClick={save} disabled={pending}>
         {pending ? "Saving…" : "Save plan"}
       </Button>

@@ -1,5 +1,6 @@
 "use client";
 
+import { GitFork } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -24,15 +25,16 @@ export function AuthForm({ mode, initialError }: { mode: "login" | "register"; i
     }
     setBusy(true);
     const auth = createClient().auth;
-    const redirectTo = `${window.location.origin}/`;
-    const { error: err } = magic
+    const redirectTo = `${window.location.origin}/auth/callback`;
+    const { data, error: err } = magic
       ? await auth.signInWithOtp({ email, options: { emailRedirectTo: redirectTo } })
       : mode === "login"
         ? await auth.signInWithPassword({ email, password })
         : await auth.signUp({ email, password, options: { emailRedirectTo: redirectTo } });
     setBusy(false);
     if (err) return setError(err.message);
-    if (magic || mode === "register") return setInfo("Check your email to continue.");
+    // Without email confirmation, sign-up already returns a session.
+    if (magic || (mode === "register" && !data.session)) return setInfo("Check your email to continue.");
     router.replace("/");
     router.refresh();
   }
@@ -43,13 +45,17 @@ export function AuthForm({ mode, initialError }: { mode: "login" | "register"; i
         e.preventDefault();
         void go(e.currentTarget, false);
       }}
-      className="w-full max-w-sm space-y-4 rounded-lg border border-slate-200 bg-white p-6">
-      <h1 className="text-xl font-bold">{mode === "login" ? "Sign in" : "Create account"}</h1>
-      <label className="flex flex-col gap-1 text-sm">
+      className="w-full max-w-sm space-y-5 rounded-xl border border-line bg-card p-6"
+    >
+      <div className="flex items-center gap-2.5 text-base font-medium">
+        <GitFork aria-hidden strokeWidth={1.5} className="h-[18px] w-[18px]" /> DephGraph
+      </div>
+      <h1 className="text-xl">{mode === "login" ? "Sign in" : "Create account"}</h1>
+      <label className="flex flex-col gap-1.5 text-fg2">
         Email
         <Input name="email" type="email" required autoComplete="email" />
       </label>
-      <label className="flex flex-col gap-1 text-sm">
+      <label className="flex flex-col gap-1.5 text-fg2">
         Password
         <Input
           name="password"
@@ -60,12 +66,12 @@ export function AuthForm({ mode, initialError }: { mode: "login" | "register"; i
         />
       </label>
       {error && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="text-crit">
           {error}
         </p>
       )}
       {info && (
-        <p role="status" className="text-sm text-green-700">
+        <p role="status" className="text-fg2">
           {info}
         </p>
       )}
@@ -87,11 +93,15 @@ export function AuthForm({ mode, initialError }: { mode: "login" | "register"; i
           Email me a magic link
         </Button>
       )}
-      <p className="text-sm text-slate-600">
+      <p className="text-fg2">
         {mode === "login" ? (
-          <Link href="/register">Need an account? Register</Link>
+          <Link href="/register" className="hover:text-accent">
+            Need an account? Register
+          </Link>
         ) : (
-          <Link href="/login">Have an account? Sign in</Link>
+          <Link href="/login" className="hover:text-accent">
+            Have an account? Sign in
+          </Link>
         )}
       </p>
     </form>

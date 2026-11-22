@@ -1,7 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-const PUBLIC = ["/login", "/register"];
+const PUBLIC = ["/login", "/register", "/auth/callback"];
 
 export async function middleware(req: NextRequest) {
   // Opt-in only: anything but the literal "true" keeps auth enforced.
@@ -32,8 +32,9 @@ export async function middleware(req: NextRequest) {
       },
     },
   });
-  const { data } = await supabase.auth.getUser();
-  if (!data.user && !isPublic) return toLogin();
+  // Verifies the JWT locally against the project's cached JWKS; no round trip to Supabase per request.
+  const { data } = await supabase.auth.getClaims();
+  if (!data?.claims && !isPublic) return toLogin();
   return res;
 }
 

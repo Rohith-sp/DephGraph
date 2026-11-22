@@ -2,7 +2,7 @@
 # "dephgraph" login path, and writes the output to a log file.
 #
 #   .\scripts\run-sql.ps1 er-diagram\schema.sql
-#   .\scripts\run-sql.ps1 scripts\verify_schema.sql -Log logs\verify.log
+#   .\scripts\run-sql.ps1 scripts\verify_mysql_schema.sql -Log logs\verify.log
 #
 # The password is never passed here: save it once with
 #   mysql_config_editor set --login-path=dephgraph --host=localhost --user=root --password

@@ -1,15 +1,17 @@
 from typing import Annotated, Any, Literal
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pymongo.errors import PyMongoError
+from sqlalchemy import text
 
 from app.auth import get_current_user
 from app.database import DbSession
 from app.models.mongo import osv_advisories
 from app.schemas.analysis import BlastRadiusOut, VulnDetail, VulnOut
-from app.schemas.common import Envelope, Page, Pagination, ok
+from app.schemas.common import BigId, Envelope, Page, Pagination, ok
 from app.services.blast_radius import get_blast_radius
+from app.services.cache import cached_json
 from app.services.queries import LATEST, require_service, rows
 
 log = structlog.get_logger()
@@ -40,6 +42,7 @@ WHERE (CAST(:severity AS TEXT) IS NULL OR v.severity = CAST(:severity AS TEXT))
 
 @router.get("/vulnerabilities", response_model=Envelope[Page[VulnOut]])
 async def list_vulnerabilities(
+    request: Request,
     session: DbSession,
     page: Annotated[Pagination, Depends()],
     severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"] | None = None,
@@ -47,28 +50,34 @@ async def list_vulnerabilities(
     q: Annotated[str | None, Query(max_length=200)] = None,
     sort: Literal["cvss_score", "published_at"] = "cvss_score",
     order: Literal["asc", "desc"] = "desc",
-) -> dict[str, Any]:
-    params = {
-        "severity": severity,
-        "ecosystem": ecosystem,
-        "q": f"%{q.replace('%', r'\%').replace('_', r'\_')}%" if q else None,
-    }
-    total = (await rows(session, f"SELECT COUNT(*) AS n FROM vulnerability v {FILTERS}", **params))[
-        0
-    ]["n"]
-    items = await rows(
-        session,
-        f"{SELECT} {FILTERS} ORDER BY {SORT_COLUMNS[sort]} {order.upper()} NULLS LAST, v.vuln_id "
-        "LIMIT :limit OFFSET :offset",
-        **params,
-        limit=page.page_size,
-        offset=page.offset,
-    )
-    return ok({"items": items, "total": total, "page": page.page, "page_size": page.page_size})
+) -> Response:
+    async def build() -> str:
+        found = await session.execute(
+            text(f"""
+            SELECT (SELECT coalesce(json_agg(i), '[]'::json)::text FROM (
+                      {SELECT} {FILTERS}
+                      ORDER BY {SORT_COLUMNS[sort]} {order.upper()} NULLS LAST, v.vuln_id
+                      LIMIT :limit OFFSET :offset) i) AS items,
+                   (SELECT COUNT(*) FROM vulnerability v {FILTERS}) AS total
+            """),
+            {
+                "severity": severity,
+                "ecosystem": ecosystem,
+                "q": f"%{q.replace('%', r'\%').replace('_', r'\_')}%" if q else None,
+                "limit": page.page_size,
+                "offset": page.offset,
+            },
+        )
+        items, total = found.one()
+        return (
+            f'{{"items":{items},"total":{total},"page":{page.page},"page_size":{page.page_size}}}'
+        )
+
+    return await cached_json(request, build)
 
 
 @router.get("/vulnerabilities/{vuln_id}", response_model=Envelope[VulnDetail])
-async def get_vulnerability(vuln_id: int, session: DbSession) -> dict[str, Any]:
+async def get_vulnerability(vuln_id: BigId, session: DbSession) -> dict[str, Any]:
     found = await rows(session, f"{SELECT} WHERE v.vuln_id = :id", id=vuln_id)
     if not found:
         raise HTTPException(404, "Vulnerability not found")
@@ -92,6 +101,6 @@ async def get_vulnerability(vuln_id: int, session: DbSession) -> dict[str, Any]:
 
 
 @router.get("/blast-radius/{service_id}", response_model=Envelope[BlastRadiusOut])
-async def blast_radius(service_id: int, session: DbSession) -> dict[str, Any]:
+async def blast_radius(service_id: BigId, session: DbSession) -> dict[str, Any]:
     await require_service(session, service_id)
     return ok(await get_blast_radius(session, service_id))

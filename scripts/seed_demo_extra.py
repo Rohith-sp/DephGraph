@@ -90,8 +90,10 @@ NEW_SERVICES = [
     ("admin-cli", "typescript", 3, ["commander", "yargs", "meow", "sequelize", "typeorm", "knex", "vitest", "tape"]),
 ]
 
-# Existing seed maintainers 1..6 -> days since last activity
-EXISTING_ACTIVITY = {1: 5, 2: 20, 3: 45, 4: 400, 5: 900, 6: 1400}
+# seed_db's six maintainers (by username, not id) -> days since last activity
+EXISTING_ACTIVITY = {
+    "alice-dev": 5, "bob-oss": 20, "carol-rs": 45, "dave-py": 400, "erin-js": 900, "frank-core": 1400,
+}
 # New maintainers. username -> days idle. "idle-*" are dedicated single-maintainer packages.
 ACTIVE_POOL = {f"active-maint-{i}": d for i, d in enumerate([3, 9, 14, 30, 60, 100, 150, 200], 1)}
 IDLE_POOL = {f"idle-maint-{i}": d for i, d in enumerate([800, 1000, 1300, 1700, 2200, 3000], 1)}
@@ -125,9 +127,7 @@ async def main(dsn: str = DSN) -> None:
         for e, n, _, _ in ALL:
             hv = h(n)
             major = hv % 4
-            vs = [f"{major}.{m}.{(hv >> (4 * m)) % 10}" for m in range(1 + hv % 2 + 0)] or [f"{major}.0.0"]
-            if len(vs) < 2 and hv % 2:
-                vs.append(f"{major}.1.{hv % 7}")
+            vs = [f"{major}.{m}.{(hv >> (4 * m)) % 10}" for m in range(1 + hv % 2)]
             vers[n] = vs
             for i, v in enumerate(vs):
                 rows.append((pid[(e, n)], v, lic_ids[hv % len(lic_ids)], ts(100 + hv % 1500 + (len(vs) - i) * 90)))
@@ -138,15 +138,13 @@ async def main(dsn: str = DSN) -> None:
         )
 
         # --- 2. maintainers ---------------------------------------------------------------------
-        for mid, days in EXISTING_ACTIVITY.items():
-            await c.execute("UPDATE maintainer SET last_active_at = $2 WHERE maintainer_id = $1", mid, ts(days))
         pool = {**ACTIVE_POOL, **IDLE_POOL}
         await c.executemany(
             "INSERT INTO maintainer (username, profile_url) VALUES ($1, $2) "
             "ON CONFLICT (platform, username) DO NOTHING",
             [(u, f"https://github.com/{u}") for u in pool],
         )
-        for u, days in pool.items():
+        for u, days in {**EXISTING_ACTIVITY, **pool}.items():
             await c.execute("UPDATE maintainer SET last_active_at = $2 WHERE username = $1", u, ts(days))
         mid_of = {r["username"]: r["maintainer_id"] for r in await c.fetch("SELECT maintainer_id, username FROM maintainer")}
         active, idle = list(ACTIVE_POOL), list(IDLE_POOL)

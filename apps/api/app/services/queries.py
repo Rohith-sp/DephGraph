@@ -1,5 +1,6 @@
 """Shared read queries (parameterized text SQL against the latest deployment per service)."""
 
+from collections.abc import Iterator
 from typing import Any
 
 from fastapi import HTTPException
@@ -12,10 +13,25 @@ LATEST = (
 )
 
 Rows = list[dict[str, Any]]
+INSERT_CHUNK = 1000
+
+
+def chunks(items: list[Any]) -> Iterator[list[Any]]:
+    """asyncpg caps a statement at 32767 bind params; 1000 rows x <=6 columns stays far below."""
+    for i in range(0, len(items), INSERT_CHUNK):
+        yield items[i : i + INSERT_CHUNK]
 
 
 async def rows(session: AsyncSession, sql: str, **params: Any) -> Rows:
     return [dict(r) for r in (await session.execute(text(sql), params)).mappings()]
+
+
+async def json_rows(session: AsyncSession, sql: str, **params: Any) -> str:
+    """The query's rows as a JSON array built by Postgres: no per-row Python objects to dump."""
+    result = await session.execute(
+        text(f"SELECT coalesce(json_agg(t), '[]'::json)::text FROM ({sql}) t"), params
+    )
+    return str(result.scalar_one())
 
 
 async def require_service(session: AsyncSession, service_id: int) -> dict[str, Any]:
@@ -67,23 +83,17 @@ async def open_vuln_rows(session: AsyncSession, team_id: int | None = None) -> R
     )
 
 
-async def prunable_rows(session: AsyncSession, service_id: int | None = None) -> Rows:
-    """Packages observed in the latest deployment but never live (v_prunable semantics)."""
-    return await rows(
-        session,
-        f"""
-        WITH {LATEST}
-        SELECT p.package_id, p.name, p.ecosystem, r.version_string AS version,
-               COALESCE(max(o.exec_count), 0) AS exec_count, r.deploy_seq
-        FROM latest l
-        JOIN resolves_to r ON (r.service_id, r.deploy_seq) = (l.service_id, l.deploy_seq)
-        JOIN package p ON p.package_id = r.package_id
-        JOIN observes o ON (o.service_id, o.deploy_seq, o.package_id, o.version_string)
-                         = (r.service_id, r.deploy_seq, r.package_id, r.version_string)
-        WHERE (CAST(:sid AS BIGINT) IS NULL OR r.service_id = CAST(:sid AS BIGINT))
-        GROUP BY p.package_id, p.name, p.ecosystem, r.version_string, r.deploy_seq
-        HAVING NOT bool_or(o.is_live)
-        ORDER BY p.name
-        """,
-        sid=service_id,
-    )
+PRUNABLE_SQL = f"""
+    WITH {LATEST}
+    SELECT r.service_id, p.package_id, p.name, p.ecosystem, r.version_string AS version,
+           COALESCE(max(o.exec_count), 0) AS exec_count, r.deploy_seq
+    FROM latest l
+    JOIN resolves_to r ON (r.service_id, r.deploy_seq) = (l.service_id, l.deploy_seq)
+    JOIN package p ON p.package_id = r.package_id
+    JOIN observes o ON (o.service_id, o.deploy_seq, o.package_id, o.version_string)
+                     = (r.service_id, r.deploy_seq, r.package_id, r.version_string)
+    WHERE (CAST(:sid AS BIGINT) IS NULL OR r.service_id = CAST(:sid AS BIGINT))
+    GROUP BY r.service_id, p.package_id, p.name, p.ecosystem, r.version_string, r.deploy_seq
+    HAVING NOT bool_or(o.is_live)
+    ORDER BY p.name, r.service_id
+"""  # packages observed in the latest deployment but never live (v_prunable semantics)

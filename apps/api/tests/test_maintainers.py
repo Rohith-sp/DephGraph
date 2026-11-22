@@ -43,9 +43,7 @@ OWNERS_DOC = {
         },
     ]
 }
-CRATE_DOC = {
-    "crate": {"name": "serde", "updated_at": "2025-06-01T10:00:00.123456+00:00"}
-}
+CRATE_DOC = {"crate": {"name": "serde", "updated_at": "2025-06-01T10:00:00.123456+00:00"}}
 
 
 # ---- parsing ------------------------------------------------------------------------------
@@ -105,34 +103,24 @@ def test_parse_crates():
 
 @respx.mock
 async def test_fetch_one_per_registry():
-    npm = respx.get("https://registry.npmjs.org/@types%2Fnode").respond(
-        200, json=NPM_DOC
-    )
+    npm = respx.get("https://registry.npmjs.org/@types%2Fnode").respond(200, json=NPM_DOC)
     respx.get("https://pypi.org/pypi/requests/json").respond(200, json=PYPI_DOC)
-    owners = respx.get("https://crates.io/api/v1/crates/serde/owners").respond(
-        200, json=OWNERS_DOC
-    )
+    owners = respx.get("https://crates.io/api/v1/crates/serde/owners").respond(200, json=OWNERS_DOC)
     respx.get("https://crates.io/api/v1/crates/serde").respond(200, json=CRATE_DOC)
     respx.get("https://pypi.org/pypi/missing/json").respond(404)
     respx.get("https://registry.npmjs.org/broken").respond(200, content=b"not json")
 
     async with httpx.AsyncClient(headers={"User-Agent": maintainers.USER_AGENT}) as c:
         assert (await maintainers.fetch_one(c, "npm", "@types/node")).platform == "npm"
-        assert (await maintainers.fetch_one(c, "pypi", "requests")).people[
-            0
-        ].username == "Alice"
+        assert (await maintainers.fetch_one(c, "pypi", "requests")).people[0].username == "Alice"
         crate = await maintainers.fetch_one(c, "cargo", "serde")
         assert crate.last_active_at.year == 2025 and len(crate.people) == 2
         assert await maintainers.fetch_one(c, "pypi", "missing") is None
         assert await maintainers.fetch_one(c, "npm", "broken") is None
-        assert (
-            await maintainers.fetch_one(c, "go", "github.com/x/y") is None
-        )  # skipped, no call
+        assert await maintainers.fetch_one(c, "go", "github.com/x/y") is None  # skipped, no call
     assert npm.called
     ua = owners.calls.last.request.headers["User-Agent"]
-    assert (
-        ua.startswith("dephgraph-course-project") and "@" not in ua
-    )  # generic, no personal info
+    assert ua.startswith("dephgraph-course-project") and "@" not in ua  # generic, no personal info
 
 
 @respx.mock
@@ -194,9 +182,7 @@ def pm(*names: str, days_idle: float | None) -> PackageMaintainers:
 async def test_upsert_links_and_keeps_newest_activity():
     a, b = await mkpkg("ups-a"), await mkpkg("ups-b")
     assert (
-        await sync(
-            {a: pm("ups-ann", "ups-ben", days_idle=10), b: pm("ups-ann", days_idle=400)}
-        )
+        await sync({a: pm("ups-ann", "ups-ben", days_idle=10), b: pm("ups-ann", days_idle=400)})
         == 2
     )
     # older activity seen later must not move ann's last_active_at backwards; ben dropped from a
@@ -226,9 +212,7 @@ async def test_upsert_links_and_keeps_newest_activity():
 
 async def test_view_single_inactive_maintainer_is_high():
     """1 maintainer, idle 3 years: 50 + min(1096, 730)/14.6 = 50 + 50 = 100 -> BLOCK."""
-    pid = await mkpkg(
-        "ab-single", age=0
-    )  # fresh release: publish age no longer matters
+    pid = await mkpkg("ab-single", age=0)  # fresh release: publish age no longer matters
     await sync({pid: pm("ab-solo", days_idle=3 * 365)})
     assert await score("ab-single") == 100
     async with SessionLocal() as s, s.begin():
@@ -270,9 +254,7 @@ async def test_view_fallback_without_maintainer_data():
     # unknown publish date -> 50 (unchanged from 002)
     async with SessionLocal() as s, s.begin():
         await s.execute(
-            text(
-                "UPDATE package_version SET published_at = NULL WHERE package_id = :p"
-            ),
+            text("UPDATE package_version SET published_at = NULL WHERE package_id = :p"),
             {"p": pid},
         )
     assert await score("ab-noact") == 34
@@ -282,9 +264,7 @@ async def test_view_fallback_without_maintainer_data():
 
 
 async def test_maintainers_sync_rejects_bad_secret(client):
-    r = await client.post(
-        "/internal/maintainers-sync", headers={"X-Cron-Secret": "nope"}
-    )
+    r = await client.post("/internal/maintainers-sync", headers={"X-Cron-Secret": "nope"})
     assert r.status_code == 401
 
 
@@ -292,12 +272,10 @@ async def test_maintainers_sync_rejects_bad_secret(client):
 async def test_maintainers_sync_endpoint(client, reseed):
     respx.get(url__regex=r"https://registry\.npmjs\.org/.*").respond(200, json=NPM_DOC)
     respx.get(url__regex=r"https://pypi\.org/pypi/.*/json").respond(200, json=PYPI_DOC)
-    owners = respx.get(
-        url__regex=r"https://crates\.io/api/v1/crates/[^/]+/owners"
-    ).respond(200, json=OWNERS_DOC)
-    respx.get(url__regex=r"https://crates\.io/api/v1/crates/[^/]+$").respond(
-        200, json=CRATE_DOC
+    owners = respx.get(url__regex=r"https://crates\.io/api/v1/crates/[^/]+/owners").respond(
+        200, json=OWNERS_DOC
     )
+    respx.get(url__regex=r"https://crates\.io/api/v1/crates/[^/]+$").respond(200, json=CRATE_DOC)
 
     r = await client.post("/internal/maintainers-sync", headers=CRON)
     assert r.status_code == 200, r.text
@@ -307,9 +285,7 @@ async def test_maintainers_sync_endpoint(client, reseed):
     async with SessionLocal() as s:
         n = (
             await s.execute(
-                text(
-                    "SELECT count(*) FROM package WHERE ecosystem IN ('npm','pypi','cargo')"
-                )
+                text("SELECT count(*) FROM package WHERE ecosystem IN ('npm','pypi','cargo')")
             )
         ).scalar_one()
         azer = (

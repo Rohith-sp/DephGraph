@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.common import BigBodyId
+
 
 class ServiceOut(BaseModel):
     service_id: int
@@ -115,10 +117,13 @@ class PlanStep(BaseModel):
     services_affected: list[str]
     new_coverage: int
     cumulative_coverage_pct: float
+    plan_id: int | None  # most recent saved plan of the team that holds this upgrade
+    action_seq: int | None
+    action_status: Literal["PENDING", "DONE", "SKIPPED"] | None
 
 
 class PlanCreate(BaseModel):
-    team_id: int
+    team_id: BigBodyId
     title: str | None = Field(default=None, max_length=255)
 
 
@@ -154,7 +159,6 @@ class StatsOut(BaseModel):
     open_vulns: int
     critical_vulns: int
     prunable_packages: int
-    copyleft_packages: int
     severity_counts: SeverityCounts
 
 
@@ -163,19 +167,20 @@ class SyncOut(BaseModel):
     vulns_fetched: int
 
 
-class ClusterOut(BaseModel):
-    cluster_id: int
-    label: str
-    keywords: list[str]
-    member_count: int
-
-
 class ClusterMember(BaseModel):
     package_id: int
     name: str
     ecosystem: str
     x: float | None  # null only if Mongo embeddings are unavailable
     y: float | None
+
+
+class ClusterOut(BaseModel):
+    cluster_id: int
+    label: str
+    keywords: list[str]
+    member_count: int
+    members: list[ClusterMember]
 
 
 class RedundancyOut(BaseModel):

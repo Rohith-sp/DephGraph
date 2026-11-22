@@ -1,13 +1,24 @@
 "use client";
 
+import { useRouter } from "next/navigation";
+import { startTransition } from "react";
 import { Button } from "@/components/ui/button";
 
-export default function DashboardError({ error, reset }: { error: Error; reset: () => void }) {
+// Production hides server error text behind a digest, so the message is fixed and the digest is the reference.
+export default function DashboardError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+  const router = useRouter();
+  // reset() alone only re-renders the client tree; the failed server render must be fetched again.
+  const retry = () =>
+    startTransition(() => {
+      router.refresh();
+      reset();
+    });
   return (
-    <div role="alert" className="space-y-3 rounded-lg border border-red-200 bg-red-50 p-6">
-      <h1 className="text-lg font-semibold text-red-900">Something went wrong</h1>
-      <p className="text-sm text-red-800">{error.message}</p>
-      <Button onClick={reset}>Try again</Button>
+    <div role="alert" className="max-w-xl space-y-4 rounded-xl border border-crit/40 bg-card p-5">
+      <h1 className="text-xl">Could not load this page</h1>
+      <p className="text-fg2">The API did not return what this page needs. Check that it is running, then try again.</p>
+      {error.digest && <p className="font-mono text-xs text-fg3">Ref {error.digest}</p>}
+      <Button onClick={retry}>Try again</Button>
     </div>
   );
 }

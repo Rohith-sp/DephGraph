@@ -2,9 +2,11 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.common import BigBodyId
+
 
 class IngestRequest(BaseModel):
-    service_id: int
+    service_id: BigBodyId
     ecosystem: Literal["npm", "pypi", "cargo", "go"]
     content: str = Field(min_length=1, max_length=1_000_000)
     filename: str = Field(min_length=1, max_length=255)

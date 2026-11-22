@@ -3,6 +3,7 @@ import base64
 import hashlib
 import hmac
 import json
+import time
 from decimal import Decimal as D
 
 import httpx
@@ -13,8 +14,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import text
 
 from app.config import settings
-from app.database import SessionLocal, get_mongo
-from app.services import github, pr_gate_engine
+from app.database import SessionLocal, get_mongo, get_redis
+from app.routers.pr_gate import normalize_repo_url
+from app.services import cache, github, pr_gate_engine
 from app.services.pr_gate_engine import stage2
 
 SECRET = "hook-secret"
@@ -49,7 +51,7 @@ def payload(action="opened", repo="https://github.com/acme/api-gateway") -> dict
     }
 
 
-async def post(client, body: dict, event="pull_request", sig=None):
+async def post(client, body: dict, event="pull_request", sig=None, headers_extra=None):
     raw = json.dumps(body).encode()
     return await client.post(
         "/pr-gate/webhook",
@@ -58,6 +60,7 @@ async def post(client, body: dict, event="pull_request", sig=None):
             "X-GitHub-Event": event,
             "X-Hub-Signature-256": sig or sign(raw),
             "Content-Type": "application/json",
+            **(headers_extra or {}),
         },
     )
 
@@ -100,6 +103,30 @@ async def mkpkg(name, cvss=None, fixed="1.1.0", vuln=True, copyleft=False, age=0
                 ),
                 {"p": pid, "v": vid, "f": fixed},
             )
+
+
+async def review_rows(client, auth, service_id=1) -> list[dict]:
+    got = (await client.get(f"/pr-gate/verdicts/{service_id}", headers=auth)).json()["data"]
+    return [x for x in got if x["pr_number"] == 7]
+
+
+async def review(client, auth, body=None, **kw) -> dict:
+    """POST the webhook, assert the 202 ack, then read PR 7's stored verdicts (the real result)."""
+    r = await post(client, body or payload(), **kw)
+    assert r.status_code == 202 and r.json()["data"]["accepted"] is True, r.text
+    stored = await review_rows(client, auth)
+    return {
+        "verdict": max((x["verdict"] for x in stored), key=pr_gate_engine.RANK.get, default="PASS"),
+        "stage_reached": max((x["stage_reached"] for x in stored), default=1),
+        "deps": [
+            {
+                "name": x["dep_name"],
+                "stage_reached": x["stage_reached"],
+                "reasoning": x["reasoning"],
+            }
+            for x in stored
+        ],
+    }
 
 
 def files(*names: str):
@@ -161,9 +188,12 @@ async def test_non_pr_event_and_action_skipped(client):
     assert (await post(client, payload("closed"))).json()["data"] == {"skipped": True}
 
 
-async def test_unknown_repo_skipped(client):
+@respx.mock
+async def test_unknown_repo_is_acked_and_never_fetched(client, auth):
     r = await post(client, payload(repo="https://github.com/other/thing"))
-    assert r.status_code == 200 and r.json()["data"]["skipped"] is True
+    assert r.status_code == 202
+    assert not respx.calls  # no registered service: GitHub is never called
+    assert await review_rows(client, auth) == []
 
 
 async def test_malformed_payload_422(client):
@@ -172,47 +202,48 @@ async def test_malformed_payload_422(client):
 
 @respx.mock
 async def test_spec_phase6_block_and_persist(client, auth, reseed):
+    """PRD Phase 6 snippet, adapted: GitHub's 10s limit means 202 + background work (see router)."""
     await mkpkg("evilcrit", cvss=9.8)
     files("evilcrit")
-    r = await post(client, payload())
-    assert r.status_code == 200
-    data = r.json()["data"]
+    started = time.monotonic()
+    r = await post(client, payload(), headers_extra={"X-GitHub-Delivery": "d-1"})
+    assert r.status_code == 202
+    assert r.json() == {"data": {"accepted": True, "delivery_id": "d-1"}, "error": None}
+    data = await review(client, auth)  # background work has finished: read the stored result
     assert data["verdict"] in ["PASS", "ADVISORY", "BLOCK"] and data["verdict"] == "BLOCK"
     assert data["stage_reached"] in [1, 2, 3]
-    assert data["processing_ms"] < 30_000
+    assert time.monotonic() - started < 30
     assert [d["name"] for d in data["deps"]] == ["evilcrit"]
-
-    v = (await client.get("/pr-gate/verdicts/1", headers=auth)).json()["data"]
-    row = next(x for x in v if x["pr_number"] == 7)
-    assert row["verdict"] == "BLOCK" and row["stage_reached"] == 2 and "CVSS" in row["reasoning"]
+    assert data["deps"][0]["stage_reached"] == 2 and "CVSS" in data["deps"][0]["reasoning"]
 
 
 @respx.mock
-async def test_stage1_pass_and_worst_verdict(client, reseed):
+async def test_stage1_pass_and_worst_verdict(client, auth, reseed):
     await mkpkg("lowrisk", cvss=3.0)
     await mkpkg("copyleftpkg", vuln=False, copyleft=True)
     files("lowrisk", "unknownpkg")
-    d = (await post(client, payload())).json()["data"]
+    d = await review(client, auth)
     assert d["verdict"] == "PASS"
     by = {x["name"]: x for x in d["deps"]}
     assert by["unknownpkg"]["stage_reached"] == 1 and by["lowrisk"]["stage_reached"] == 2
 
     respx.clear()
     files("unknownpkg", "copyleftpkg")
-    d = (await post(client, payload("synchronize"))).json()["data"]
+    d = await review(client, auth, payload("synchronize"))
     assert d["verdict"] == "BLOCK"  # copyleft reachable without any vuln
 
 
 @respx.mock
-async def test_stage3_groq_refines_advisory(client, monkeypatch, reseed):
+async def test_stage3_groq_refines_advisory(client, auth, monkeypatch, reseed):
     monkeypatch.setattr(settings, "groq_api_key", "gsk_test")
     await mkpkg("midrisk", cvss=7.0)
     files("midrisk")
     reply = groq_reply("BLOCK", "Exploitable in auth path.")
     route = respx.post(GROQ).respond(200, json=reply)
-    d = (await post(client, payload())).json()["data"]
+    d = await review(client, auth)
     assert d["verdict"] == "BLOCK" and d["stage_reached"] == 3
-    assert d["deps"][0]["reasoning"] == "Exploitable in auth path."
+    assert d["deps"][0]["reasoning"].endswith("| LLM: Exploitable in auth path.")
+    assert d["deps"][0]["reasoning"].startswith("CVSS 7.00 in 6.0-8.9")  # rule reason kept
     prompt = json.loads(route.calls[0].request.content)["messages"][0]["content"]
     assert len(prompt) <= 1200
     stored = await get_mongo()["review_responses"].find_one({"dep_name": "midrisk"})
@@ -221,17 +252,17 @@ async def test_stage3_groq_refines_advisory(client, monkeypatch, reseed):
 
 @respx.mock
 @pytest.mark.parametrize("key,status", [("", 500), ("gsk", 500), ("gsk", 429)])
-async def test_groq_failure_keeps_stage2(client, monkeypatch, reseed, key, status):
+async def test_groq_failure_keeps_stage2(client, auth, monkeypatch, reseed, key, status):
     monkeypatch.setattr(settings, "groq_api_key", key)
     await mkpkg("midrisk2", cvss=7.0)
     files("midrisk2")
     respx.post(GROQ).respond(status)
-    d = (await post(client, payload())).json()["data"]
+    d = await review(client, auth)
     assert d["verdict"] == "ADVISORY" and d["stage_reached"] == 2
 
 
 @respx.mock
-async def test_groq_429_then_success(client, monkeypatch, reseed):
+async def test_groq_429_then_success(client, auth, monkeypatch, reseed):
     monkeypatch.setattr(settings, "groq_api_key", "gsk")
     await mkpkg("midrisk3", cvss=7.0)
     files("midrisk3")
@@ -241,12 +272,12 @@ async def test_groq_429_then_success(client, monkeypatch, reseed):
             httpx.Response(200, json=groq_reply("ADVISORY", "ok")),
         ]
     )
-    d = (await post(client, payload())).json()["data"]
+    d = await review(client, auth)
     assert d["stage_reached"] == 3 and d["verdict"] == "ADVISORY"
 
 
 @respx.mock
-async def test_check_run_posted_when_configured(client, monkeypatch, reseed):
+async def test_check_run_posted_when_configured(client, auth, monkeypatch, reseed):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     pem = key.private_bytes(
         serialization.Encoding.PEM,
@@ -263,7 +294,7 @@ async def test_check_run_posted_when_configured(client, monkeypatch, reseed):
     check = respx.post("https://api.github.com/repos/acme/api-gateway/check-runs").respond(
         201, json={}
     )
-    assert (await post(client, payload())).json()["data"]["verdict"] == "BLOCK"
+    assert (await review(client, auth))["verdict"] == "BLOCK"
     sent = json.loads(check.calls[0].request.content)
     assert sent["conclusion"] == "failure" and sent["head_sha"] == "abc123"
     assert check.calls[0].request.headers["authorization"] == "Bearer ghs_x"
@@ -316,7 +347,7 @@ YEAR = 31557600
         (YEAR * 8 // 3, True, (2, "BLOCK")),  # 80
     ],
 )
-async def test_stage1_abandonment_boundaries(age, yanked, want):
+async def test_stage1_abandonment_boundaries(age, yanked, want, reseed):
     name = f"aband{age}{yanked}"
     await mkpkg(name, vuln=False, age=age, yanked=yanked)
     async with SessionLocal() as s, s.begin():
@@ -343,14 +374,14 @@ async def test_same_name_deps_keep_worst_and_redelivery_replaces(client, auth, r
             {"filename": "dev/requirements.txt", "patch": hunk("1.0.0")},
         ],
     )
-    d = (await post(client, payload())).json()["data"]
-    assert d["verdict"] == "BLOCK" and len(d["deps"]) == 2
+    d = await review(client, auth)
+    assert d["verdict"] == "BLOCK" and len(d["deps"]) == 1  # one PK row: the worst
     assert await _verdicts(client, auth) == {"dupe": "BLOCK"}  # PASS did not hide BLOCK
 
     respx.clear()  # synchronize: only the safe version remains -> stale BLOCK is gone
     patch = "@@ -1 +1,2 @@\n flask==2.0.0\n+dupe==2.0.0\n"
     respx.get(FILES).respond(200, json=[{"filename": "requirements.txt", "patch": patch}])
-    await post(client, payload("synchronize"))
+    await review(client, auth, payload("synchronize"))
     assert await _verdicts(client, auth) == {"dupe": "PASS"}
 
 
@@ -542,7 +573,7 @@ async def test_redundancy_no_signal_cases(reseed):
 async def test_webhook_flags_redundant_dep(client, auth, reseed):
     await mkcluster_pkgs({"web / http / client": ["whttp", "wreq"]}, deployed=["wreq"])
     files("whttp")
-    d = (await post(client, payload())).json()["data"]
+    d = await review(client, auth)
     assert d["verdict"] == "ADVISORY" and d["stage_reached"] == 2
     assert "same job as wreq" in d["deps"][0]["reasoning"]
     assert await _verdicts(client, auth) == {"whttp": "ADVISORY"}
@@ -569,3 +600,372 @@ def test_prompt_with_redundancy_within_budget():
     assert "same job as requests (cluster 'web / requests / client')" in p and len(p) <= 1200
     plain = pr_gate_engine.build_prompt(pr_gate_engine.DepVerdict("a", "1", "ADVISORY", 2, "r"))
     assert "Redundant with packages already deployed: none" in plain
+
+
+# --- realistic webhook flows (GitHub mocked with respx; review fixes B1-B10) -----------------
+
+
+def configure_app(monkeypatch):
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    monkeypatch.setattr(settings, "github_app_id", "123")
+    monkeypatch.setattr(settings, "github_private_key_base64", base64.b64encode(pem).decode())
+
+
+TOKEN_URL = "https://api.github.com/app/installations/99/access_tokens"
+CHECKS = "https://api.github.com/repos/acme/api-gateway/check-runs"
+
+
+def req_patch(*lines: str) -> str:
+    return "@@ -1 +1,9 @@\n flask==2.0.0\n" + "".join(f"+{ln}\n" for ln in lines)
+
+
+def filler(n: int, start: int = 0) -> list[dict]:
+    return [
+        {"filename": f"src/mod{i}.py", "patch": "@@ -1 +1 @@\n+x = 1\n"}
+        for i in range(start, start + n)
+    ]
+
+
+def paged(pages: list[list[dict]]) -> None:
+    for i, page in enumerate(pages, 1):
+        respx.get(FILES, params={"per_page": "100", "page": str(i)}).respond(200, json=page)
+
+
+@respx.mock
+async def test_pr_files_are_paginated(client, auth, reseed):  # B1: dep after file 100 is seen
+    await mkpkg("latedep", cvss=9.9)
+    paged(
+        [
+            filler(100),
+            filler(100, 100),
+            [{"filename": "requirements.txt", "patch": req_patch("latedep==1.0.0")}],
+        ]
+    )
+    d = await review(client, auth)
+    assert d["verdict"] == "BLOCK" and [x["name"] for x in d["deps"]] == ["latedep"]
+    assert len(respx.calls) == 3
+
+
+@respx.mock
+async def test_missing_patch_is_advisory_not_pass(client, auth, reseed):  # B1
+    respx.get(FILES).respond(
+        200, json=[{"filename": "requirements.txt", "status": "modified", "changes": 9000}]
+    )
+    d = await review(client, auth)
+    assert d["verdict"] == "ADVISORY" and d["stage_reached"] == 2
+    assert (
+        d["deps"][0]["name"]
+        == "[not inspected] requirements.txt: diff too large for GitHub to include, not inspected"[
+            :255
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "name", ["pyproject.toml", "backend/poetry.lock", "web/package-lock.json", "Cargo.lock"]
+)
+@respx.mock
+async def test_unparsed_manifests_are_advisory(client, auth, reseed, name):  # B1
+    respx.get(FILES).respond(200, json=[{"filename": name, "patch": "@@ -1 +1 @@\n+x\n"}])
+    d = await review(client, auth)
+    assert d["verdict"] == "ADVISORY" and "not inspected" in d["deps"][0]["reasoning"]
+
+
+@respx.mock
+async def test_unchanged_rename_and_removed_manifests_are_not_flagged(client, auth, reseed):  # B1
+    respx.get(FILES).respond(
+        200,
+        json=[
+            {"filename": "requirements.txt", "status": "renamed", "changes": 0},
+            {"filename": "old/requirements.txt", "status": "removed", "changes": 5},
+            {"filename": "README.md"},
+        ],
+    )
+    assert (await review(client, auth))["verdict"] == "PASS"
+
+
+@respx.mock
+async def test_mixed_manifests_in_one_pr(client, auth, reseed):
+    """requirements.txt + package.json + a source file: both ecosystems evaluated, worst wins."""
+    await mkpkg("evilmulti", cvss=9.5)
+    respx.get(FILES).respond(
+        200,
+        json=[
+            {"filename": "src/app.py", "patch": "@@ -1 +1 @@\n+import evilmulti\n"},
+            {"filename": "requirements.txt", "patch": req_patch("evilmulti==1.0.0")},
+            {
+                "filename": "web/package.json",
+                "patch": '@@ -3 +3,2 @@\n+    "lodash": "4.17.15",\n+    "private": true\n',
+            },
+        ],
+    )
+    d = await review(client, auth)
+    names = {x["name"] for x in d["deps"]}
+    assert {"evilmulti", "lodash"} <= names and d["verdict"] == "BLOCK"
+
+
+@respx.mock
+async def test_synchronize_redelivery_replaces_verdicts_and_notes(client, auth, reseed):
+    await mkpkg("syncdep", cvss=9.1)
+    respx.get(FILES).respond(
+        200,
+        json=[
+            {"filename": "requirements.txt", "patch": req_patch("syncdep==1.0.0")},
+            {"filename": "pyproject.toml", "patch": "@@ -1 +1 @@\n+x\n"},
+        ],
+    )
+    first = await review(client, auth)
+    assert first["verdict"] == "BLOCK" and len(first["deps"]) == 2
+    respx.clear()
+    respx.get(FILES).respond(
+        200, json=[{"filename": "requirements.txt", "patch": req_patch("unknownthing==1.0.0")}]
+    )
+    second = await review(client, auth, payload("synchronize"))
+    assert second["verdict"] == "PASS" and [x["name"] for x in second["deps"]] == ["unknownthing"]
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "https://github.com/acme/api-gateway/",
+        "https://GitHub.com/Acme/API-Gateway.git",
+        "http://github.com/acme/api-gateway",
+        "  https://github.com/acme/api-gateway.git/ ",
+    ],
+)
+@respx.mock
+async def test_repo_url_matches_after_normalization(client, auth, reseed, stored):  # B5
+    async with SessionLocal() as s, s.begin():
+        await s.execute(
+            text("UPDATE service SET repo_url = :u WHERE service_id = 1"), {"u": stored}
+        )
+    await mkpkg("urlpkg", cvss=9.9)
+    files("urlpkg")
+    assert (await review(client, auth, payload(repo="https://github.com/acme/api-gateway.git/")))[
+        "verdict"
+    ] == "BLOCK"
+
+
+@pytest.mark.parametrize(
+    "raw,want",
+    [
+        ("HTTP://GitHub.com/Acme/X.git/", "https://github.com/acme/x"),
+        ("https://github.com/acme/x//", "https://github.com/acme/x"),
+        ("https://github.com/acme/x", "https://github.com/acme/x"),
+        (" https://github.com/acme/xgit ", "https://github.com/acme/xgit"),
+    ],
+)
+def test_normalize_repo_url(raw, want):
+    assert normalize_repo_url(raw) == want
+
+
+@respx.mock
+async def test_monorepo_services_each_get_verdicts(client, auth, reseed):  # B5
+    async with SessionLocal() as s, s.begin():
+        sid = (
+            await s.execute(
+                text(
+                    "INSERT INTO service (team_id, name, repo_url, language) SELECT team_id, "
+                    "'api-gateway-worker', 'https://github.com/acme/api-gateway/', 'python' "
+                    "FROM service WHERE service_id = 1 RETURNING service_id"
+                )
+            )
+        ).scalar_one()
+    await mkpkg("monodep", cvss=9.9)
+    route = files("monodep")
+    await review(client, auth)
+    assert route.call_count == 1  # one PR fetch for both services
+    for service_id in (1, sid):
+        assert [
+            (x["dep_name"], x["verdict"]) for x in await review_rows(client, auth, service_id)
+        ] == [("monodep", "BLOCK")]
+
+
+@respx.mock
+async def test_monorepo_redundancy_is_judged_per_service(client, auth, reseed):
+    await mkcluster_pkgs(
+        {"web / http / client": ["mhttp", "mreq"]}, deployed=["mreq"]
+    )  # service 1 only
+    async with SessionLocal() as s, s.begin():
+        sid = (
+            await s.execute(
+                text(
+                    "INSERT INTO service (team_id, name, repo_url, language) SELECT team_id, 'other', "
+                    "repo_url, 'python' FROM service WHERE service_id = 1 RETURNING service_id"
+                )
+            )
+        ).scalar_one()
+    files("mhttp")
+    await review(client, auth)
+    assert [x["verdict"] for x in await review_rows(client, auth, 1)] == ["ADVISORY"]
+    assert [x["verdict"] for x in await review_rows(client, auth, sid)] == ["PASS"]
+
+
+@respx.mock
+async def test_background_failure_posts_neutral_check_run(client, auth, monkeypatch, reseed):  # B2
+    configure_app(monkeypatch)
+    respx.post(TOKEN_URL).respond(201, json={"token": "ghs_x"})
+    respx.get(FILES).respond(500)
+    check = respx.post(CHECKS).respond(201, json={})
+    r = await post(client, payload())
+    assert r.status_code == 202  # GitHub's delivery is acknowledged regardless
+    sent = json.loads(check.calls[0].request.content)
+    assert sent["conclusion"] == "neutral" and "could not evaluate" in sent["output"]["summary"]
+    assert await review_rows(client, auth) == []
+
+
+@respx.mock
+async def test_token_failure_still_evaluates_without_check_run(
+    client, auth, monkeypatch, reseed
+):  # B8
+    configure_app(monkeypatch)
+    respx.post(TOKEN_URL).respond(401, json={"message": "Bad credentials"})
+    check = respx.post(CHECKS).respond(201, json={})
+    await mkpkg("tokenless", cvss=9.9)
+    files("tokenless")
+    assert (await review(client, auth))["verdict"] == "BLOCK"
+    assert not check.called
+
+
+@respx.mock
+async def test_check_run_failure_is_not_fatal(client, auth, monkeypatch, reseed):
+    configure_app(monkeypatch)
+    respx.post(TOKEN_URL).respond(201, json={"token": "ghs_x"})
+    respx.post(CHECKS).respond(422, json={})
+    await mkpkg("chk", cvss=9.9)
+    files("chk")
+    assert (await review(client, auth))["verdict"] == "BLOCK"
+
+
+# --- Stage 3 guard ---------------------------------------------------------------------------
+
+
+def groq_raw(content: str) -> dict:
+    r = groq_reply("X", "x")
+    r["choices"][0]["message"]["content"] = content
+    return r
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"verdict":"PASS","reasoning":"fine"}',  # the LLM can never downgrade
+        '{"verdict":"pass"}',
+        "not json",
+        "{}",
+        "",
+        "[1]",
+        '"BLOCK"',
+        '{"verdict":["BLOCK"]}',
+    ],
+)
+@respx.mock
+async def test_stage3_guard_rejects_bad_replies(client, auth, monkeypatch, reseed, content):  # B10
+    monkeypatch.setattr(settings, "groq_api_key", "gsk")
+    await mkpkg("guarded", cvss=7.0)
+    files("guarded")
+    respx.post(GROQ).respond(200, json=groq_raw(content))
+    d = await review(client, auth)
+    assert d["verdict"] == "ADVISORY" and d["stage_reached"] == 2
+    assert await get_redis().keys("dephgraph:prompts:*") == []  # invalid replies are not cached
+
+
+@pytest.mark.parametrize("verdict", ["block", " Block\n", "BLOCK"])
+@respx.mock
+async def test_stage3_verdict_case_insensitive(client, auth, monkeypatch, reseed, verdict):  # B9
+    monkeypatch.setattr(settings, "groq_api_key", "gsk")
+    await mkpkg("casey", cvss=7.0)
+    files("casey")
+    respx.post(GROQ).respond(200, json=groq_raw(json.dumps({"verdict": verdict, "reasoning": "r"})))
+    d = await review(client, auth)
+    assert d["verdict"] == "BLOCK" and d["stage_reached"] == 3
+
+
+@respx.mock
+async def test_stage3_timeout_keeps_stage2(client, auth, monkeypatch, reseed):
+    monkeypatch.setattr(settings, "groq_api_key", "gsk")
+    await mkpkg("slowllm", cvss=7.0)
+    files("slowllm")
+    respx.post(GROQ).mock(side_effect=httpx.ConnectTimeout("t"))
+    d = await review(client, auth)
+    assert d["verdict"] == "ADVISORY" and d["stage_reached"] == 2
+
+
+@respx.mock
+async def test_stage3_prompt_cache_spares_groq_on_redelivery(
+    client, auth, monkeypatch, reseed
+):  # B7
+    monkeypatch.setattr(settings, "groq_api_key", "gsk")
+    await mkpkg("cachedep", cvss=7.0)
+    files("cachedep")
+    route = respx.post(GROQ).respond(200, json=groq_reply("BLOCK", "bad"))
+    first = await review(client, auth)
+    second = await review(client, auth, payload("synchronize"))
+    assert route.call_count == 1
+    assert first["verdict"] == second["verdict"] == "BLOCK" and second["stage_reached"] == 3
+    keys = await get_redis().keys("dephgraph:prompts:*")
+    assert len(keys) == 1 and 0 < await get_redis().ttl(keys[0]) <= pr_gate_engine.PROMPT_CACHE_TTL
+    assert await get_mongo()["review_responses"].count_documents({"dep_name": "cachedep"}) >= 1
+
+
+@respx.mock
+async def test_stage3_redundancy_only_never_goes_to_groq(client, auth, monkeypatch, reseed):  # B4
+    monkeypatch.setattr(settings, "groq_api_key", "gsk")
+    await mkcluster_pkgs({"web / http / client": ["ghttp", "greq"]}, deployed=["greq"])
+    files("ghttp")
+    route = respx.post(GROQ).respond(200, json=groq_reply("BLOCK", "duplicate client"))
+    d = await review(client, auth)
+    assert d["verdict"] == "ADVISORY" and d["stage_reached"] == 2 and not route.called
+
+
+async def test_version_bump_of_deployed_package_is_not_redundant(reseed):  # B3
+    await mkcluster_pkgs(
+        {"web / http / client": ["bhttp", "breq", "bnew"]}, deployed=["breq", "bhttp"]
+    )
+    async with SessionLocal() as s, s.begin():
+        bump = await pr_gate_engine.evaluate(s, "pypi", "bhttp", "1.0.0", service_id=1)
+        bump2 = await pr_gate_engine.evaluate(s, "pypi", "bhttp", "2.0.0", service_id=1)
+        new = await pr_gate_engine.evaluate(s, "pypi", "bnew", "1.0.0", service_id=1)
+    assert (bump.verdict, bump2.verdict) == ("PASS", "PASS")
+    assert new.verdict == "ADVISORY" and {r["package"] for r in new.facts["redundancy"]} == {
+        "breq",
+        "bhttp",
+    }
+
+
+def at(updated_at: str, sha: str, action="synchronize") -> dict:
+    body = payload(action)
+    body["pull_request"].update(updated_at=updated_at, head={"sha": sha})
+    return body
+
+
+@respx.mock
+async def test_older_delivery_cannot_overwrite_newer_verdicts(client, auth, reseed):  # B6
+    await mkpkg("evilcrit2", cvss=9.8)
+    await mkpkg("quietpkg2", cvss=3.0)
+    redis = get_redis()
+
+    files("evilcrit2")
+    await review(client, auth, at("2026-11-22T10:00:02Z", "new-head"))
+    assert [x["dep_name"] for x in await review_rows(client, auth)] == ["evilcrit2"]
+    gen = await redis.get(cache.GEN_KEY)
+
+    respx.clear()
+    files("quietpkg2")  # the OLDER push's evaluation finishes last
+    await review(client, auth, at("2026-11-22T10:00:01Z", "old-head"))
+    assert [x["dep_name"] for x in await review_rows(client, auth)] == ["evilcrit2"]
+    assert await redis.get(cache.GEN_KEY) == gen  # nothing stored, nothing invalidated
+    async with SessionLocal() as s:
+        sha = (
+            await s.execute(text("SELECT head_sha FROM pr_review WHERE pr_number = 7"))
+        ).scalar_one()
+    assert sha == "new-head"
+
+    await review(client, auth, at("2026-11-22T10:00:03Z", "newest-head"))  # newer still wins
+    assert [x["dep_name"] for x in await review_rows(client, auth)] == ["quietpkg2"]
+    assert await redis.get(cache.GEN_KEY) != gen

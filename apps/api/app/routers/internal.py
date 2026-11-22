@@ -8,16 +8,14 @@ from app.config import settings
 from app.database import DbSession
 from app.schemas.analysis import SyncOut
 from app.schemas.common import Envelope, ok
-from app.services import blast_radius, cluster_engine, maintainers, osv_fetcher
+from app.services import cache, cluster_engine, maintainers, osv_fetcher
 from app.services.manifest_parser import PkgRef
 from app.services.queries import LATEST, rows
 
 
 def require_cron_secret(x_cron_secret: Annotated[str | None, Header()] = None) -> None:
     expected = settings.internal_cron_secret
-    if not expected or not hmac.compare_digest(
-        (x_cron_secret or "").encode(), expected.encode()
-    ):
+    if not expected or not hmac.compare_digest((x_cron_secret or "").encode(), expected.encode()):
         raise HTTPException(401, "Invalid cron secret")
 
 
@@ -40,14 +38,12 @@ async def osv_sync(session: DbSession) -> dict[str, object]:
             JOIN package p ON p.package_id = rt.package_id
             """,
         )
-    refs = [
-        PkgRef(r["package_id"], r["ecosystem"], r["name"], r["version"]) for r in found
-    ]
+    refs = [PkgRef(r["package_id"], r["ecosystem"], r["name"], r["version"]) for r in found]
     hits, advisories = await osv_fetcher.fetch_advisories(refs) if refs else ({}, {})
     await osv_fetcher.store_raw(advisories)  # raw layer first (best-effort on the cron path)
     async with session.begin():
-        vulns = await osv_fetcher.upsert_advisories(session, hits, advisories)
-    await blast_radius.invalidate()
+        vulns = await osv_fetcher.upsert_advisories(session, refs, hits, advisories)
+    await cache.bump()
     return ok({"packages_scanned": len(refs), "vulns_fetched": vulns})
 
 
@@ -81,6 +77,7 @@ async def maintainers_sync(session: DbSession) -> dict[str, object]:
     fetched = await maintainers.fetch_all(pkgs) if pkgs else {}
     async with session.begin():
         upserted = await maintainers.upsert(session, fetched)
+    await cache.bump()
     return ok(
         {
             "packages_scanned": len(pkgs),

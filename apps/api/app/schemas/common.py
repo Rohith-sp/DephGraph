@@ -1,9 +1,16 @@
 from typing import Annotated, Any, Generic, TypeVar
 
-from fastapi import Query
-from pydantic import BaseModel
+from fastapi import Path, Query
+from pydantic import BaseModel, Field
 
 T = TypeVar("T")
+
+
+# Ids reach BIGINT/INT columns: an unbounded int overflows asyncpg and surfaces as a 500, so every
+# id parameter is bounded (-> 422). BigId = BIGINT path id, BigBodyId = the same inside a body.
+BigId = Annotated[int, Path(ge=1, le=2**63 - 1)]
+SmallId = Annotated[int, Path(ge=1, le=2**31 - 1)]
+BigBodyId = Annotated[int, Field(ge=1, le=2**63 - 1)]
 
 
 class Envelope(BaseModel, Generic[T]):
@@ -25,7 +32,7 @@ def ok(data: Any) -> dict[str, Any]:
 class Pagination:
     def __init__(
         self,
-        page: Annotated[int, Query(ge=1)] = 1,
+        page: Annotated[int, Query(ge=1, le=1_000_000)] = 1,
         page_size: Annotated[int, Query(ge=1, le=200)] = 50,
     ) -> None:
         self.page, self.page_size = page, page_size

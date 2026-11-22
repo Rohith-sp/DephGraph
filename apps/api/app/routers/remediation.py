@@ -1,6 +1,7 @@
+import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from packaging.version import InvalidVersion, Version
 from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,7 +10,9 @@ from app.auth import get_current_user
 from app.database import DbSession
 from app.models.sql import RemediationAction, RemediationPlan
 from app.schemas.analysis import ActionOut, ActionPatch, PlanCreate, PlanOut, PlanStep
-from app.schemas.common import Envelope, ok
+from app.schemas.common import BigId, Envelope, SmallId, ok
+from app.services import cache
+from app.services.cache import cached_json
 from app.services.queries import open_vuln_rows, rows
 from app.services.set_cover import greedy_set_cover
 
@@ -66,9 +69,36 @@ async def build_plan(session: AsyncSession, team_id: int) -> list[dict[str, Any]
     return plan
 
 
+async def saved_state(session: AsyncSession, team_id: int) -> dict[str, tuple[int, int, str]]:
+    """Upgrade -> (plan_id, action_seq, status) from the team's most recent saved plan.
+
+    A saved action is identified by its description up to the vulnerability count: plan rows keep
+    no package id and action_seq is positional (it shifts whenever the greedy cover changes).
+    """
+    saved = await rows(
+        session,
+        "SELECT a.plan_id, a.action_seq, a.description, a.status FROM remediation_action a "
+        "WHERE a.plan_id = (SELECT max(plan_id) FROM remediation_plan WHERE team_id = :t)",
+        t=team_id,
+    )
+    return {
+        str(a["description"]).rsplit(" (fixes ", 1)[0]: (a["plan_id"], a["action_seq"], a["status"])
+        for a in saved
+    }
+
+
 @router.get("/plan/{team_id}", response_model=Envelope[list[PlanStep]])
-async def get_plan(team_id: int, session: DbSession) -> dict[str, Any]:
-    return ok(await build_plan(session, team_id))
+async def get_plan(team_id: BigId, request: Request, session: DbSession) -> Response:
+    async def build() -> str:
+        steps, saved = await build_plan(session, team_id), await saved_state(session, team_id)
+        for s in steps:
+            s["plan_id"], s["action_seq"], s["action_status"] = saved.get(
+                f"Upgrade {s['package']} {s['from_version']} -> {s['to_version']}",
+                (None, None, None),
+            )
+        return json.dumps([{k: s[k] for k in PlanStep.model_fields} for s in steps])
+
+    return await cached_json(request, build)
 
 
 @router.post("/plan", response_model=Envelope[PlanOut], status_code=201)
@@ -98,6 +128,7 @@ async def create_plan(body: PlanCreate, session: DbSession) -> dict[str, Any]:
             [{"p": row.plan_id, "q": s["step"], "v": v} for v in s["vuln_ids"]],
         )
     await session.commit()
+    await cache.bump()
     return ok(
         {
             "plan_id": row.plan_id,
@@ -115,7 +146,7 @@ async def create_plan(body: PlanCreate, session: DbSession) -> dict[str, Any]:
 
 @router.patch("/plan/{plan_id}/actions/{seq}", response_model=Envelope[ActionOut])
 async def patch_action(
-    plan_id: int, seq: int, body: ActionPatch, session: DbSession
+    plan_id: BigId, seq: SmallId, body: ActionPatch, session: DbSession
 ) -> dict[str, Any]:
     updated = (
         await session.execute(
@@ -128,4 +159,5 @@ async def patch_action(
     if updated is None:
         raise HTTPException(404, "Action not found")
     await session.commit()
+    await cache.bump()
     return ok({"action_seq": seq, "description": updated.description, "status": updated.status})

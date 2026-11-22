@@ -7,11 +7,12 @@ from limits.strategies import MovingWindowRateLimiter
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
-from app.auth import auth_configured, decode_token
+from app.auth import auth_configured, request_claims
 from app.config import settings
 
-# shortcut: in-memory counters are correct only with a single worker (render.yaml: --workers 1);
-# swap MemoryStorage for limits' RedisStorage(settings.redis_url) when scaling out.
+# shortcut: in-memory counters are per worker, so the effective limit is rate_limit x workers.
+# Every default is 1 worker (render.yaml --workers 1; compose WEB_CONCURRENCY=1); swap MemoryStorage
+# for limits' RedisStorage(settings.redis_url) before defaulting to more.
 storage = MemoryStorage()
 _window = MovingWindowRateLimiter(storage)
 # /health: keep-alive pings must never be throttled. /pr-gate/webhook: HMAC-verified (bad
@@ -44,7 +45,7 @@ async def limit_key(request: Request) -> str:
     scheme, _, token = request.headers.get("authorization", "").partition(" ")
     if scheme.lower() == "bearer" and token and auth_configured():
         try:
-            if sub := (await decode_token(token)).get("sub"):
+            if sub := (await request_claims(request, token)).get("sub"):
                 return f"user:{sub}"
         except JWTError:
             pass

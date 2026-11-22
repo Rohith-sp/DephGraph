@@ -25,12 +25,12 @@ from app.auth import get_current_user
 from app.database import DbSession
 from app.models.mongo import raw_manifests
 from app.models.sql import Package, PackageVersion
-from app.schemas.common import Envelope, ok
+from app.schemas.common import BigId, Envelope, ok
 from app.schemas.ingest import IngestRequest, IngestResult, ScanResult
-from app.services import blast_radius, osv_fetcher
+from app.services import cache, osv_fetcher
 from app.services.deps_dev_client import Metadata, apply_metadata, fetch_metadata
 from app.services.manifest_parser import ParsedPackage, PkgRef, parse_manifest
-from app.services.queries import latest_seq, lock_service, require_service, rows
+from app.services.queries import chunks, latest_seq, lock_service, require_service, rows
 
 log = structlog.get_logger()
 T = TypeVar("T")
@@ -43,24 +43,28 @@ async def _upsert_packages(
     """Ensure package + package_version rows exist; returns (refs, new version rows)."""
     # sorted inserts: consistent row-lock order across concurrent ingests avoids deadlocks
     names = sorted({p.name for p in parsed})
-    stmt = insert(Package).values([{"ecosystem": ecosystem, "name": n} for n in names])
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["ecosystem", "name"], set_={"name": stmt.excluded.name}
-    ).returning(Package.name, Package.package_id)
-    ids = {name: pid for name, pid in (await session.execute(stmt)).all()}
+    ids: dict[str, int] = {}
+    for chunk in chunks([{"ecosystem": ecosystem, "name": n} for n in names]):
+        stmt = insert(Package).values(chunk)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["ecosystem", "name"], set_={"name": stmt.excluded.name}
+        ).returning(Package.name, Package.package_id)
+        ids.update((await session.execute(stmt)).all())
     refs = [PkgRef(ids[p.name], ecosystem, p.name, p.version) for p in parsed]
-    ins = (
-        insert(PackageVersion)
-        .values(
-            [
-                {"package_id": pid, "version_string": v}
-                for pid, v in sorted({(r.package_id, r.version) for r in refs})
-            ]
+    versions = [
+        {"package_id": pid, "version_string": v}
+        for pid, v in sorted({(r.package_id, r.version) for r in refs})
+    ]
+    inserted = 0
+    for chunk in chunks(versions):
+        ins = (
+            insert(PackageVersion)
+            .values(chunk)
+            .on_conflict_do_nothing()
+            .returning(PackageVersion.package_id)
         )
-        .on_conflict_do_nothing()
-        .returning(PackageVersion.package_id)
-    )
-    return refs, len((await session.execute(ins)).all())
+        inserted += len((await session.execute(ins)).all())
+    return refs, inserted
 
 
 async def _record_deployment(
@@ -133,7 +137,7 @@ async def _store_manifest(body: IngestRequest) -> dict[str, Any]:
     """Step 1 of ingest: write the raw upload to Mongo `raw_manifests` before anything else.
 
     One document per (service_id, sha256): re-uploading identical content reuses the document
-    (immutable fields via $setOnInsert) and resets it to status `received`. Raises 503 if Mongo
+    (content via $setOnInsert; ecosystem/filename follow the latest upload) and resets it to status `received`. Raises 503 if Mongo
     is unreachable, because Postgres rows may only be projected from what the raw layer holds.
     """
     digest = hashlib.sha256(body.content.encode()).hexdigest()
@@ -145,12 +149,16 @@ async def _store_manifest(body: IngestRequest) -> dict[str, Any]:
                 "$setOnInsert": {
                     "service_id": body.service_id,
                     "sha256": digest,
-                    "ecosystem": body.ecosystem,
-                    "filename": body.filename,
                     "raw_content": body.content,
                     "uploaded_at": now,
                 },
-                "$set": {"status": "received", "received_at": now, "updated_at": now},
+                "$set": {
+                    "ecosystem": body.ecosystem,  # describe this upload, not the first one
+                    "filename": body.filename,
+                    "status": "received",
+                    "received_at": now,
+                    "updated_at": now,
+                },
                 "$unset": {"error": ""},
             },
             upsert=True,
@@ -230,14 +238,16 @@ async def _project(session: AsyncSession, doc: dict[str, Any]) -> dict[str, Any]
             await require_service(session, service_id)  # deleted since the first check -> 404
             refs, inserted = await _upsert_packages(session, ecosystem, parsed)
             await apply_metadata(session, _rekey(refs, meta))
-            vulns = await osv_fetcher.upsert_advisories(session, _rekey(refs, hits), advisories)
+            vulns = await osv_fetcher.upsert_advisories(
+                session, refs, _rekey(refs, hits), advisories
+            )
             seq = await _record_deployment(session, service_id, parsed, refs)
             await _record_scan(session, service_id)
     except Exception as e:
         await _mark(doc["_id"], "failed", error=_error_text(e))
         raise
     await _mark(doc["_id"], "projected", deploy_seq=seq, parsed_packages=[vars(p) for p in parsed])
-    await blast_radius.invalidate()
+    await cache.bump()
     return {
         "manifest_id": str(doc["_id"]),
         "deploy_seq": seq,
@@ -283,7 +293,7 @@ async def replay_manifest(manifest_id: str, session: DbSession) -> dict[str, obj
 
 
 @router.post("/scan/{service_id}", response_model=Envelope[ScanResult])
-async def scan_service(service_id: int, session: DbSession) -> dict[str, object]:
+async def scan_service(service_id: BigId, session: DbSession) -> dict[str, object]:
     """Re-query OSV for the latest deployment; raw advisories go to Mongo before Postgres.
 
     Unlike ingest, a Mongo outage does not fail the scan (store_raw is best-effort here).
@@ -314,9 +324,9 @@ async def scan_service(service_id: int, session: DbSession) -> dict[str, object]
         await require_service(session, service_id)
         if await latest_seq(session, service_id) != seq:  # a manifest landed mid-scan
             raise HTTPException(409, "Service changed during scan; retry")
-        vulns = await osv_fetcher.upsert_advisories(session, hits, advisories)
+        vulns = await osv_fetcher.upsert_advisories(session, refs, hits, advisories)
         await _record_scan(session, service_id)
-    await blast_radius.invalidate()
+    await cache.bump()
     return ok(
         {
             "packages_scanned": len(refs),

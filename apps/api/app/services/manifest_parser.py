@@ -27,7 +27,7 @@ def normalize_pypi(name: str) -> str:
 
 def parse_requirements(content: str) -> list[ParsedPackage]:
     out: list[ParsedPackage] = []
-    for raw in content.replace("\\\n", " ").splitlines():
+    for raw in content.replace("\r\n", "\n").replace("\\\n", " ").splitlines():
         line = re.split(r"\s+#|\s--", raw.strip(), maxsplit=1)[0].strip()
         if not line or line.startswith(("#", "-")):  # comments, -r/-e/--index-url
             continue
@@ -114,9 +114,15 @@ def parse_manifest(ecosystem: str, content: str) -> list[ParsedPackage]:
         parsed = PARSERS[ecosystem](content)
     except KeyError:
         raise ValueError(f"unsupported ecosystem: {ecosystem}") from None
-    except (json.JSONDecodeError, tomllib.TOMLDecodeError, AttributeError) as e:
+    except (json.JSONDecodeError, tomllib.TOMLDecodeError, AttributeError, RecursionError) as e:
         raise ValueError(f"malformed {ecosystem} manifest: {e}") from e
-    fits = [p for p in parsed if len(p.name) <= MAX_NAME and len(p.version) <= MAX_VERSION]
+    fits = [
+        p
+        for p in parsed
+        if len(p.name) <= MAX_NAME
+        and len(p.version) <= MAX_VERSION
+        and "\x00" not in p.name + p.version  # Postgres text cannot hold NUL
+    ]
     if len(fits) < len(parsed):
         log.warning("manifest_overlong_dropped", count=len(parsed) - len(fits))
     return list({p.name: p for p in reversed(fits)}.values())[::-1]

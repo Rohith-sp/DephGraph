@@ -5,6 +5,7 @@ COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/
 RUN npm ci --workspace web --include-workspace-root
 COPY apps/web apps/web
+ENV NEXT_STANDALONE=1
 RUN npm run build --workspace web
 
 FROM node:22-slim

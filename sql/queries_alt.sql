@@ -4,7 +4,7 @@
 -- this one is kept for its different query formulations.
 --
 -- Run after er-diagram/schema.sql and sql/seed.sql:
---   scripts/mysql.sh run sql/queries.sql
+--   scripts/mysql.sh run sql/queries_alt.sql
 --
 -- The Q1-Q7 queries use the fixed Phase 2 sample data. Complex-query
 -- examples follow. No rows are changed by this file.

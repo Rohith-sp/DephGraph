@@ -79,18 +79,22 @@ export interface RemediationStep {
   services_affected: string[];
   new_coverage: number;
   cumulative_coverage_pct: number;
+  // Set when the team's latest saved plan holds this upgrade, else null.
+  plan_id: number | null;
+  action_seq: number | null;
+  action_status: ActionStatus | null;
 }
 
 export interface PlanAction {
   action_seq: number;
-  description: string;
+  description: string | null;
   status: ActionStatus;
 }
 
 export interface RemediationPlan {
   plan_id: number;
   team_id: number;
-  title: string;
+  title: string | null;
   status: string;
   coverage_pct: number;
   actions: PlanAction[];
@@ -110,14 +114,15 @@ export interface Cluster {
   label: string;
   keywords: string[];
   member_count: number;
+  members: ClusterMember[];
 }
 
 export interface ClusterMember {
   package_id: number;
   name: string;
   ecosystem: string;
-  x: number;
-  y: number;
+  x: number | null;
+  y: number | null;
 }
 
 export interface ClusterRedundancy {

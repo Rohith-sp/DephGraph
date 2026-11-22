@@ -2,6 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 from pydantic import AwareDatetime, BaseModel, Field, field_validator
 
+from app.schemas.common import BigBodyId
+
 MAX_SAMPLES = 5000
 CLOCK_SKEW = timedelta(minutes=5)
 
@@ -15,8 +17,8 @@ class RuntimeSample(BaseModel):
 
 
 class RuntimeSamplesRequest(BaseModel):
-    service_id: int
-    deploy_seq: int | None = Field(default=None, ge=1)  # None = latest deployment
+    service_id: BigBodyId
+    deploy_seq: int | None = Field(default=None, ge=1, le=2_147_483_647)  # None = latest deployment
     captured_at: AwareDatetime | None = None  # None = now
     # True: `samples` is everything the agent saw, so resolved packages missing from it are
     # recorded with exec_count 0 (declared but never executed in this window).

@@ -11,11 +11,11 @@
 -- Output: logs/complex_queries.log
 --
 -- Dates: "today" is fixed with @as_of so the results do not change from
--- day to day. Only C19 (the existing views) uses CURDATE(), because the
+-- day to day. Only C20 (the existing views) uses CURDATE(), because the
 -- views in schema.sql are written that way.
 --
--- The script leaves the data unchanged. It creates two views (C20, C21);
--- all inserts are inside transactions that are rolled back.
+-- The script leaves the data unchanged. It creates two views (C21, C22) and
+-- drops them again at the end; all inserts are inside transactions that are rolled back.
 -- =====================================================================
 
 USE dephgraph;
@@ -442,3 +442,7 @@ WHERE  d.environment = 'PROD' AND d.is_active = TRUE
 GROUP  BY p.package_name, rt.version_string
 ORDER  BY worst_cvss DESC, services DESC, p.package_name
 LIMIT  3;
+
+-- The helper views from C21 and C22 are not part of schema.sql (verify_mysql_schema.sql expects 3).
+DROP VIEW IF EXISTS v_prod_deployment;
+DROP VIEW IF EXISTS v_prod_inventory;

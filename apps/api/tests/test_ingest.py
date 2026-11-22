@@ -9,7 +9,7 @@ from sqlalchemy import text
 from app.database import SessionLocal, get_mongo, get_redis
 from app.models.mongo import ensure_indexes
 from app.routers import ingest
-from app.services import blast_radius, osv_fetcher
+from app.services import cache, osv_fetcher
 from tests.upstream import mock_upstreams
 
 FIX = Path(__file__).parent / "fixtures"
@@ -32,8 +32,6 @@ async def scalar(sql: str, **p):
 
 
 async def test_ingest_manifest_happy(client, auth, reseed):
-    key = await blast_radius.cache_key(2)  # another service's entry: vulns are shared
-    await get_redis().set(key, "stale")
     with mock_upstreams():
         r = await client.post("/ingest/manifest", json=body(), headers=auth)
     assert r.status_code == 200, r.text
@@ -42,7 +40,7 @@ async def test_ingest_manifest_happy(client, auth, reseed):
     assert d["packages_inserted"] >= 1
     assert d["vulns_fetched"] == 1
     assert d["duration_ms"] < 60_000
-    assert await get_redis().get(key) is None  # cache invalidated
+    assert await get_redis().get(cache.GEN_KEY) == "1"  # cache invalidated
 
     assert await scalar("SELECT max(deploy_seq) FROM deployment WHERE service_id = 1") == 3
     assert await scalar("SELECT count(*) FROM resolves_to WHERE service_id=1 AND deploy_seq=3") >= 8

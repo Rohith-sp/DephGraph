@@ -19,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_mongo
 from app.schemas.runtime import RuntimeSamplesRequest
+from app.services import cache
+from app.services.manifest_parser import normalize_pypi
 from app.services.queries import latest_seq, lock_service, require_service, rows
 
 log = structlog.get_logger()
@@ -100,7 +102,7 @@ async def _project(
     await _resolve_seq(session, service_id, seq)  # deleted since the first check -> 404
     resolved = await rows(
         session,
-        "SELECT p.name, rt.package_id, rt.version_string FROM resolves_to rt "
+        "SELECT p.name, p.ecosystem, rt.package_id, rt.version_string FROM resolves_to rt "
         "JOIN package p ON p.package_id = rt.package_id "
         "WHERE rt.service_id = :s AND rt.deploy_seq = :q "
         "ORDER BY rt.package_id, rt.version_string",  # stable lock order for the inserts
@@ -119,13 +121,18 @@ async def _project(
     ).scalar_one()
     out: list[dict[str, Any]] = []
     matched: set[Key] = set()
+    # pypi names are stored PEP 503-normalized; agents report them as installed ("Flask")
+    by_norm: defaultdict[Key, list[Key]] = defaultdict(list)
+    for k in totals:
+        by_norm[(normalize_pypi(k[0]), k[1])].append(k)
     for r in resolved:
         key = (r["name"], r["version_string"])
-        if key in totals:
-            matched.add(key)
+        hit = by_norm[key] if r["ecosystem"] == "pypi" else [key] * (key in totals)
+        if hit:
+            matched.update(hit)
         elif not complete:
             continue
-        n = totals.get(key, 0)
+        n = min(INT_MAX, sum(totals[k] for k in hit))
         out.append(
             {
                 "s": service_id,
@@ -171,6 +178,10 @@ async def record_samples(session: AsyncSession, body: RuntimeSamplesRequest) -> 
     except HTTPException as e:
         await _mark_raw(doc_id, {"status": "rejected", "error": str(e.detail)})
         raise
+    except Exception as e:  # DB error: do not leave the raw doc `pending` forever
+        await _mark_raw(doc_id, {"status": "failed", "error": f"{type(e).__name__}: {e}"[:1000]})
+        raise
+    await cache.bump()
     skipped = [s for s in body.samples if (s.name, s.version) not in matched]
     distinct_skipped = list(dict.fromkeys((s.name, s.version) for s in skipped))
     await _mark_raw(
@@ -192,8 +203,6 @@ async def record_samples(session: AsyncSession, body: RuntimeSamplesRequest) -> 
         "observes_written": len(written),
         "live_packages": sum(1 for w in written if w["live"]),
         "samples_skipped": len(skipped),
-        "skipped": [
-            {"name": n, "version": v} for n, v in distinct_skipped[:MAX_SKIPPED_LISTED]
-        ],
+        "skipped": [{"name": n, "version": v} for n, v in distinct_skipped[:MAX_SKIPPED_LISTED]],
         "raw_stored": doc_id is not None,
     }

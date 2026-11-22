@@ -96,7 +96,7 @@ app-only attributes such as `team.slug`, `package.description`, `package_version
 - **A. Keep both, document the mapping (recommended).** Add a section to `er-diagram/README.md`:
   *"The course design is the logical model; the app's physical schema implements it with these
   differences, for these reasons."* Cheapest, honest, no risk to the working app.
-- **B. Change the app to match the course design.** Means new migrations (`007_*.sql`; existing ones
+- **B. Change the app to match the course design.** Means new migrations (next unused number; existing ones
   must never be edited), ORM, schemas, queries, frontend types and tests. Large, and touches your
   teammate's work, so agree it with them first.
 - **C. Change the course design to match the app.** Means redoing the ER diagram, mapping,
@@ -167,7 +167,7 @@ Full instructions are in [`DEPLOY.md`](DEPLOY.md). In order:
 | # | Step | Who |
 |---|---|---|
 | 1 | Create accounts: Supabase, MongoDB Atlas (M0), Upstash, Render, Vercel, Groq, cron-job.org | you (sign-ups need your own login) |
-| 2 | **Supabase:** run migrations 001–007 in order, then the seed; copy URL, anon key, JWT secret, pooled `DATABASE_URL` | you, with help |
+| 2 | **Supabase:** run migrations 001–009 in order, then the seed; copy URL, anon key, JWT secret, pooled `DATABASE_URL` | you, with help |
 | 3 | **Security first:** turn off open sign-up in Supabase Auth, or add team scoping. RLS currently lets any signed-in user read everything | you |
 | 4 | **MongoDB Atlas:** create the M0 cluster and a database user; copy the SRV string | you |
 | 5 | **Upstash:** create a Redis database; copy the `rediss://` URL | you |

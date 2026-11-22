@@ -9,7 +9,8 @@ Semantic redundancy (third signal): the added package shares a `semantic_cluster
 package of the same ecosystem that the service's latest deployment already resolves -> ADVISORY. It is checked before the
 Stage 1 fast exit, so a clean-but-redundant dependency still reaches Stage 2. The cluster comes
 from the added version's row; if that version is not in the DB (or is unclustered), the clusters
-of the package's other versions are used. Unknown package or no cluster -> no signal.
+of the package's other versions are used. Unknown package or no cluster -> no signal. Only packages NEW to the service count: a version
+bump of a package its latest deployment already resolves adds no redundancy.
 """
 
 import asyncio
@@ -18,15 +19,18 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
+from hashlib import sha256
 from typing import Any
 
 import structlog
 from groq import APIError, AsyncGroq, RateLimitError
 from pymongo.errors import PyMongoError
+from redis.exceptions import RedisError
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database import get_mongo
+from app.database import get_mongo, get_redis
 from app.services import http
 from app.services.queries import rows
 
@@ -38,7 +42,8 @@ MAX_REDUNDANCY_CHARS = 200  # redundancy facts' share of the prompt; vulns get t
 LLM_ATTEMPTS = 4
 GROQ_TIMEOUT = 8  # seconds per request
 GROQ_CONCURRENCY = 3
-STAGE3_BUDGET = 15  # seconds for all Stage 3 calls together; keeps the webhook well under 30s
+STAGE3_BUDGET = 15  # seconds for all Stage 3 calls together (runs in a background task)
+PROMPT_CACHE_TTL = 604800  # PRD: Redis `prompts`, 7 days
 
 
 @dataclass
@@ -159,6 +164,11 @@ async def _redundancy(
         JOIN semantic_cluster sc ON sc.cluster_id = pv2.cluster_id
         JOIN package p2 ON p2.package_id = rt.package_id
         WHERE rt.service_id = :sid AND p2.ecosystem = :eco AND p2.name <> :name
+          AND NOT EXISTS (  -- already deployed: a bump, not a new redundancy
+            SELECT 1 FROM resolves_to r0
+            JOIN package p0 ON p0.package_id = r0.package_id
+            WHERE r0.service_id = :sid AND r0.deploy_seq = ld.deploy_seq
+              AND p0.ecosystem = :eco AND p0.name = :name)
         ORDER BY sc.cluster_id, p2.name
         """,
         sid=service_id,
@@ -270,27 +280,58 @@ async def _ask_groq(prompt: str) -> str:
     raise AssertionError("unreachable")
 
 
+def _redundancy_only(dep: DepVerdict) -> bool:
+    """Only the redundancy signal fired: advisory by nature, an LLM must not escalate it to BLOCK."""
+    f = dep.facts
+    return bool(
+        f.get("redundancy")
+        and not f.get("vulns")
+        and not f.get("copyleft")
+        and (f.get("abandonment") or 0) < 40
+    )
+
+
+async def _cached_reply(key: str) -> str | None:
+    try:
+        return await get_redis().get(key)
+    except (RedisError, OSError) as e:
+        log.warning("prompt_cache_read_failed", error=str(e))
+        return None
+
+
 async def stage3(
     dep: DepVerdict, service_id: int, pr_number: int, store_response: bool = True
 ) -> None:
     """Refine an ADVISORY with Groq; any failure keeps the Stage 2 verdict (stage_reached=2).
 
+    Replies are cached by prompt hash for 7 days (redelivery/synchronize of unchanged deps).
     store_response=False skips the Mongo `review_responses` log (offline dry runs)."""
-    if not settings.groq_api_key:
+    if not settings.groq_api_key or _redundancy_only(dep):
         return
     prompt = build_prompt(dep)
+    key = f"dephgraph:prompts:{sha256(prompt.encode()).hexdigest()}"
+    raw = await _cached_reply(key)
+    fresh = raw is None
     try:
-        raw = await _ask_groq(prompt)
+        if raw is None:
+            raw = await _ask_groq(prompt)
         out = json.loads(raw)
-        verdict = out["verdict"]
-        if verdict not in ("ADVISORY", "BLOCK"):
+        verdict = str(out["verdict"]).strip().upper()
+        if verdict not in ("ADVISORY", "BLOCK"):  # never PASS: the LLM cannot downgrade
             raise ValueError(f"bad verdict {verdict!r}")
     except (APIError, ValueError, KeyError, TypeError) as e:
         log.warning("stage3_failed", dep=dep.name, error=str(e))
         return
+    llm = str(out.get("reasoning", "")).strip()
     dep.verdict, dep.stage_reached = verdict, 3
-    dep.reasoning = str(out.get("reasoning", ""))[:1000] or dep.reasoning
+    dep.reasoning = f"{dep.reasoning[:300]} | LLM: {llm[:600]}" if llm else dep.reasoning
     dep.context_tokens = len(prompt) // 4
+    if not fresh:
+        return
+    try:
+        await get_redis().set(key, raw, nx=True, ex=PROMPT_CACHE_TTL)
+    except (RedisError, OSError) as e:
+        log.warning("prompt_cache_write_failed", error=str(e))
     if not store_response:
         return
     try:
@@ -333,5 +374,86 @@ async def refine(
         await asyncio.wait_for(asyncio.gather(*todo), STAGE3_BUDGET)
     except TimeoutError:  # unfinished deps keep their Stage 2 verdict
         log.warning("stage3_budget_exceeded", budget=STAGE3_BUDGET)
-    overall = max((d.verdict for d in out), key=RANK.__getitem__, default="PASS")
-    return overall, max((d.stage_reached for d in out), default=1)
+    return overall(out)
+
+
+def overall(out: list[DepVerdict]) -> tuple[str, int]:
+    """(worst verdict, highest stage reached); PASS/1 when empty."""
+    return (
+        max((d.verdict for d in out), key=RANK.__getitem__, default="PASS"),
+        max((d.stage_reached for d in out), default=1),
+    )
+
+
+def _worst_per_name(results: list[DepVerdict]) -> list[DepVerdict]:
+    """The PK is (service, pr, dep_name) but deps differ by ecosystem/version: keep the worst."""
+    worst: dict[str, DepVerdict] = {}
+    for d in results:
+        key = d.name[:255]
+        if key not in worst or RANK[d.verdict] > RANK[worst[key].verdict]:
+            worst[key] = d
+    return list(worst.values())
+
+
+def _event_time(pr: dict[str, Any]) -> datetime:
+    """pull_request.updated_at (GitHub bumps it on every push); now() for payloads without it."""
+    try:
+        return datetime.fromisoformat(pr["updated_at"]).astimezone(timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        return datetime.now(timezone.utc)
+
+
+async def store_verdicts(
+    session: AsyncSession,
+    service_id: int,
+    number: int,
+    pr: dict[str, Any],
+    results: list[DepVerdict],
+) -> bool:
+    """Replace the PR's review + verdict rows (caller holds the service lock in a transaction).
+
+    Returns False, writing nothing, when the stored review comes from a newer event: overlapping
+    deliveries finish in any order and an older head must not overwrite a newer one.
+    """
+    stored = await session.execute(
+        text(
+            "INSERT INTO pr_review (service_id, pr_number, pr_url, author, head_sha, evaluated_at) "
+            "VALUES (:s, :n, :url, :author, :sha, :at) ON CONFLICT (service_id, pr_number) "
+            "DO UPDATE SET pr_url = EXCLUDED.pr_url, author = EXCLUDED.author, "
+            "head_sha = EXCLUDED.head_sha, evaluated_at = EXCLUDED.evaluated_at "
+            "WHERE pr_review.evaluated_at IS NULL OR pr_review.evaluated_at <= EXCLUDED.evaluated_at "
+            "RETURNING 1"
+        ),
+        {
+            "s": service_id,
+            "n": number,
+            "url": str(pr.get("html_url", ""))[:500],
+            "author": str((pr.get("user") or {}).get("login", ""))[:120] or None,
+            "sha": str((pr.get("head") or {}).get("sha", ""))[:64] or None,
+            "at": _event_time(pr),
+        },
+    )
+    if stored.first() is None:
+        return False
+    await session.execute(
+        text("DELETE FROM pr_risk_verdict WHERE service_id = :s AND pr_number = :n"),
+        {"s": service_id, "n": number},
+    )
+    for d in _worst_per_name(results):
+        await session.execute(
+            text(
+                "INSERT INTO pr_risk_verdict (service_id, pr_number, dep_name, risk_level, "
+                "stage_reached, context_tokens, reasoning) "
+                "VALUES (:s, :n, :dep, :v, :st, :ct, :why)"
+            ),
+            {
+                "s": service_id,
+                "n": number,
+                "dep": d.name[:255],
+                "v": d.verdict,
+                "st": d.stage_reached,
+                "ct": d.context_tokens,
+                "why": d.reasoning,
+            },
+        )
+    return True

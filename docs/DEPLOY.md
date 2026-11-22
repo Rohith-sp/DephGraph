@@ -5,13 +5,11 @@ Every variable below is documented in [`.env.example`](../.env.example).
 
 ## 1. Supabase (Postgres + auth)
 
-Apply the migrations in numeric order, each once, in the SQL editor or with `psql -v ON_ERROR_STOP=1 -f`:
+Apply every file in `apps/api/migrations/` in numeric order, each once, in the SQL editor or with
+`psql -v ON_ERROR_STOP=1 -f` (`for f in apps/api/migrations/*.sql` sorts correctly; today that is 001 through 009). Later deploys apply only
+the files added since.
 
-```
-001_initial_schema.sql  ->  002_views.sql  ->  003_indexes.sql  ->  004_rls.sql  ->  005_cluster_keywords.sql  ->  006_view_fixes.sql
-```
-
-Existing migrations are immutable; schema changes go in a new `007_*.sql`.
+Existing migrations are immutable; schema changes go in a new file with the next unused number.
 
 **RLS is single-tenant.** `004_rls.sql` enables RLS on every table with
 `FOR SELECT TO authenticated USING (true)`: any signed-in user can read all data. All writes go
@@ -25,7 +23,7 @@ New projects sign tokens with ES256/RS256 asymmetric keys; the API verifies them
 `{SUPABASE_URL}/auth/v1/.well-known/jwks.json`, so set `SUPABASE_URL` on Render. `SUPABASE_JWT_SECRET` is only
 needed for legacy HS256 projects. To rehearse against a local stack, see README "Supabase locally".
 
-Use the pooled connection string for `DATABASE_URL`, with the `postgresql+asyncpg://` scheme.
+Use the direct connection or the Supavisor **session-mode** pooler (port 5432 on the pooler host) for `DATABASE_URL`, with the `postgresql+asyncpg://` scheme. Do not use the transaction-mode pooler (port 6543): it breaks asyncpg prepared statements.
 
 ## 2. Render (API)
 
@@ -76,10 +74,11 @@ Send the secret in a request header (Advanced > Headers). Times are in the job's
 |---|---|---|---|
 | OSV sync | `POST https://dephgraph-api.onrender.com/internal/osv-sync` | `X-Cron-Secret: <INTERNAL_CRON_SECRET>` | `0 2 * * *` |
 | Cluster recompute | `POST https://dephgraph-api.onrender.com/internal/cluster-recompute` | `X-Cron-Secret: <INTERNAL_CRON_SECRET>` | `0 3 * * 0` |
+| Maintainers sync | `POST https://dephgraph-api.onrender.com/internal/maintainers-sync` | `X-Cron-Secret: <INTERNAL_CRON_SECRET>` | `0 4 * * 0` |
 | Health ping | `GET https://dephgraph-api.onrender.com/health` | none | `*/10 * * * *` |
 
-`/health` and `/pr-gate/webhook` are exempt from rate limiting; other routes return `429` with the standard
-envelope after 100 requests per minute per user (or per IP when anonymous).
+`/health` and `/pr-gate/webhook` are exempt from rate limiting; the webhook answers `202` and reviews in the background (read results from `GET /pr-gate/verdicts/{service_id}`); other routes return `429` with the standard
+envelope after 100 requests per minute per user (or per IP when anonymous). Counters are per worker and responses are cached in Redis (generation counter), so keep `WEB_CONCURRENCY=1` (render.yaml uses `--workers 1`) or lower `RATE_LIMIT` accordingly.
 
 ## 5. Smoke test
 

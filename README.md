@@ -17,7 +17,6 @@ DephGraph ingests dependency manifests (`requirements.txt`, `package.json`, `Car
 | **Blast radius**: which services reach this vulnerable package, and through which path? | Recursive CTE over the `depends_on` graph |
 | **Prune**: which dependencies ship to production but never execute? | Anti-join between resolved packages and runtime observations |
 | **Minimum remediation**: which upgrades clear the most CVEs across the most services? | Greedy set cover |
-| **License propagation**: does copyleft code reach a shipped service? | Transitive closure joined with licence data |
 | **Consolidate**: which services pull in several packages that do the same job? | Semantic clustering of packages (SBERT, UMAP, HDBSCAN) |
 | **PR gate**: is the dependency this pull request adds safe? | 3-stage filter: manifest check, SQL verdict, LLM advisory |
 
@@ -89,13 +88,13 @@ This creates the `dephgraph` database with all tables, constraints and views. Th
 
 ## Run locally
 
-Needs Docker, Python 3.12 (with [uv](https://docs.astral.sh/uv/)) and Node 20+.
+Needs Docker, Python 3.12 (with [uv](https://docs.astral.sh/uv/)) and Node 22+.
 
 ```bash
-docker compose up -d                       # Postgres 15, Mongo 7, Redis 7; first start applies migrations 001-006
+docker compose up -d postgres mongo redis  # databases only (the full stack incl. api/web is plain `docker compose up -d`; don't mix it with the steps below, ports clash); first start applies every file in apps/api/migrations
 # (to re-apply migrations: docker compose down -v, which wipes all local data)
 # .env.local (gitignored): defaults already match the compose services, so only secrets are needed; never overwrites an existing file
-[ -f .env.local ] || printf 'SUPABASE_JWT_SECRET=dev-secret-at-least-32-characters\nINTERNAL_CRON_SECRET=dev-cron-secret\n' > .env.local
+[ -f .env.local ] || printf 'SUPABASE_JWT_SECRET=dev-only-jwt-secret-change-me-0123456789\nINTERNAL_CRON_SECRET=dev-only-cron-secret\n' > .env.local
 
 uv venv -p 3.12 apps/api/.venv
 uv pip install -p apps/api/.venv -r apps/api/requirements.txt
@@ -110,8 +109,15 @@ In a second terminal:
 npm install
 apps/api/.venv/bin/python scripts/make_dev_token.py     # prints a dev JWT
 # apps/web/.env.local: AUTH_DISABLED=true and DEV_API_TOKEN=<that token>
-npm run dev -w apps/web                                  # dashboard on :3000
+npm run build -w apps/web && npm run start -w apps/web   # dashboard on :3000 (use this for demos; `npm run dev -w apps/web` is slow per page)
 ```
+
+API notes:
+- `GET /clusters` returns each cluster with its `members` inline; `GET /clusters/{id}/members` no longer exists.
+- `GET /remediation/plan/{team_id}` steps carry `plan_id`, `action_seq`, `action_status` (null without a saved plan), so the UI restores saved progress after a reload.
+- `POST /pr-gate/webhook` answers `202 {accepted, delivery_id}` and reviews in the background. Read results with `GET /pr-gate/verdicts/{service_id}` (and the Check Run on GitHub).
+- Ids must be positive and in range, else `422`. Vulnerability timestamps use `+00:00`, not `Z`.
+- Latency: read endpoints are cached in Redis under a generation counter (any write bumps it). Rate-limit counters are per worker, so keep `WEB_CONCURRENCY=1` unless you scale `RATE_LIMIT` down.
 
 ### Supabase locally (real auth)
 
@@ -150,7 +156,7 @@ The design phases and the application build (build phases 0 to 7) are done. See 
 | Course 5: Transactions | ACID, schedules, precedence graphs, 2PL, deadlock and isolation demos ([`transactions/`](transactions/README.md)) | Done |
 | Build 0-1: Setup and schema | Monorepo, Postgres schema, RLS, seed data, CI | Done |
 | Build 2: Ingestion | Manifest parsing, OSV and deps.dev sync | Done |
-| Build 3: Analysis | Blast radius, set cover, prune, licence propagation | Done |
+| Build 3: Analysis | Blast radius, set cover, prune | Done |
 | Build 4: Dashboard | Next.js UI with interactive dependency graph | Done |
 | Build 5: Clustering | Semantic package clusters | Done |
 | Build 6: PR gate | GitHub Checks integration | Done |

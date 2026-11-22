@@ -11,7 +11,7 @@
 -- NOTE ON NOTATION
 --   Workbench draws crow's-foot EER diagrams, not Chen notation.
 --   The Chen ER diagram (ellipses for attributes, diamonds for
---   relationships) is supplied separately as dephgraph_er_chen.drawio.
+--   relationships) is supplied separately as er_chen.drawio.
 -- =====================================================================
 
 DROP DATABASE IF EXISTS dephgraph;
@@ -390,10 +390,11 @@ SELECT  p.package_id,
         MAX(m.last_active_at)                                  AS last_activity,
         DATEDIFF(CURDATE(), MAX(m.last_active_at))             AS days_idle,
         -- SCALE IS FIXED SYSTEM-WIDE: 0-100, HIGHER = MORE ABANDONED = WORSE
+        -- unknown activity (no maintainer, or none with last_active_at) counts as max idle (730 days)
         ROUND(
             LEAST(100.0,
                   (CASE WHEN COUNT(DISTINCT mb.maintainer_id) <= 1 THEN 50.0 ELSE 0.0 END) +
-                  (LEAST(DATEDIFF(CURDATE(), MAX(m.last_active_at)), 730) / 14.6)
+                  (LEAST(COALESCE(DATEDIFF(CURDATE(), MAX(m.last_active_at)), 730), 730) / 14.6)
             ), 1)                                              AS abandonment_score
 FROM        package        p
 LEFT JOIN   maintained_by  mb ON mb.package_id = p.package_id
@@ -404,21 +405,22 @@ GROUP BY    p.package_id, p.package_name;
 CREATE OR REPLACE VIEW v_service_exposure AS
 SELECT  s.service_id,
         s.service_name,
-        COUNT(DISTINCT v.vuln_id)                              AS open_vulns,
-        SUM(CASE WHEN v.severity = 'CRITICAL' THEN 1 ELSE 0 END) AS critical_vulns,
-        ROUND(AVG(v.cvss_score), 2)                            AS avg_cvss
+        COUNT(*)                                               AS open_vulns,
+        COALESCE(SUM(x.severity = 'CRITICAL'), 0)              AS critical_vulns,
+        ROUND(AVG(x.cvss_score), 2)                            AS avg_cvss
 FROM        service         s
-JOIN        deployment      d  ON d.service_id = s.service_id
-                              AND d.environment = 'PROD' AND d.is_active = TRUE
-JOIN        resolves_to     rt ON rt.service_id = d.service_id
-                              AND rt.deploy_seq = d.deploy_seq
-JOIN        affects         a  ON a.package_id = rt.package_id
-                              AND a.version_string = rt.version_string
-JOIN        vulnerability   v  ON v.vuln_id = a.vuln_id
-LEFT JOIN   waived_for      w  ON w.vuln_id = v.vuln_id
-                              AND w.service_id = s.service_id
-                              AND w.expires_on >= CURDATE()
-WHERE       w.vuln_id IS NULL
+JOIN        (SELECT DISTINCT d.service_id, v.vuln_id, v.severity, v.cvss_score  -- one row per vuln
+             FROM   deployment    d
+             JOIN   resolves_to   rt ON rt.service_id = d.service_id
+                                    AND rt.deploy_seq = d.deploy_seq
+             JOIN   affects       a  ON a.package_id = rt.package_id
+                                    AND a.version_string = rt.version_string
+             JOIN   vulnerability v  ON v.vuln_id = a.vuln_id
+             WHERE  d.environment = 'PROD' AND d.is_active = TRUE
+               AND  NOT EXISTS (SELECT 1 FROM waived_for w
+                                WHERE w.vuln_id = v.vuln_id AND w.service_id = d.service_id
+                                  AND w.expires_on >= CURDATE())) x
+                         ON x.service_id = s.service_id
 GROUP BY    s.service_id, s.service_name;
 
 -- SEMANTIC_CLUSTER.member_count + redundancy detection
@@ -459,15 +461,20 @@ WITH RECURSIVE reachable (package_id, version_string, depth, path) AS (
     JOIN    package    p2 ON p2.package_id = d.dependent_package_id
     WHERE   r.depth < 15                    -- cycle guard
 )
-SELECT   s.service_name, d.environment, MIN(r.depth) AS hops, MIN(r.path) AS dependency_path
+SELECT   service_name, environment, hops, dependency_path
+FROM (
+SELECT   s.service_name, d.environment, r.depth AS hops, r.path AS dependency_path,
+         ROW_NUMBER() OVER (PARTITION BY s.service_name, d.environment
+                            ORDER BY r.depth, r.path) AS rn          -- shortest path per service/env
 FROM     reachable   r
 JOIN     resolves_to rt ON rt.package_id = r.package_id
                        AND rt.version_string = r.version_string
 JOIN     deployment  d  ON d.service_id = rt.service_id AND d.deploy_seq = rt.deploy_seq
 JOIN     service     s  ON s.service_id = d.service_id
 WHERE    d.is_active = TRUE
-GROUP BY s.service_name, d.environment
-ORDER BY FIELD(d.environment,'PROD','STAGING','DEV'), hops;
+) x
+WHERE    rn = 1
+ORDER BY FIELD(environment,'PROD','STAGING','DEV'), hops;
 */
 
 -- Q2  PRUNE — declared but never executed (AXIOM runtime evidence).
@@ -493,7 +500,7 @@ ORDER BY s.service_name, rt.depth;
 /*
 SELECT   p.package_name,
          rt.version_string                       AS current_version,
-         MIN(a.fixed_in)                         AS upgrade_to,
+         MAX(a.fixed_in)                         AS upgrade_to,
          COUNT(DISTINCT s.service_id)            AS services_fixed,
          COUNT(DISTINCT v.vuln_id)               AS vulns_cleared
 FROM     affects        a

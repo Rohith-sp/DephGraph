@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.services import pr_gate_engine  # noqa: E402
+from app.services.manifest_parser import normalize_pypi  # noqa: E402
 from app.services.queries import lock_service, require_service, rows  # noqa: E402
 
 DRY_RUN_AUTHOR = "pr-gate-dry-run"
@@ -34,7 +35,8 @@ def parse_dep(spec: str) -> tuple[str, str, str]:
     if len(parts) != 3 or not all(p.strip() for p in parts):
         raise argparse.ArgumentTypeError(f"expected ecosystem:name:version, got {spec!r}")
     eco, name, ver = (p.strip() for p in parts)
-    return eco.lower(), name, ver
+    eco = eco.lower()
+    return eco, (normalize_pypi(name) if eco == "pypi" else name), ver  # as the webhook does
 
 
 async def dry_run(
@@ -56,13 +58,11 @@ async def dry_run(
         results, service_id, pr_number, store_responses=save
     )
     if save:
-        from app.routers.pr_gate import _store  # router helper: same rows as the webhook
-
         pr = {"html_url": "", "user": {"login": DRY_RUN_AUTHOR}}
         async with session.begin():
             await lock_service(session, service_id)
             await require_service(session, service_id)
-            await _store(session, service_id, pr_number, pr, results)
+            await pr_gate_engine.store_verdicts(session, service_id, pr_number, pr, results)
     return {
         "service_id": service_id,
         "service": svc[0]["name"],

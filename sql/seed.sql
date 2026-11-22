@@ -135,13 +135,13 @@ INSERT INTO resolves_to (service_id, deploy_seq, package_id, version_string, dep
 -- ---------------------------------------------------------------------
 -- 3. SCAN_RUN
 INSERT INTO scan_run (scan_id, source_tool, started_at, ended_at) VALUES
-  (500, 'ebpf-agent', '2026-08-01 00:00:00', '2026-08-31 00:00:00'),
+  (500, 'ebpf-agent', '2026-09-01 11:00:00', '2026-09-30 00:00:00'),
   (501, 'osv-sync',   '2026-09-01 02:00:00', '2026-09-01 02:04:00');
 
 -- 23. OBSERVES (is_live is generated from exec_count)
 INSERT INTO observes (service_id, deploy_seq, package_id, version_string, scan_id,
                       exec_count, first_seen, last_seen) VALUES
-  (10, 1, 100, '2.14.1', 500, 1840, '2026-08-01 00:05:00', '2026-08-30 23:41:00'),
+  (10, 1, 100, '2.14.1', 500, 1840, '2026-09-01 11:05:00', '2026-09-29 23:41:00'),
   (10, 1, 101, '1.2.3',  500, 0,    NULL,                  NULL);
 
 -- ---------------------------------------------------------------------

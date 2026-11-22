@@ -75,7 +75,7 @@ run() {
   local log=${2:-logs/$(basename "${file%.*}").log}
   mkdir -p "$(dirname "$log")"
   set +e
-  docker exec -i "$CONTAINER" mysql --table --show-warnings "${force[@]}" < "$file" 2>&1 | tee "$log"
+  docker exec -i "$CONTAINER" mysql --table --show-warnings ${force[@]+"${force[@]}"} < "$file" 2>&1 | tee "$log"
   local code=${PIPESTATUS[0]}
   set -e
   echo "exit code: $code" >> "$log"

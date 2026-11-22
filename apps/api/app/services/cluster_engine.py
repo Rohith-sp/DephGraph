@@ -4,6 +4,7 @@ import asyncio
 import json
 import threading
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,6 +16,7 @@ from sklearn.feature_extraction.text import CountVectorizer
 from sqlalchemy import text
 
 from app.database import SessionLocal, get_mongo, get_redis
+from app.services import cache
 from app.services.queries import rows
 
 log = structlog.get_logger()
@@ -61,6 +63,7 @@ def cluster(vectors: np.ndarray) -> Clustering:
         n_components=2,
         n_neighbors=max(2, min(15, n - 1)),
         random_state=42,
+        n_jobs=1,  # random_state forces 1 anyway; explicit silences umap's warning
         init=("random" if n < 20 else "spectral"),  # spectral init needs n >> n_components
     ).fit_transform(vectors)
     labels = hdbscan.HDBSCAN(min_cluster_size=MIN_CLUSTER_SIZE).fit_predict(coords)
@@ -74,7 +77,12 @@ def top_keywords(docs: list[str], labels: np.ndarray, k: int = 3) -> dict[int, l
         return {}
     class_docs = [" ".join(d for d, lab in zip(docs, labels) if lab == i) for i in ids]
     vec = CountVectorizer(stop_words="english", token_pattern=r"[A-Za-z][A-Za-z]{2,}")
-    counts = vec.fit_transform(class_docs).toarray().astype(float)
+    try:
+        counts = vec.fit_transform(class_docs).toarray().astype(float)
+    except ValueError:  # empty vocabulary: only stop words / short or non-Latin text
+        return {
+            i: [d.split(":", 1)[0] for d, lab in zip(docs, labels) if lab == i][:k] for i in ids
+        }
     tf = counts / np.maximum(counts.sum(axis=1, keepdims=True), 1)
     idf = np.log(1 + counts.sum() / len(ids) / np.maximum(counts.sum(axis=0), 1))
     terms = vec.get_feature_names_out()
@@ -85,8 +93,20 @@ def _label(words: list[str]) -> str:
     return " / ".join(words)[:120]
 
 
-async def recompute() -> int:
-    """Replace all clusters atomically in Postgres, then upsert embeddings in Mongo."""
+class LockLost(RuntimeError):
+    """Another recompute took over after LOCK_TTL expired; this run must not write."""
+
+
+async def recompute(keepalive: Callable[[], Awaitable[bool]] | None = None) -> int:
+    """Replace all clusters atomically in Postgres, then upsert embeddings in Mongo.
+
+    keepalive renews the lock and says whether we still hold it; checked before each write phase.
+    """
+
+    async def still_ours() -> None:
+        if keepalive and not await keepalive():
+            raise LockLost("cluster lock lost; aborting before writing")
+
     async with SessionLocal() as session:
         pkgs = await rows(
             session,
@@ -99,6 +119,7 @@ async def recompute() -> int:
     result = await asyncio.to_thread(cluster, vectors)
     words = await asyncio.to_thread(top_keywords, docs, result.labels)
 
+    await still_ours()
     cluster_of: dict[int, int] = {}  # package_id -> new cluster_id
     async with SessionLocal() as session, session.begin():
         await session.execute(text("DELETE FROM semantic_cluster"))  # FK SET NULLs package_version
@@ -128,6 +149,7 @@ async def recompute() -> int:
 
     # shortcut: Mongo upsert is not atomic with the Postgres commit above; a failure here leaves
     # stale embeddings until recompute is rerun, which heals it. Upgrade if drift is observed.
+    await still_ours()
     if pkgs:
         await get_mongo()["package_embeddings"].bulk_write(
             [
@@ -163,13 +185,27 @@ async def release(redis: Any, token: str) -> bool:
     return bool(await redis.eval(_RELEASE, 1, LOCK_KEY, token))
 
 
+# Extend the TTL only while we still own the lock.
+_RENEW = (
+    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('expire', KEYS[1], ARGV[2]) "
+    "end return 0"
+)
+
+
+async def renew(redis: Any, token: str) -> bool:
+    return bool(await redis.eval(_RENEW, 1, LOCK_KEY, token, LOCK_TTL))
+
+
 async def run_guarded(redis: Any, token: str) -> None:
     """Background entry: lock already held by the caller; always logs, always releases."""
     try:
-        await recompute()
+        await recompute(lambda: renew(redis, token))
+    except LockLost:
+        log.warning("cluster_recompute_lock_lost")
     except Exception:  # noqa: BLE001 -- background job: log and swallow so the lock is released
         log.exception("cluster_recompute_failed")
     finally:
+        await cache.bump()  # a failed run may already have committed the Postgres half
         await release(redis, token)
 
 

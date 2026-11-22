@@ -1,7 +1,6 @@
 """OSV.dev client: querybatch -> per-id details -> vulnerability/affects upserts."""
 
 import asyncio
-from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -9,7 +8,9 @@ import httpx
 import structlog
 from cvss import CVSS3, CVSS4, CVSSError
 from packaging.version import InvalidVersion, Version
+from pymongo import ReplaceOne
 from pymongo.errors import PyMongoError
+from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +18,7 @@ from app.models.mongo import osv_advisories
 from app.models.sql import Affects, Vulnerability
 from app.services.http import request
 from app.services.manifest_parser import PkgRef, normalize_pypi
+from app.services.queries import chunks
 
 log = structlog.get_logger()
 
@@ -24,7 +26,7 @@ OSV_URL = "https://api.osv.dev/v1"
 OSV_ECOSYSTEM = {"pypi": "PyPI", "npm": "npm", "cargo": "crates.io", "go": "Go"}
 BATCH = 1000
 CONCURRENCY = 10
-INSERT_CHUNK = 1000
+MAX_PAGES = 20  # extra pages per ref before giving up
 _GHSA_SEVERITY = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MODERATE": "MEDIUM", "LOW": "LOW"}
 
 
@@ -37,22 +39,35 @@ async def fetch_advisories(
 ) -> tuple[dict[PkgRef, list[str]], dict[str, dict[str, Any]]]:
     """Return ({ref: [osv_id]}, {osv_id: raw advisory}). Raises httpx.HTTPError if OSV is down."""
     hits: dict[PkgRef, list[str]] = {}
-    # shortcut: ignores querybatch next_page_token (>1 page of vulns per package), upgrade if seen
     async with httpx.AsyncClient(timeout=30) as client:
-        for i in range(0, len(refs), BATCH):
-            chunk = refs[i : i + BATCH]
-            queries = [
-                {
-                    "package": {"name": r.name, "ecosystem": OSV_ECOSYSTEM[r.ecosystem]},
-                    "version": _osv_version(r),
-                }
-                for r in chunk
-            ]
-            resp = await request(client, "POST", f"{OSV_URL}/querybatch", json={"queries": queries})
-            resp.raise_for_status()
-            for ref, res in zip(chunk, resp.json()["results"], strict=True):
-                if ids := [v["id"] for v in res.get("vulns", [])]:
-                    hits[ref] = ids
+        pending: list[tuple[PkgRef, str | None]] = [(r, None) for r in refs]
+        for _ in range(MAX_PAGES + 1):
+            if not pending:
+                break
+            following: list[tuple[PkgRef, str | None]] = []
+            for i in range(0, len(pending), BATCH):
+                chunk = pending[i : i + BATCH]
+                queries = [
+                    {
+                        "package": {"name": r.name, "ecosystem": OSV_ECOSYSTEM[r.ecosystem]},
+                        "version": _osv_version(r),
+                        **({"page_token": tok} if tok else {}),
+                    }
+                    for r, tok in chunk
+                ]
+                resp = await request(
+                    client, "POST", f"{OSV_URL}/querybatch", json={"queries": queries}
+                )
+                resp.raise_for_status()
+                for (ref, _), res in zip(chunk, resp.json()["results"], strict=True):
+                    hits.setdefault(ref, []).extend(v["id"] for v in res.get("vulns", []))
+                    if tok := res.get("next_page_token"):
+                        following.append((ref, tok))
+            pending = following
+        else:
+            # a truncated result would make upsert_advisories delete valid affects rows
+            raise httpx.HTTPError("OSV querybatch pagination did not terminate")
+        hits = {r: ids for r, ids in hits.items() if ids}
 
         sem = asyncio.Semaphore(CONCURRENCY)
 
@@ -133,18 +148,17 @@ def fixed_in(osv: dict[str, Any], ref: PkgRef) -> str | None:
     return raw[min(above)] if above else None
 
 
-def _chunks(items: list[dict[str, Any]]) -> Iterator[list[dict[str, Any]]]:
-    """asyncpg caps a statement at 32767 bind params; 1000 rows x <=6 columns stays far below."""
-    for i in range(0, len(items), INSERT_CHUNK):
-        yield items[i : i + INSERT_CHUNK]
-
-
 async def upsert_advisories(
-    session: AsyncSession, hits: dict[PkgRef, list[str]], advisories: dict[str, dict[str, Any]]
+    session: AsyncSession,
+    refs: list[PkgRef],
+    hits: dict[PkgRef, list[str]],
+    advisories: dict[str, dict[str, Any]],
 ) -> int:
-    """Upsert vulnerability + affects rows (caller commits). Returns advisories written."""
-    if not advisories:
-        return 0
+    """Make `affects` match this OSV run for `refs` (caller commits). Returns advisories written.
+
+    Upserts vulnerability + affects rows, and deletes affects rows of the queried refs that OSV
+    no longer reports (withdrawn advisory, narrowed range), so they stop being false positives.
+    """
     rows = []
     for osv_id, osv in advisories.items():
         severity, score = classify(osv)
@@ -159,7 +173,7 @@ async def upsert_advisories(
             }
         )
     vuln_ids: dict[str, int] = {}
-    for chunk in _chunks(rows):
+    for chunk in chunks(rows):
         stmt = insert(Vulnerability).values(chunk)
         stmt = stmt.on_conflict_do_update(
             index_elements=["osv_id"],
@@ -177,7 +191,8 @@ async def upsert_advisories(
         for ref, ids in hits.items()
         for i in ids
     }
-    for chunk in _chunks(list(affects.values())):
+    # sorted: consistent row-lock order across concurrent ingests/syncs avoids deadlocks
+    for chunk in chunks([affects[k] for k in sorted(affects)]):
         ins = insert(Affects).values(chunk)
         await session.execute(
             ins.on_conflict_do_update(
@@ -185,11 +200,28 @@ async def upsert_advisories(
                 set_={"fixed_in": ins.excluded.fixed_in},
             )
         )
+    keep = sorted(affects)
+    await session.execute(
+        text(
+            "DELETE FROM affects a USING unnest(CAST(:rp AS BIGINT[]), CAST(:rv AS TEXT[])) "
+            "AS q(p, v) WHERE (a.package_id, a.version_string) = (q.p, q.v) AND NOT EXISTS ("
+            "SELECT 1 FROM unnest(CAST(:kp AS BIGINT[]), CAST(:kv AS TEXT[]), "
+            "CAST(:ku AS BIGINT[])) k(p, v, u) "
+            "WHERE (k.p, k.v, k.u) = (a.package_id, a.version_string, a.vuln_id))"
+        ),
+        {
+            "rp": [r.package_id for r in refs],
+            "rv": [r.version for r in refs],
+            "kp": [k[0] for k in keep],
+            "kv": [k[1] for k in keep],
+            "ku": [k[2] for k in keep],
+        },
+    )
     return len(advisories)
 
 
 async def store_raw(advisories: dict[str, dict[str, Any]], *, required: bool = False) -> bool:
-    """Write verbatim OSV JSON to Mongo `osv_advisories`, one upsert per osv_id (idempotent).
+    """Write verbatim OSV JSON to Mongo `osv_advisories`, one bulk upsert per osv_id (idempotent).
 
     Mongo is the raw layer: callers store advisories here BEFORE projecting them into Postgres
     with `upsert_advisories`. With required=False (scan / cron paths) a Mongo outage is logged
@@ -197,13 +229,17 @@ async def store_raw(advisories: dict[str, dict[str, Any]], *, required: bool = F
     re-raised so the caller can refuse to project data the raw layer does not hold.
     """
     now = datetime.now(UTC)
+    ops = [
+        ReplaceOne(
+            {"osv_id": osv_id},
+            {"osv_id": osv_id, "raw_osv": raw, "fetched_at": now},
+            upsert=True,
+        )
+        for osv_id, raw in advisories.items()
+    ]
     try:
-        for osv_id, raw in advisories.items():
-            await osv_advisories().replace_one(
-                {"osv_id": osv_id},
-                {"osv_id": osv_id, "raw_osv": raw, "fetched_at": now},
-                upsert=True,
-            )
+        if ops:
+            await osv_advisories().bulk_write(ops, ordered=False)
     except PyMongoError as e:
         log.warning("osv_raw_store_failed", error=str(e))
         if required:

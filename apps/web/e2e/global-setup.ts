@@ -1,8 +1,10 @@
 import { chromium, type FullConfig } from "@playwright/test";
 import { AUTH_DISABLED, EMAIL, PASSWORD, SIGNOUT_EMAIL, STATE } from "./credentials";
+import { reseed } from "./seed";
 
-// Signs in through the real /login UI once and saves the session for every test.
+// Reseeds the database, then signs in through the real /login UI once and saves the session for every test.
 export default async function globalSetup(config: FullConfig) {
+  reseed();
   if (AUTH_DISABLED) return;
   const supabase = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const admin = process.env.SUPABASE_SERVICE_ROLE_KEY;

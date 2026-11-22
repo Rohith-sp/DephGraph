@@ -26,3 +26,6 @@ htmlcov/
 
 # Local output from scripts/run-sql.ps1 (MySQL course scripts)
 logs/
+
+# local code index
+.codegraph/
