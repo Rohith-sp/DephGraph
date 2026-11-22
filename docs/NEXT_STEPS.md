@@ -1,6 +1,6 @@
 # DephGraph — Where things stand and what is left
 
-*Status as of 22 November 2026: course Phases 1–6 done, report written, synopsis features complete. Left: Groq live test of PR-gate stage 3, production deploy, viva prep. PostgreSQL is the system of record; the MySQL schema is the course demonstration.*
+*Status as of 22 November 2026: course Phases 1–6 done, report written, synopsis features complete. PR-gate stage 3 tested live on Groq (`openai/gpt-oss-120b`). Left: viva prep, production deploy. PostgreSQL is the system of record; the MySQL schema is the course demonstration.*
 
 There are two tracks:
 
@@ -44,7 +44,7 @@ GitHub Actions CI is also green on the app commits.
 
 ### Completion work (22 November 2026)
 
-Everything the synopsis promised, except the live Groq test and deployment, is built and tested
+Everything the synopsis promised, except deployment, is built and tested
 (208 backend tests, 97 % coverage, CI green):
 
 | Synopsis item | What was added | Where |
@@ -228,6 +228,5 @@ One-time login setup on Windows, so no password is ever typed into a script:
 
 ## 5. Suggested order
 
-1. Groq live test of PR-gate stage 3 (`scripts/pr_gate_dry_run.py` with `GROQ_API_KEY` set; check the model id).
-2. Viva rehearsal.
-3. Production deploy (3.1), if time allows.
+1. Viva rehearsal.
+2. Production deploy (3.1), if time allows. Set `GROQ_MODEL=openai/gpt-oss-120b` (Groq retired the llama-3.x ids).

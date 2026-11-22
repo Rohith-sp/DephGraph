@@ -328,8 +328,8 @@ from 86400 seconds. The value decodes to keys `service_id`, `vulnerable_packages
 
 Fetched from the local stack on 22 Nov 2026, after one real `POST /ingest/manifest` (the
 `tests/fixtures/requirements_flask.txt` manifest for service 1, which pulled 43 live advisories from
-OSV.dev), one `POST /runtime/samples` batch and one `POST /ingest/replay/{id}`. Long fields are
-trimmed with `…`. `review_responses` stays empty until stage 3 of the PR gate runs with a Groq key.
+OSV.dev), one `POST /runtime/samples` batch, one `POST /ingest/replay/{id}` and one saved PR-gate run
+with the Groq stage on (`scripts/pr_gate_dry_run.py --save`). Long fields are trimmed with `…`.
 
 `raw_manifests` (`raw_content` omitted; 2 of 8 parsed packages shown). `deploy_seqs: [3, 4]` shows the
 original projection (deployment 3) and the replay (deployment 4) of the same stored document:
@@ -385,8 +385,16 @@ skipped because its name did not match a resolved package:
 { package_id: 2, cluster_id: 50, embedding: [ … 384 floats … ], umap_2d: [ 5.9729, 7.3226 ] }
 ```
 
-`review_responses` (shape from `stage3`; written only when the Groq stage runs):
-`{ service_id, pr_number, dep_name, model, prompt, response: '{"verdict": …, "reasoning": …}', responded_at }`
+`review_responses` (written by `stage3` for each ADVISORY dependency the LLM judged; prompt trimmed):
+
+```js
+{
+  service_id: 1, pr_number: 9001, dep_name: 'werkzeug', model: 'openai/gpt-oss-120b',
+  prompt: 'Dependency werkzeug==2.0.1 added in a PR. Rule-based verdict: ADVISORY (abandonment score 55 in 40-79; CVSS 6.30 in 6.0-8.9; CVSS 7.50 in 6.0-8.9; …',
+  response: '{"verdict":"ADVISORY","reasoning":"The dependency has multiple medium-severity CVEs and an abandonment score of 55, indicating security risk, but no copyleft restrictions; thus an advisory is appropriate."}',
+  responded_at: ISODate('2026-11-22T10:38:52.880Z')
+}
+```
 
 ### 7. Aggregation pipelines run on live data [implemented]
 
@@ -414,7 +422,7 @@ db.package_embeddings.aggregate([
 Cluster 55 is "web / requests / http", 57 "data / serialization / yaml", 54 "database / databases /
 sql". The collection holds 97 documents (only packages with a description are embedded); 88 have a
 `cluster_id` and 9 are HDBSCAN noise (`null`). Collection sizes: `raw_manifests` 1,
-`osv_advisories` 43, `runtime_samples` 1, `review_responses` 0.
+`osv_advisories` 43, `runtime_samples` 1, `review_responses` 1.
 
 ### 8. Replication, consistency and CAP [design]
 
