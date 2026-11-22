@@ -1,5 +1,5 @@
 # Build context = repo root (the lockfile lives there). Runs the Next.js standalone server.
-FROM node:22.23.3-alpine AS build
+FROM node:26.13.1-alpine AS build
 WORKDIR /repo
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/
@@ -8,7 +8,7 @@ COPY apps/web apps/web
 ENV NEXT_STANDALONE=1 NEXT_TELEMETRY_DISABLED=1
 RUN npm run build --workspace web
 
-FROM node:22.23.3-alpine
+FROM node:26.13.1-alpine
 ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0 NEXT_TELEMETRY_DISABLED=1
 WORKDIR /repo
 COPY --from=build /repo/apps/web/.next/standalone ./

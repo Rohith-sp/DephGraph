@@ -1,7 +1,7 @@
 # Build context = repo root (docker-compose.yml). The repo layout is kept so app/config.py's
 # ROOT (parents[3]) resolves and scripts/ (seed, dev token) run from the same image.
 # Targets: `api` (default, last stage, slim) and `cluster` (the ML job: docker compose --profile ml).
-FROM python:3.12.16-slim AS build
+FROM python:3.15.2-slim AS build
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=10
 RUN python -m venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH
@@ -15,7 +15,7 @@ RUN pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
 COPY apps/api/requirements-ml.txt requirements-ml.txt
 RUN pip install -r requirements-ml.txt
 
-FROM python:3.12.16-slim AS runtime
+FROM python:3.15.2-slim AS runtime
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PATH=/opt/venv/bin:$PATH
 RUN useradd -m app && mkdir /hf-cache /shared && chown app /hf-cache /shared
 WORKDIR /srv/dephgraph
