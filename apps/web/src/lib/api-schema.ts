@@ -272,7 +272,11 @@ export interface paths {
         };
         /**
          * Me
-         * @description The caller and their teams (an empty list for a user nobody has added to a team yet).
+         * @description The caller and their teams (empty until an admin invites them).
+         *
+         *     Live invites for the caller's confirmed email are claimed here, so signing in is enough.
+         *     Access is by invitation: outside the allowed email domains, or with no team and not an
+         *     organisation admin, `allowed` is false and every other route answers 403.
          */
         get: operations["me_me_get"];
         put?: never;
@@ -398,11 +402,33 @@ export interface paths {
         /** List Services */
         get: operations["list_services_services_get"];
         put?: never;
-        post?: never;
+        /**
+         * Create Service
+         * @description Register a repository (or a monorepo subdirectory of it) as a service; team admins only.
+         */
+        post: operations["create_service_services_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/services/{service_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Service */
+        delete: operations["delete_service_services__service_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Service */
+        patch: operations["update_service_services__service_id__patch"];
         trace?: never;
     };
     "/services/{service_id}/graph": {
@@ -439,6 +465,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/services/{service_id}/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Tokens */
+        get: operations["list_tokens_services__service_id__tokens_get"];
+        put?: never;
+        /**
+         * Create Token
+         * @description Mint an ingest token for runtime collectors; the secret is in this response only.
+         */
+        post: operations["create_token_services__service_id__tokens_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/services/{service_id}/tokens/{token_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Token */
+        delete: operations["revoke_token_services__service_id__tokens__token_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/stats/overview": {
         parameters: {
             query?: never;
@@ -454,6 +518,99 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/teams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Team
+         * @description Organisation admins (ORG_ADMIN_EMAILS) create teams; the creator becomes the team's admin.
+         */
+        post: operations["create_team_teams_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/teams/{team_id}/invites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Invites */
+        get: operations["list_invites_teams__team_id__invites_get"];
+        put?: never;
+        /**
+         * Create Invite
+         * @description Invite by email (no mail is sent): the person joins by signing in with that email, within 7 days.
+         */
+        post: operations["create_invite_teams__team_id__invites_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/teams/{team_id}/invites/{email}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Invite */
+        delete: operations["delete_invite_teams__team_id__invites__email__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/teams/{team_id}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Members */
+        get: operations["list_members_teams__team_id__members_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/teams/{team_id}/members/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove Member */
+        delete: operations["remove_member_teams__team_id__members__user_id__delete"];
+        options?: never;
+        head?: never;
+        /** Set Member Role */
+        patch: operations["set_member_role_teams__team_id__members__user_id__patch"];
         trace?: never;
     };
     "/vulnerabilities": {
@@ -569,6 +726,14 @@ export interface components {
             /** Members */
             members: components["schemas"]["ClusterMember"][];
         };
+        /** Done */
+        Done: {
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
+        };
         /** Envelope[ActionOut] */
         Envelope_ActionOut_: {
             data?: components["schemas"]["ActionOut"] | null;
@@ -581,6 +746,12 @@ export interface components {
             /** Error */
             error?: string | null;
         };
+        /** Envelope[Done] */
+        Envelope_Done_: {
+            data?: components["schemas"]["Done"] | null;
+            /** Error */
+            error?: string | null;
+        };
         /** Envelope[GraphOut] */
         Envelope_GraphOut_: {
             data?: components["schemas"]["GraphOut"] | null;
@@ -590,6 +761,12 @@ export interface components {
         /** Envelope[IngestResult] */
         Envelope_IngestResult_: {
             data?: components["schemas"]["IngestResult"] | null;
+            /** Error */
+            error?: string | null;
+        };
+        /** Envelope[InviteOut] */
+        Envelope_InviteOut_: {
+            data?: components["schemas"]["InviteOut"] | null;
             /** Error */
             error?: string | null;
         };
@@ -608,6 +785,12 @@ export interface components {
         /** Envelope[MeOut] */
         Envelope_MeOut_: {
             data?: components["schemas"]["MeOut"] | null;
+            /** Error */
+            error?: string | null;
+        };
+        /** Envelope[MemberOut] */
+        Envelope_MemberOut_: {
+            data?: components["schemas"]["MemberOut"] | null;
             /** Error */
             error?: string | null;
         };
@@ -641,6 +824,12 @@ export interface components {
             /** Error */
             error?: string | null;
         };
+        /** Envelope[ServiceBrief] */
+        Envelope_ServiceBrief_: {
+            data?: components["schemas"]["ServiceBrief"] | null;
+            /** Error */
+            error?: string | null;
+        };
         /** Envelope[StatsOut] */
         Envelope_StatsOut_: {
             data?: components["schemas"]["StatsOut"] | null;
@@ -650,6 +839,18 @@ export interface components {
         /** Envelope[SyncOut] */
         Envelope_SyncOut_: {
             data?: components["schemas"]["SyncOut"] | null;
+            /** Error */
+            error?: string | null;
+        };
+        /** Envelope[TeamOut] */
+        Envelope_TeamOut_: {
+            data?: components["schemas"]["TeamOut"] | null;
+            /** Error */
+            error?: string | null;
+        };
+        /** Envelope[TokenCreated] */
+        Envelope_TokenCreated_: {
+            data?: components["schemas"]["TokenCreated"] | null;
             /** Error */
             error?: string | null;
         };
@@ -663,6 +864,20 @@ export interface components {
         Envelope_list_ClusterOut__: {
             /** Data */
             data?: components["schemas"]["ClusterOut"][] | null;
+            /** Error */
+            error?: string | null;
+        };
+        /** Envelope[list[InviteOut]] */
+        Envelope_list_InviteOut__: {
+            /** Data */
+            data?: components["schemas"]["InviteOut"][] | null;
+            /** Error */
+            error?: string | null;
+        };
+        /** Envelope[list[MemberOut]] */
+        Envelope_list_MemberOut__: {
+            /** Data */
+            data?: components["schemas"]["MemberOut"][] | null;
             /** Error */
             error?: string | null;
         };
@@ -691,6 +906,13 @@ export interface components {
         Envelope_list_ServiceOut__: {
             /** Data */
             data?: components["schemas"]["ServiceOut"][] | null;
+            /** Error */
+            error?: string | null;
+        };
+        /** Envelope[list[TokenOut]] */
+        Envelope_list_TokenOut__: {
+            /** Data */
+            data?: components["schemas"]["TokenOut"][] | null;
             /** Error */
             error?: string | null;
         };
@@ -786,6 +1008,37 @@ export interface components {
             /** Vulns Fetched */
             vulns_fetched: number;
         };
+        /** InviteCreate */
+        InviteCreate: {
+            /** Email */
+            email: string;
+            /**
+             * Role
+             * @default member
+             * @enum {string}
+             */
+            role: "member" | "admin";
+        };
+        /** InviteOut */
+        InviteOut: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Email */
+            email: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "member" | "admin";
+        };
         /** KeepaliveOut */
         KeepaliveOut: {
             /** Mongo */
@@ -806,6 +1059,12 @@ export interface components {
         };
         /** MeOut */
         MeOut: {
+            /** Allowed */
+            allowed: boolean;
+            /** Org Admin */
+            org_admin: boolean;
+            /** Reason */
+            reason?: string | null;
             /** Teams */
             teams: components["schemas"]["MeTeam"][];
             /** User Id */
@@ -824,6 +1083,31 @@ export interface components {
             slug: string;
             /** Team Id */
             team_id: number;
+        };
+        /** MemberOut */
+        MemberOut: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Email */
+            email: string | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "member" | "admin";
+            /** User Id */
+            user_id: string;
+        };
+        /** MemberPatch */
+        MemberPatch: {
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "member" | "admin";
         };
         /** Page[VulnOut] */
         Page_VulnOut_: {
@@ -985,6 +1269,33 @@ export interface components {
             /** Vulns Fetched */
             vulns_fetched: number;
         };
+        /** ServiceBrief */
+        ServiceBrief: {
+            /** Name */
+            name: string;
+            /** Repo Url */
+            repo_url: string | null;
+            /** Root Path */
+            root_path: string;
+            /** Service Id */
+            service_id: number;
+            /** Team Id */
+            team_id: number;
+        };
+        /** ServiceCreate */
+        ServiceCreate: {
+            /** Name */
+            name?: string | null;
+            /** Repo Url */
+            repo_url: string;
+            /**
+             * Root Path
+             * @default
+             */
+            root_path: string;
+            /** Team Id */
+            team_id: number;
+        };
         /** ServiceOut */
         ServiceOut: {
             /** Critical Count */
@@ -997,6 +1308,8 @@ export interface components {
             package_count: number;
             /** Repo Url */
             repo_url: string | null;
+            /** Root Path */
+            root_path: string;
             /** Service Id */
             service_id: number;
             /** Team Id */
@@ -1005,6 +1318,15 @@ export interface components {
             team_name: string;
             /** Vuln Count */
             vuln_count: number;
+        };
+        /** ServicePatch */
+        ServicePatch: {
+            /** Name */
+            name?: string | null;
+            /** Repo Url */
+            repo_url?: string | null;
+            /** Root Path */
+            root_path?: string | null;
         };
         /** SeverityCounts */
         SeverityCounts: {
@@ -1056,6 +1378,66 @@ export interface components {
             packages_scanned: number;
             /** Vulns Fetched */
             vulns_fetched: number;
+        };
+        /** TeamCreate */
+        TeamCreate: {
+            /** Name */
+            name: string;
+            /** Slug */
+            slug: string;
+        };
+        /** TeamOut */
+        TeamOut: {
+            /** Name */
+            name: string;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "member" | "admin";
+            /** Slug */
+            slug: string;
+            /** Team Id */
+            team_id: number;
+        };
+        /** TokenCreate */
+        TokenCreate: {
+            /** Name */
+            name: string;
+        };
+        /** TokenCreated */
+        TokenCreated: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Last Used At */
+            last_used_at: string | null;
+            /** Name */
+            name: string;
+            /** Revoked At */
+            revoked_at: string | null;
+            /** Token */
+            token: string;
+            /** Token Id */
+            token_id: number;
+        };
+        /** TokenOut */
+        TokenOut: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Last Used At */
+            last_used_at: string | null;
+            /** Name */
+            name: string;
+            /** Revoked At */
+            revoked_at: string | null;
+            /** Token Id */
+            token_id: number;
         };
         /** ValidationError */
         ValidationError: {
@@ -1772,6 +2154,105 @@ export interface operations {
             };
         };
     };
+    create_service_services_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServiceCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ServiceBrief_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_service_services__service_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                service_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Done_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_service_services__service_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                service_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServicePatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_ServiceBrief_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     service_graph_services__service_id__graph_get: {
         parameters: {
             query?: never;
@@ -1834,6 +2315,104 @@ export interface operations {
             };
         };
     };
+    list_tokens_services__service_id__tokens_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                service_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_list_TokenOut__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_token_services__service_id__tokens_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                service_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TokenCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_TokenCreated_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_token_services__service_id__tokens__token_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                service_id: number;
+                token_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Done_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     overview_stats_overview_get: {
         parameters: {
             query?: never;
@@ -1850,6 +2429,236 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Envelope_StatsOut_"];
+                };
+            };
+        };
+    };
+    create_team_teams_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TeamCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_TeamOut_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_invites_teams__team_id__invites_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                team_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_list_InviteOut__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_invite_teams__team_id__invites_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                team_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_InviteOut_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_invite_teams__team_id__invites__email__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                team_id: number;
+                email: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Done_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_members_teams__team_id__members_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                team_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_list_MemberOut__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_member_teams__team_id__members__user_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                team_id: number;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_Done_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_member_role_teams__team_id__members__user_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                team_id: number;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemberPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_MemberOut_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

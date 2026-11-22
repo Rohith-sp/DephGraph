@@ -16,6 +16,7 @@ class ServiceOut(BaseModel):
     name: str
     language: str | None
     repo_url: str | None
+    root_path: str
     package_count: int
     vuln_count: int
     critical_count: int
@@ -213,4 +214,7 @@ class MeTeam(BaseModel):
 
 class MeOut(BaseModel):
     user_id: str
+    allowed: bool  # False: see `reason`; every other route answers 403
+    org_admin: bool  # may create teams
+    reason: str | None = None
     teams: list[MeTeam]

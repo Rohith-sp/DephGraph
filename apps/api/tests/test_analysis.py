@@ -13,7 +13,7 @@ async def test_list_services(client, auth):
     items = r.json()["data"]
     assert len(items) == 5
     assert set(items[0]) == {
-        "service_id", "team_id", "team_name", "name", "language", "repo_url",
+        "service_id", "team_id", "team_name", "name", "language", "repo_url", "root_path",
         "package_count", "vuln_count", "critical_count",
     }  # fmt: skip
     assert all(i["package_count"] > 0 for i in items)

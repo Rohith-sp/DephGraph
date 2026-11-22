@@ -139,6 +139,26 @@ Repo > Settings > Secrets and variables > Actions. Workflows skip with a notice 
 
 `.github/dependabot.yml` opens one grouped weekly PR each for pip, npm, GitHub Actions and Docker/compose images.
 
+## Access model
+
+DephGraph is invite-only. Nobody sees data until an admin puts them in a team.
+
+- **Organisation admins** (`ORG_ADMIN_EMAILS`, comma list, set on the API project; required when
+  `ENVIRONMENT=production`, the API refuses to start without it) are the only people who may create
+  teams. The first admin signs in, creates a team in Settings, then invites the rest.
+- **Invites**: a team admin invites an email address in Settings (valid 7 days, no mail is sent: tell
+  the person to sign in at the web URL). The invite is claimed when they sign in with that address.
+  Anyone without a team who is not an organisation admin gets "ask an admin for an invite".
+- **Confirm email must be ON** (Supabase Dashboard > Authentication > Providers > Email). The API reads
+  the address and its confirmation from `auth.users`, never from user-editable metadata; with it OFF
+  anyone could sign up as someone else's address and claim their invite.
+- **`ALLOWED_EMAIL_DOMAINS`** (optional) additionally restricts sign-in to those domains.
+- **Repositories**: registering a service (Services > Add service) requires the DephGraph GitHub App
+  to be installed on that repository, so a repository can only be added by someone who controls it.
+  A repository (plus directory) can belong to one service only.
+- **GitHub sign-in**: use the GitHub App's Client ID and Client secret in Supabase > Authentication >
+  Providers > GitHub, with the callback URL Supabase shows there. Email/password stays available.
+
 ## Keeping free tiers awake
 
 Supabase pauses a free project after a week without activity and Atlas M0 after 60 days. `cron.yml` runs daily and
