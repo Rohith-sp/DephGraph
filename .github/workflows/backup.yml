@@ -34,7 +34,7 @@ jobs:
           printf '%s' "$BACKUP_PASSPHRASE" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 \
             --symmetric --cipher-algo AES256 -o "dephgraph-$(date -u +%F).tar.gpg" bundle.tar
           rm public.pgdump auth.pgdump bundle.tar
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dephgraph-db-backup
           path: dephgraph-*.tar.gpg

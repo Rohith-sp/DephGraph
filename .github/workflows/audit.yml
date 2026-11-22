@@ -28,8 +28,8 @@ jobs:
         PYSEC-2025-206 PYSEC-2025-207 PYSEC-2025-208 PYSEC-2025-209 PYSEC-2026-139 PYSEC-2026-1856
         PYSEC-2026-1970 PYSEC-2026-2286 PYSEC-2026-4164
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       - run: pip install pip-audit
       - name: API runtime requirements (with transitive dependencies)
@@ -41,8 +41,8 @@ jobs:
   node:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with: { node-version: "22" }
       # Fails on high/critical. npm has no ignore list: pin a patched transitive version with
       # "overrides" in package.json instead.
