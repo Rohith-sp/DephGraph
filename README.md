@@ -225,8 +225,8 @@ the same 23 core tables; the mapping to the PostgreSQL product schema is in
 
 ## Team
 
-- Rakshak S (1RV24CS220)
-- Rohith Kumar L (1RV24CS233)
-- Rohith S Panchamukhi (1RV24CS234)
+- Rakshak S 
+- Rohith Kumar L
+- Rohith S Panchamukhi
 
-Guide: Dr. Pratiba D, Associate Professor, Department of CSE, RV College of Engineering.
+
