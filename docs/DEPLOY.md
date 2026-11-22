@@ -125,6 +125,7 @@ Repo > Settings > Secrets and variables > Actions. Workflows skip with a notice 
 | `DATABASE_URL` | cluster.yml | Supabase **session** pooler (5432), `postgresql+asyncpg://...` |
 | `MONGO_URI`, `MONGO_DB_NAME` (optional) | cluster.yml | as on the API project |
 | `REDIS_URL` | cluster.yml | as on the API project (the job takes the same lock the API checks) |
+| `BACKUP_PASSPHRASE` | backup.yml | long random string; keep a copy outside GitHub (section 8) |
 | `API_BASE_URL` | cron.yml | the API project's URL, no trailing path |
 | `INTERNAL_CRON_SECRET` | cron.yml | same value as on the API project |
 
@@ -173,3 +174,45 @@ Hobby keeps runtime logs for one hour.
 
 `docker compose up -d --build --wait` runs the same code (slim API image, uvicorn). Clustering:
 `docker compose --profile ml run --rm cluster`. See the README.
+
+## 8. Backups
+
+Supabase free has no point-in-time recovery. `.github/workflows/backup.yml` runs weekly (Sunday 03:17 UTC, or by hand from the Actions tab) and uploads one encrypted bundle as the artifact `dephgraph-db-backup`, kept 30 days. The bundle holds `public.pgdump` (schema `public`) and `auth.pgdump` (data of `auth.users` and `auth.identities`, so `team_member.user_id` still maps after a restore). It fails loudly if a secret is missing.
+
+Repository secrets:
+
+- `DATABASE_URL`: the same secret `cluster.yml` uses. It must be the Supabase **session pooler** (`*.pooler.supabase.com:5432`). The direct host is IPv6-only and GitHub runners have no IPv6; the transaction pooler (6543) does not work with `pg_dump`. The workflow strips `+asyncpg`.
+- `BACKUP_PASSPHRASE`: long random string. Keep a copy outside GitHub: without it the backups are unreadable.
+
+GitHub disables scheduled workflows after 60 days without repository activity. Re-enable under Actions > Backup > "Enable workflow" (any commit or a manual run also resets the clock).
+
+### Restore
+
+```bash
+# 1. Download the artifact from the workflow run page and unzip it
+# 2. Decrypt and unpack (passphrase via stdin, never argv)
+printf '%s' "$BACKUP_PASSPHRASE" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 \
+  -d -o bundle.tar dephgraph-YYYY-MM-DD.tar.gpg
+tar -xf bundle.tar                       # public.pgdump, auth.pgdump (empty if auth was absent)
+
+# 3. Restore into a FRESH Supabase project (it already has the auth schema, the `authenticated`
+#    role and auth.uid()). Use its session pooler URL. Client major >= the dump's (17).
+pg_restore --no-owner --no-acl --data-only -d "$NEW_URL" auth.pgdump      # auth first
+pg_restore --no-owner --no-acl -d "$NEW_URL" public.pgdump                # then public
+```
+
+`pg_restore` exits non-zero on any error: read the error list instead of trusting the exit code alone (`pg_restore -l` lists contents). Two errors are harmless: `schema "public" already exists`, and (restoring into a server older than 17) `unrecognized configuration parameter "transaction_timeout"`.
+
+Plain Postgres instead of Supabase: before step 3 create the pieces Supabase normally provides, as migration 010 does:
+
+```sql
+CREATE ROLE authenticated NOLOGIN;
+CREATE SCHEMA auth;
+CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $f$
+  SELECT coalesce(nullif(current_setting('request.jwt.claim.sub', true), ''),
+                  nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub')::uuid $f$;
+```
+
+and skip `auth.pgdump` (there is no `auth.users` to load it into; the user ids in `team_member` stay as plain UUIDs). MongoDB and Redis are not covered: Mongo holds raw scan data that can be re-ingested, and Redis is cache only.
+
+Collectors that report runtime usage are in [collectors/README.md](../collectors/README.md).

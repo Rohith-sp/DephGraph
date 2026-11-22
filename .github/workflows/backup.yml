@@ -1,0 +1,41 @@
+name: Backup
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+
+jobs:
+  pg-dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Dump and encrypt
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          : "${DATABASE_URL:?secret DATABASE_URL is missing}"
+          : "${BACKUP_PASSPHRASE:?secret BACKUP_PASSPHRASE is missing}"
+          # postgres:17 client >= Supabase's server major
+          export PG_URL="${DATABASE_URL/+asyncpg/}"
+          pg() { docker run --rm -e PG_URL postgres:17 "$@"; }
+          pg sh -c 'pg_dump -Fc -n public --no-owner --no-acl "$PG_URL"' > public.pgdump
+          test -s public.pgdump
+          # auth.users/identities keep team_member.user_id meaningful after a restore
+          if [ "$(pg psql -Atc "select to_regclass('auth.users') is not null and to_regclass('auth.identities') is not null" "$PG_URL")" = t ]; then
+            pg sh -c 'pg_dump -Fc --data-only -t auth.users -t auth.identities --no-owner --no-acl "$PG_URL"' > auth.pgdump
+          else
+            echo "::warning::auth.users/auth.identities not found: auth data not backed up"
+            : > auth.pgdump
+          fi
+          tar -cf bundle.tar public.pgdump auth.pgdump
+          printf '%s' "$BACKUP_PASSPHRASE" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 \
+            --symmetric --cipher-algo AES256 -o "dephgraph-$(date -u +%F).tar.gpg" bundle.tar
+          rm public.pgdump auth.pgdump bundle.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dephgraph-db-backup
+          path: dephgraph-*.tar.gpg
+          retention-days: 30
+          if-no-files-found: error
