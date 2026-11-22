@@ -1,4 +1,6 @@
 import { headers } from "next/headers";
+import { getAlerts } from "@/components/settings/alert-actions";
+import { AlertSettings } from "@/components/settings/AlertSettings";
 import { CreateTeam, InviteForm, MemberControls, RemoveInvite } from "@/components/settings/Forms";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
@@ -7,9 +9,10 @@ import type { MeTeam, TeamInvite, TeamMember } from "@/lib/types";
 
 async function TeamCard({ team, signIn }: { team: MeTeam; signIn: string }) {
   const admin = team.role === "admin";
-  const [members, invites] = await Promise.all([
+  const [members, invites, alerts] = await Promise.all([
     api<TeamMember[]>(`/teams/${team.team_id}/members`),
     admin ? api<TeamInvite[]>(`/teams/${team.team_id}/invites`) : Promise.resolve([]),
+    admin ? getAlerts(team.team_id) : Promise.resolve(null),
   ]);
   return (
     <Card>
@@ -70,6 +73,12 @@ async function TeamCard({ team, signIn }: { team: MeTeam; signIn: string }) {
               No email is sent. Ask them to sign in at {signIn} with that address and they join automatically.
             </p>
           </>
+        )}
+        {alerts && (
+          <div className="space-y-2">
+            <h3 className="font-medium">GitHub issue alerts</h3>
+            <AlertSettings teamId={team.team_id} initial={alerts} />
+          </div>
         )}
       </CardContent>
     </Card>

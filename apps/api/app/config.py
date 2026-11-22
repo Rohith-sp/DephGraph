@@ -31,8 +31,8 @@ class Settings(BaseSettings):
     )
     github_app_id: str = ""
     github_private_key_base64: str = ""
-    github_dispatch_token: str = ""  # PAT / fine-grained token with Actions: write on the repo
-    github_repository: str = ""  # owner/name; where cluster.yml is dispatched
+    github_repository: str = ""  # owner/name; where cluster.yml is dispatched (as the GitHub App)
+    web_url: str = "http://localhost:3000"  # dashboard base URL, linked from alert issues
     environment: str = "development"
     sentry_dsn: str = ""  # empty = no error reporting
     sentry_traces_sample_rate: float = 0.1

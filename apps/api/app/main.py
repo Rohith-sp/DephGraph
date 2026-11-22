@@ -19,6 +19,7 @@ from app.observability import (
     configure_sentry,
 )
 from app.routers import (
+    alerts,
     clusters,
     health,
     ingest,
@@ -94,6 +95,7 @@ for r in (
     clusters,
     pr_gate,
     runtime,
+    alerts,
     teams,
 ):
     app.include_router(r.router)

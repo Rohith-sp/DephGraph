@@ -11,6 +11,7 @@ import structlog
 from app.config import settings
 from app.services import http
 from app.services.manifest_parser import LOCKFILES, parse_manifest
+from app.services.queries import normalize_repo_url
 
 log = structlog.get_logger()
 API = "https://api.github.com"
@@ -71,9 +72,7 @@ async def repo_access(client: httpx.AsyncClient, full_name: str) -> tuple[int, i
         return None
     r.raise_for_status()
     installation = int(r.json()["id"])
-    token = await installation_token(client, installation)
-    if token is None:
-        raise httpx.HTTPError("GitHub installation token unavailable")
+    token = await scoped_token(client, installation, full_name, {"metadata": "read"})
     repo = await http.request(
         client,
         "GET",
@@ -209,10 +208,15 @@ async def _merge_base(
 
 
 async def pr_added_deps(
-    client: httpx.AsyncClient, full_name: str, number: int, token: str | None
+    client: httpx.AsyncClient,
+    full_name: str,
+    number: int,
+    token: str | None,
+    prefix: str = "",
 ) -> tuple[list[tuple[str, str, str]], list[str]]:
-    """(added deps, notes). A note names a changed manifest we could not inspect (missing patch,
-    pyproject/lockfile): the caller must not let such a PR pass silently."""
+    """(added deps, notes) for files under `prefix` ('' = the whole repo). A note names a changed
+    manifest we could not inspect (missing patch, unreadable lockfile): the caller must not let
+    such a PR pass silently."""
     headers = {**HEADERS, **({"Authorization": f"Bearer {token}"} if token else {})}
     deps: list[tuple[str, str, str]] = []
     notes: list[str] = []
@@ -229,6 +233,8 @@ async def pr_added_deps(
         batch = r.json()
         for f in batch:
             name, patch = f["filename"], f.get("patch")
+            if not name.startswith(prefix):  # another service's root_path in a monorepo
+                continue
             if f.get("status") == "removed":
                 continue
             base = name.rsplit("/", 1)[-1].lower()
@@ -281,3 +287,53 @@ async def post_check_run(
         },
     )
     r.raise_for_status()
+
+
+def full_name(repo_url: str | None) -> str | None:
+    """'owner/name' of a github.com repository URL, else None (other hosts, no URL)."""
+    m = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)", normalize_repo_url(repo_url or ""))
+    return m[1] if m else None
+
+
+async def scoped_token(
+    client: httpx.AsyncClient, installation_id: int, repo: str, permissions: dict[str, str]
+) -> str:
+    """Installation token limited to `repo` ('owner/name') and `permissions`; raises on failure."""
+    r = await http.request(
+        client,
+        "POST",
+        f"{API}/app/installations/{installation_id}/access_tokens",
+        headers={**HEADERS, "Authorization": f"Bearer {app_jwt()}"},
+        json={"repositories": [repo.split("/", 1)[1]], "permissions": permissions},
+    )
+    r.raise_for_status()
+    return str(r.json()["token"])
+
+
+async def repo_token(
+    client: httpx.AsyncClient,
+    repo: str,
+    permissions: dict[str, str],
+    installation_id: int | None = None,
+) -> str | None:
+    """Minimal-scope token for `repo` through `installation_id` (looked up from the repo when
+    None). None when the App is not configured or not installed there; other failures raise."""
+    if not configured():
+        return None
+    if installation_id is None:
+        r = await http.request(
+            client,
+            "GET",
+            f"{API}/repos/{repo}/installation",
+            headers={**HEADERS, "Authorization": f"Bearer {app_jwt()}"},
+        )
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        installation_id = int(r.json()["id"])
+    try:
+        return await scoped_token(client, installation_id, repo, permissions)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:  # installation removed
+            return None
+        raise

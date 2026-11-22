@@ -498,6 +498,7 @@ async def test_repo_must_have_the_app_installed(client, monkeypatch):
         created = await client.post("/services", json=body, headers=h)
         assert created.status_code == 201, created.text
         assert set(created.json()["data"]) == {
+            "import_status",
             "service_id",
             "team_id",
             "name",

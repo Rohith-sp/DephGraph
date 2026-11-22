@@ -254,7 +254,8 @@ export interface paths {
         put?: never;
         /**
          * Pr Gate Retry
-         * @description Cron: review stored PR-gate deliveries that failed or whose worker died, then clean up.
+         * @description Cron: process stored webhook deliveries (PR reviews, imports) that failed or whose worker
+         *     died, then clean up.
          */
         post: operations["pr_gate_retry_internal_pr_gate_retry_post"];
         delete?: never;
@@ -540,6 +541,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/teams/{team_id}/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Alerts */
+        get: operations["get_alerts_teams__team_id__alerts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Set Alerts
+         * @description Team admin: turn GitHub Issue alerts on/off and set the minimum severity.
+         */
+        patch: operations["set_alerts_teams__team_id__alerts_patch"];
+        trace?: never;
+    };
     "/teams/{team_id}/invites": {
         parameters: {
             query?: never;
@@ -684,6 +706,25 @@ export interface components {
             /** Version */
             version: string;
         };
+        /** AlertSettingsOut */
+        AlertSettingsOut: {
+            /** Can Edit */
+            can_edit: boolean;
+            /** Enabled */
+            enabled: boolean;
+            /**
+             * Min Severity
+             * @enum {string}
+             */
+            min_severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+        };
+        /** AlertSettingsPatch */
+        AlertSettingsPatch: {
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Min Severity */
+            min_severity?: ("LOW" | "MEDIUM" | "HIGH" | "CRITICAL") | null;
+        };
         /** BlastRadiusOut */
         BlastRadiusOut: {
             /**
@@ -737,6 +778,12 @@ export interface components {
         /** Envelope[ActionOut] */
         Envelope_ActionOut_: {
             data?: components["schemas"]["ActionOut"] | null;
+            /** Error */
+            error?: string | null;
+        };
+        /** Envelope[AlertSettingsOut] */
+        Envelope_AlertSettingsOut_: {
+            data?: components["schemas"]["AlertSettingsOut"] | null;
             /** Error */
             error?: string | null;
         };
@@ -1271,6 +1318,8 @@ export interface components {
         };
         /** ServiceBrief */
         ServiceBrief: {
+            /** Import Status */
+            import_status?: string | null;
             /** Name */
             name: string;
             /** Repo Url */
@@ -2453,6 +2502,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Envelope_TeamOut_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_alerts_teams__team_id__alerts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                team_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_AlertSettingsOut_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_alerts_teams__team_id__alerts_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                team_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertSettingsPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Envelope_AlertSettingsOut_"];
                 };
             };
             /** @description Validation Error */

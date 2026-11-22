@@ -1,5 +1,6 @@
 """Shared read queries (parameterized text SQL against the latest production deployment per service)."""
 
+import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -19,6 +20,18 @@ MY_SERVICES = "SELECT service_id FROM service WHERE team_id = ANY(:teams)"
 
 Rows = list[dict[str, Any]]
 INSERT_CHUNK = 1000
+
+_REPO_URL_TAIL = r"(\.git)?/*$"
+# SQL twin of normalize_repo_url (same rules, so stored and payload URLs meet in the middle)
+REPO_URL_SQL = (
+    "regexp_replace(regexp_replace(lower(btrim(repo_url)), '^http://', 'https://'), "
+    f"'{_REPO_URL_TAIL}', '')"
+)
+
+
+def normalize_repo_url(url: str) -> str:
+    """Lowercase, https, no trailing '/' or '.git': https://GitHub.com/Acme/X.git/ -> .../acme/x"""
+    return re.sub(_REPO_URL_TAIL, "", re.sub(r"^http://", "https://", url.strip().lower()))
 
 
 def chunks(items: list[Any]) -> Iterator[list[Any]]:

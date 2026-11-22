@@ -2,6 +2,7 @@ import json
 from typing import Any
 
 import httpx
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.exc import IntegrityError
 
@@ -18,7 +19,7 @@ from app.schemas.teams import (
     TokenCreated,
     TokenOut,
 )
-from app.services import cache, github, tokens
+from app.services import cache, github, github_import, tokens
 from app.services.blast_radius import EDGES_SQL, NODES_SQL
 from app.services.cache import cached_json
 from app.services.queries import (
@@ -32,6 +33,7 @@ from app.services.queries import (
 )
 from app.services.teams import require_admin
 
+log = structlog.get_logger()
 router = APIRouter(prefix="/services", dependencies=[Depends(get_current_user)], tags=["services"])
 
 
@@ -170,8 +172,19 @@ async def create_service(
     except IntegrityError:
         raise HTTPException(409, DUPLICATE) from None
     await cache.bump([body.team_id])
-    # Initial import of the repository's default branch goes here (needs created["service_id"]).
-    return ok(created)
+    return ok({**created, "import_status": await _import(session, created["service_id"])})
+
+
+async def _import(session: DbSession, service_id: int) -> str | None:
+    """Import the service's default branch; the outcome, never an error: registering the service
+    must succeed even when GitHub or the raw store is down (a later push or reinstall retries)."""
+    if not github.configured():
+        return None
+    try:
+        return str((await github_import.import_default_branch(session, service_id))["status"])
+    except Exception:  # noqa: BLE001 -- see docstring
+        log.exception("initial_import_failed", service=service_id)
+        return "failed"
 
 
 async def _admin_service(session: DbSession, service_id: int, member: CurrentMember) -> int:
@@ -208,7 +221,10 @@ async def update_service(
     except IntegrityError:
         raise HTTPException(409, DUPLICATE) from None
     await cache.bump([team_id])
-    return ok(updated[0])
+    moved = "repo_url" in changes or "root_path" in changes  # other files, other manifests
+    return ok(
+        {**updated[0], "import_status": await _import(session, service_id) if moved else None}
+    )
 
 
 @router.delete("/{service_id}", response_model=Envelope[Done])

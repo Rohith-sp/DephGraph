@@ -16,7 +16,14 @@ from app.database import DbSession, get_mongo, get_redis
 from app.routers import pr_gate
 from app.schemas.analysis import SyncOut
 from app.schemas.common import Envelope, ok
-from app.services import cache, cluster_trigger, maintainers, osv_fetcher, pr_gate_queue
+from app.services import (
+    alerts,
+    cache,
+    cluster_trigger,
+    maintainers,
+    osv_fetcher,
+    pr_gate_queue,
+)
 from app.services.manifest_parser import PkgRef
 from app.services.queries import LATEST, rows
 
@@ -54,6 +61,7 @@ async def osv_sync(session: DbSession) -> dict[str, object]:
     async with session.begin():
         vulns = await osv_fetcher.upsert_advisories(session, refs, hits, advisories)
     await cache.bump(catalog=True)
+    await alerts.run()
     return ok({"packages_scanned": len(refs), "vulns_fetched": vulns})
 
 
@@ -139,14 +147,23 @@ class PrGateRetryOut(BaseModel):
 
 @router.post("/pr-gate/retry", response_model=Envelope[PrGateRetryOut])
 async def pr_gate_retry() -> dict[str, object]:
-    """Cron: review stored PR-gate deliveries that failed or whose worker died, then clean up."""
+    """Cron: process stored webhook deliveries (PR reviews, imports) that failed or whose worker
+    died, then clean up."""
     deadline = time.monotonic() + RETRY_BUDGET
     processed = failed = 0
     while time.monotonic() < deadline and (claimed := await pr_gate_queue.claim()):
-        delivery_id, payload = claimed
+        delivery_id, payload, event = claimed
         try:
-            await pr_gate.attempt(delivery_id, payload)
+            await pr_gate.attempt(delivery_id, payload, event=event)
             processed += 1
         except Exception:  # noqa: BLE001 -- attempt() scheduled the retry; keep draining
             failed += 1
-    return ok({"processed": processed, "failed": failed, "purged": await pr_gate_queue.purge()})
+    if time.monotonic() < deadline:  # alerts for manifests ingested outside GitHub imports
+        await alerts.run()
+    return ok(
+        {
+            "processed": processed,
+            "failed": failed,
+            "purged": await pr_gate_queue.purge(),
+        }
+    )

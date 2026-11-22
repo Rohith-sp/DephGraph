@@ -10,6 +10,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import SessionLocal, get_mongo, get_redis
 from app.jobs import cluster as cluster_engine
+from tests.github_app import configure_app, installed, not_installed
 
 
 def fake_encode(texts: list[str]) -> np.ndarray:
@@ -74,20 +75,25 @@ DISPATCH = "https://api.github.com/repos/acme/dephgraph/actions/workflows/cluste
 
 @pytest.fixture
 def dispatch_configured(monkeypatch):
-    monkeypatch.setattr(settings, "github_dispatch_token", "ghp_test")
+    configure_app(monkeypatch)
     monkeypatch.setattr(settings, "github_repository", "acme/dephgraph")
 
 
 @respx.mock
 @pytest.mark.parametrize(
-    "path,headers", [("/clusters/recompute", "auth"), ("/internal/cluster-recompute", CRON)]
+    "path,headers",
+    [("/clusters/recompute", "auth"), ("/internal/cluster-recompute", CRON)],
 )
 async def test_recompute_dispatches_workflow(client, auth, dispatch_configured, path, headers):
+    installed("acme/dephgraph", "ghs_test")
     route = respx.post(DISPATCH).respond(204)
     r = await client.post(path, headers=auth if headers == "auth" else headers)
-    assert r.status_code == 202 and r.json() == {"data": {"status": "dispatched"}, "error": None}
+    assert r.status_code == 202 and r.json() == {
+        "data": {"status": "dispatched"},
+        "error": None,
+    }
     sent = route.calls[0].request
-    assert sent.headers["authorization"] == "Bearer ghp_test"
+    assert sent.headers["authorization"] == "Bearer ghs_test"
     assert json.loads(sent.content) == {"ref": "main"}
 
 
@@ -99,14 +105,23 @@ async def test_recompute_without_dispatch_config_is_503(client, auth):
 
 
 @respx.mock
+async def test_recompute_app_not_installed_is_503(client, auth, dispatch_configured):
+    not_installed("acme/dephgraph")
+    r = await client.post("/clusters/recompute", headers=auth)
+    assert r.status_code == 503 and "not installed" in r.json()["error"]
+
+
+@respx.mock
 async def test_recompute_github_rejection_is_502(client, auth, dispatch_configured):
+    installed("acme/dephgraph")
     respx.post(DISPATCH).respond(404, json={"message": "Not Found"})
     assert (await client.post("/clusters/recompute", headers=auth)).status_code == 502
 
 
 @respx.mock
 @pytest.mark.parametrize(
-    "path,headers", [("/clusters/recompute", "auth"), ("/internal/cluster-recompute", CRON)]
+    "path,headers",
+    [("/clusters/recompute", "auth"), ("/internal/cluster-recompute", CRON)],
 )
 async def test_recompute_lock_held(client, auth, dispatch_configured, path, headers):
     await get_redis().set(cluster_engine.LOCK_KEY, "1", ex=60)
@@ -182,7 +197,9 @@ async def test_recompute_drops_stale_embeddings(client, auth, fake_model, reseed
     # a package no longer clustered (deleted, or no description) must not keep an old vector
     emb = get_mongo()["package_embeddings"]
     await emb.update_one(
-        {"package_id": 999_999}, {"$set": {"embedding": [0.0], "cluster_id": 1}}, upsert=True
+        {"package_id": 999_999},
+        {"$set": {"embedding": [0.0], "cluster_id": 1}},
+        upsert=True,
     )
     assert await cluster_engine.main() == 0
     assert await emb.count_documents({"package_id": 999_999}) == 0
@@ -255,7 +272,8 @@ async def test_package_without_description_loses_its_embedding(fake_model, resee
     pid = (await emb.find_one({}))["package_id"]
     async with SessionLocal() as s, s.begin():
         await s.execute(
-            text("UPDATE package SET description = '  ' WHERE package_id = :p"), {"p": pid}
+            text("UPDATE package SET description = '  ' WHERE package_id = :p"),
+            {"p": pid},
         )
     await cluster_engine.recompute()
     assert await emb.count_documents({"package_id": pid}) == 0
