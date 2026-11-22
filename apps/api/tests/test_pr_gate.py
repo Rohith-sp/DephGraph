@@ -402,3 +402,170 @@ async def test_stage3_budget_keeps_stage2(monkeypatch):
     respx.post(GROQ).mock(side_effect=hang)
     dep = pr_gate_engine.DepVerdict("slow", "1", "ADVISORY", 2, "r")
     assert await pr_gate_engine.refine([dep], 1, 7) == ("ADVISORY", 2)
+
+
+# --- semantic redundancy (third PR-gate signal) ---------------------------------------------
+
+
+async def mkcluster_pkgs(layout: dict[str, list[str]], deployed: list[str], older=()):
+    """layout = {cluster label: [new pypi package names]} (all at 1.0.0, MIT, fresh, no vulns).
+
+    Adds deployment 3 to service 1 (the new latest) resolving `deployed`; `older` packages are
+    resolved only by the older deployment 2.
+    """
+    async with SessionLocal() as s, s.begin():
+        for label, names in layout.items():
+            cid = (
+                await s.execute(
+                    text(
+                        "INSERT INTO semantic_cluster (label, member_count) VALUES (:l, :n) "
+                        "RETURNING cluster_id"
+                    ),
+                    {"l": label, "n": len(names)},
+                )
+            ).scalar_one()
+            for n in names:
+                pid = (
+                    await s.execute(
+                        text(
+                            "INSERT INTO package (ecosystem, name) VALUES ('pypi', :n) "
+                            "RETURNING package_id"
+                        ),
+                        {"n": n},
+                    )
+                ).scalar_one()
+                await s.execute(
+                    text(
+                        "INSERT INTO package_version (package_id, version_string, license_id, "
+                        "cluster_id, published_at) VALUES (:p, '1.0.0', 1, :c, now())"
+                    ),
+                    {"p": pid, "c": cid},
+                )
+        await s.execute(text("INSERT INTO deployment (service_id, deploy_seq) VALUES (1, 3)"))
+        for seq, names in ((3, deployed), (2, older)):
+            for n in names:
+                await s.execute(
+                    text(
+                        "INSERT INTO resolves_to (service_id, deploy_seq, package_id, "
+                        "version_string, depth, is_direct) SELECT 1, :q, package_id, '1.0.0', "
+                        "0, TRUE FROM package WHERE ecosystem = 'pypi' AND name = :n"
+                    ),
+                    {"q": seq, "n": n},
+                )
+
+
+REDUNDANT = [{"package": "requests", "cluster_id": 4, "cluster_label": "web / requests / client"}]
+
+
+@pytest.mark.parametrize(
+    "cvss,copyleft,aband,redundancy,want",
+    [
+        ([], False, 0, REDUNDANT, "ADVISORY"),  # redundancy alone
+        ([], False, 0, [], "PASS"),
+        ([], False, 0, None, "PASS"),
+        ([D("9.8")], False, 0, REDUNDANT, "BLOCK"),  # BLOCK still wins
+        ([], True, 0, REDUNDANT, "BLOCK"),
+        ([D("3.0")], False, 10, REDUNDANT, "ADVISORY"),
+    ],
+)
+def test_stage2_redundancy_rules(cvss, copyleft, aband, redundancy, want):
+    verdict, why = stage2(cvss, [True] * len(cvss), copyleft, aband, redundancy)
+    assert verdict == want
+    if redundancy and want == "ADVISORY":
+        assert "same job as requests (cluster 'web / requests / client')" in why
+
+
+def test_redundancy_reasons_grouped_and_capped():
+    red = [{"package": n, "cluster_label": "web"} for n in ["a", "b", "c", "d", "e", "a"]]
+    red.append({"package": "x", "cluster_label": "util"})
+    assert pr_gate_engine.redundancy_reasons(red) == [
+        "same job as a, b, c +2 more (cluster 'web')",
+        "same job as x (cluster 'util')",
+    ]
+    assert pr_gate_engine.redundancy_reasons([]) == []
+
+
+async def test_redundancy_advisory_survives_stage1(reseed):
+    await mkcluster_pkgs({"web / http / client": ["rhttp", "rreq"]}, deployed=["rreq"])
+    async with SessionLocal() as s, s.begin():
+        d = await pr_gate_engine.evaluate(s, "pypi", "rhttp", "1.0.0", service_id=1)
+        # a version not in the DB still gets the package's cluster
+        d2 = await pr_gate_engine.evaluate(s, "pypi", "rhttp", "9.9.9", service_id=1)
+        # without a service there is nothing to be redundant with -> stage 1 PASS
+        d3 = await pr_gate_engine.evaluate(s, "pypi", "rhttp", "1.0.0")
+    assert (d.verdict, d.stage_reached) == ("ADVISORY", 2)
+    assert d.reasoning == "same job as rreq (cluster 'web / http / client')"
+    assert d.facts["redundancy"][0]["package"] == "rreq"
+    assert (d2.verdict, d2.stage_reached) == ("ADVISORY", 2)
+    assert (d3.verdict, d3.stage_reached) == ("PASS", 1)
+
+
+async def test_redundancy_no_signal_cases(reseed):
+    await mkcluster_pkgs(
+        {"web / http / client": ["nhttp", "nold"], "date / time": ["ndate"]},
+        deployed=["ndate", "nhttp"],
+        older=["nold"],
+    )
+    async with SessionLocal() as s, s.begin():
+        # ndate's cluster has no other package in the latest deployment (different cluster)
+        other = await pr_gate_engine.evaluate(s, "pypi", "ndate", "1.0.0", service_id=1)
+        # nhttp's only cluster-mate (nold) is in the OLDER deployment, and nhttp itself is
+        # already deployed (a package is not redundant with itself)
+        same = await pr_gate_engine.evaluate(s, "pypi", "nhttp", "1.0.0", service_id=1)
+        unknown = await pr_gate_engine.evaluate(s, "pypi", "nosuchpkg", "1.0.0", service_id=1)
+        await s.execute(text("INSERT INTO package (ecosystem, name) VALUES ('pypi', 'nocl')"))
+        await s.execute(
+            text(
+                "INSERT INTO package_version (package_id, version_string, license_id, "
+                "published_at) SELECT package_id, '1.0.0', 1, now() FROM package "
+                "WHERE ecosystem = 'pypi' AND name = 'nocl'"
+            )
+        )
+        unclustered = await pr_gate_engine.evaluate(s, "pypi", "nocl", "1.0.0", service_id=1)
+        # npm package in nhttp's cluster: deployed cluster-mate is pypi -> other ecosystem
+        await s.execute(text("INSERT INTO package (ecosystem, name) VALUES ('npm', 'njs')"))
+        await s.execute(
+            text(
+                "INSERT INTO package_version (package_id, version_string, license_id, "
+                "cluster_id, published_at) SELECT p.package_id, '1.0.0', 1, "
+                "(SELECT cluster_id FROM semantic_cluster WHERE label = 'web / http / client' "
+                "ORDER BY cluster_id DESC LIMIT 1), now() FROM package p "
+                "WHERE ecosystem = 'npm' AND name = 'njs'"
+            )
+        )
+        cross = await pr_gate_engine.evaluate(s, "npm", "njs", "1.0.0", service_id=1)
+    for d in (other, same, unknown, unclustered, cross):
+        assert (d.verdict, d.stage_reached) == ("PASS", 1), d
+
+
+@respx.mock
+async def test_webhook_flags_redundant_dep(client, auth, reseed):
+    await mkcluster_pkgs({"web / http / client": ["whttp", "wreq"]}, deployed=["wreq"])
+    files("whttp")
+    d = (await post(client, payload())).json()["data"]
+    assert d["verdict"] == "ADVISORY" and d["stage_reached"] == 2
+    assert "same job as wreq" in d["deps"][0]["reasoning"]
+    assert await _verdicts(client, auth) == {"whttp": "ADVISORY"}
+
+
+def test_prompt_with_redundancy_within_budget():
+    vulns = [
+        {"osv_id": f"GHSA-{i:04d}-xxxx-yyyy", "cvss_score": 7.5, "fixed_in": "9.9.9"}
+        for i in range(30)
+    ]
+    red = [{"package": "p" * 200 + str(i), "cluster_label": "l" * 120} for i in range(20)]
+    dep = pr_gate_engine.DepVerdict(
+        "x" * 5000, "1" * 500, "ADVISORY", 2, "r" * 5000, facts={"vulns": vulns, "redundancy": red}
+    )
+    prompt = pr_gate_engine.build_prompt(dep)
+    assert len(prompt) <= 1200
+    assert prompt.endswith('"reasoning":"<=2 sentences"}')
+    assert "Redundant with packages already deployed: same job as" in prompt
+
+    small = pr_gate_engine.DepVerdict(
+        "httpx", "0.27.0", "ADVISORY", 2, "same job as requests", facts={"redundancy": REDUNDANT}
+    )
+    p = pr_gate_engine.build_prompt(small)
+    assert "same job as requests (cluster 'web / requests / client')" in p and len(p) <= 1200
+    plain = pr_gate_engine.build_prompt(pr_gate_engine.DepVerdict("a", "1", "ADVISORY", 2, "r"))
+    assert "Redundant with packages already deployed: none" in plain
