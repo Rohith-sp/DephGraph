@@ -11,6 +11,8 @@ class IngestRequest(BaseModel):
 
 
 class IngestResult(BaseModel):
+    manifest_id: str  # raw_manifests document the Postgres rows were projected from
+    deploy_seq: int  # deployment created by this projection
     packages_parsed: int
     packages_inserted: int
     vulns_fetched: int

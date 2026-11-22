@@ -2,12 +2,14 @@ from pathlib import Path
 
 import httpx
 import pytest
+from bson import ObjectId
+from pymongo.errors import ServerSelectionTimeoutError
 from sqlalchemy import text
 
 from app.database import SessionLocal, get_mongo, get_redis
 from app.models.mongo import ensure_indexes
 from app.routers import ingest
-from app.services import blast_radius
+from app.services import blast_radius, osv_fetcher
 from tests.upstream import mock_upstreams
 
 FIX = Path(__file__).parent / "fixtures"
@@ -62,6 +64,12 @@ async def test_ingest_manifest_happy(client, auth, reseed):
     assert await scalar("SELECT is_copyleft FROM license WHERE spdx_id='GPL-3.0-only'")
     raw = await get_mongo()["osv_advisories"].find_one({"osv_id": "GHSA-test-0001"})
     assert raw["raw_osv"]["summary"] == "Flask test vuln"
+    assert d["deploy_seq"] == 3
+    doc = await get_mongo()["raw_manifests"].find_one({"_id": ObjectId(d["manifest_id"])})
+    assert doc["status"] == "projected"
+    assert doc["deploy_seq"] == 3 and doc["deploy_seqs"] == [3]
+    assert doc["service_id"] == 1 and len(doc["parsed_packages"]) == 8
+    assert "error" not in doc and doc["projected_at"] >= doc["received_at"]
 
 
 async def test_ingest_dedups_raw_manifest_by_sha256(client, auth, reseed):
@@ -264,3 +272,180 @@ async def test_scan_409_when_deployment_lands_mid_scan(client, auth, monkeypatch
     r = await client.post("/ingest/scan/1", headers=auth)
     assert r.status_code == 409
     assert await scalar("SELECT count(*) FROM scan_run WHERE service_id = 1") == before
+
+
+class _DownCollection:
+    """Stands in for a Motor collection while Mongo is unreachable."""
+
+    def __getattr__(self, _name):
+        async def fail(*_a, **_k):
+            raise ServerSelectionTimeoutError("mongo down")
+
+        return fail
+
+
+async def test_raw_layer_written_before_postgres_projection(client, auth, monkeypatch, reseed):
+    seen = {}
+    real = ingest._upsert_packages
+
+    async def check_mongo_then_upsert(session, ecosystem, parsed):
+        seen["manifest"] = await get_mongo()["raw_manifests"].find_one({"service_id": 1})
+        seen["advisory"] = await get_mongo()["osv_advisories"].find_one(
+            {"osv_id": "GHSA-test-0001"}
+        )
+        return await real(session, ecosystem, parsed)
+
+    monkeypatch.setattr(ingest, "_upsert_packages", check_mongo_then_upsert)
+    with mock_upstreams():
+        r = await client.post("/ingest/manifest", json=body(), headers=auth)
+    assert r.status_code == 200, r.text
+    assert seen["manifest"]["status"] == "received"
+    assert seen["manifest"]["raw_content"] == body()["content"]
+    assert seen["advisory"]["raw_osv"]["id"] == "GHSA-test-0001"
+
+
+async def test_projection_parses_the_stored_document(client, auth, monkeypatch, reseed):
+    real = ingest._store_manifest
+
+    async def store_then_swap(req):
+        doc = await real(req)
+        return {**doc, "raw_content": "aaapkg==1.0\n"}  # what Mongo holds wins
+
+    monkeypatch.setattr(ingest, "_store_manifest", store_then_swap)
+    with mock_upstreams():
+        r = await client.post("/ingest/manifest", json=body(), headers=auth)
+    assert r.status_code == 200
+    assert r.json()["data"]["packages_parsed"] == 1
+
+
+async def test_osv_failure_marks_manifest_failed(client, auth, reseed):
+    router = mock_upstreams()
+    router.post("https://api.osv.dev/v1/querybatch").respond(503)
+    with router:
+        r = await client.post("/ingest/manifest", json=body(), headers=auth)
+    assert r.status_code == 502
+    doc = await get_mongo()["raw_manifests"].find_one({"service_id": 1})
+    assert doc["status"] == "failed"
+    assert "HTTPStatusError" in doc["error"]
+    assert "deploy_seq" not in doc
+    assert await scalar("SELECT max(deploy_seq) FROM deployment WHERE service_id = 1") == 2
+
+
+async def test_malformed_manifest_is_kept_raw_and_marked_failed(client, auth):
+    bad = {**body(ecosystem="npm"), "content": "{nope"}
+    assert (await client.post("/ingest/manifest", json=bad, headers=auth)).status_code == 422
+    doc = await get_mongo()["raw_manifests"].find_one({"service_id": 1})
+    assert doc["status"] == "failed" and doc["error"].startswith("422: ")
+
+
+async def test_reingest_after_failure_resets_status(client, auth, reseed):
+    router = mock_upstreams()
+    router.post("https://api.osv.dev/v1/querybatch").respond(503)
+    with router:
+        assert (await client.post("/ingest/manifest", json=body(), headers=auth)).status_code == 502
+    with mock_upstreams():
+        r = await client.post("/ingest/manifest", json=body(), headers=auth)
+    assert r.status_code == 200
+    docs = await get_mongo()["raw_manifests"].find({}).to_list(None)
+    assert len(docs) == 1
+    assert docs[0]["status"] == "projected" and "error" not in docs[0]
+
+
+async def test_replay_projects_stored_manifest_as_new_deployment(client, auth, reseed):
+    with mock_upstreams():
+        first = (await client.post("/ingest/manifest", json=body(), headers=auth)).json()["data"]
+        r = await client.post(f"/ingest/replay/{first['manifest_id']}", headers=auth)
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert d["manifest_id"] == first["manifest_id"]
+    assert (first["deploy_seq"], d["deploy_seq"]) == (3, 4)
+    assert d["packages_parsed"] == 8 and d["vulns_fetched"] == 1
+    assert await scalar(
+        "SELECT count(*) FROM resolves_to WHERE service_id=1 AND deploy_seq=4"
+    ) == await scalar("SELECT count(*) FROM resolves_to WHERE service_id=1 AND deploy_seq=3")
+    doc = await get_mongo()["raw_manifests"].find_one({"_id": ObjectId(d["manifest_id"])})
+    assert doc["status"] == "projected" and doc["deploy_seqs"] == [3, 4]
+
+
+async def test_replay_404_422_401(client, auth):
+    r = await client.post(f"/ingest/replay/{ObjectId()}", headers=auth)
+    assert r.status_code == 404
+    assert r.json() == {"data": None, "error": "Manifest not found"}
+    assert (await client.post("/ingest/replay/not-an-id", headers=auth)).status_code == 422
+    assert (await client.post(f"/ingest/replay/{ObjectId()}")).status_code == 401
+
+
+async def test_replay_service_gone_is_404(client, auth, reseed):
+    sid = await _new_service()
+    with mock_upstreams():
+        r = await client.post("/ingest/manifest", json=body(service_id=sid), headers=auth)
+    mid = r.json()["data"]["manifest_id"]
+    async with SessionLocal() as s, s.begin():
+        await s.execute(text("DELETE FROM service WHERE service_id = :i"), {"i": sid})
+    r = await client.post(f"/ingest/replay/{mid}", headers=auth)
+    assert r.status_code == 404
+    assert r.json()["error"] == "Service not found"
+
+
+async def test_ingest_mongo_down_is_503_and_postgres_untouched(client, auth, monkeypatch, reseed):
+    monkeypatch.setattr(ingest, "raw_manifests", _DownCollection)
+    with mock_upstreams():
+        r = await client.post("/ingest/manifest", json=body(), headers=auth)
+    assert r.status_code == 503
+    assert r.json() == {"data": None, "error": "Raw manifest store unavailable"}
+    assert await scalar("SELECT max(deploy_seq) FROM deployment WHERE service_id = 1") == 2
+    r = await client.post(f"/ingest/replay/{ObjectId()}", headers=auth)
+    assert r.status_code == 503
+
+
+async def test_ingest_advisory_store_down_is_503_and_marks_failed(
+    client, auth, monkeypatch, reseed
+):
+    monkeypatch.setattr(osv_fetcher, "osv_advisories", _DownCollection)
+    with mock_upstreams():
+        r = await client.post("/ingest/manifest", json=body(), headers=auth)
+    assert r.status_code == 503
+    doc = await get_mongo()["raw_manifests"].find_one({"service_id": 1})
+    assert doc["status"] == "failed" and "503" in doc["error"]
+    assert await scalar("SELECT max(deploy_seq) FROM deployment WHERE service_id = 1") == 2
+
+
+async def test_status_update_failure_does_not_fail_committed_ingest(
+    client, auth, monkeypatch, reseed
+):
+    real = ingest.raw_manifests
+
+    class StoreOnly:
+        def __getattr__(self, name):
+            return (
+                _DownCollection().__getattr__(name)
+                if name == "update_one"
+                else getattr(real(), name)
+            )
+
+    monkeypatch.setattr(ingest, "raw_manifests", StoreOnly)
+    with mock_upstreams():
+        r = await client.post("/ingest/manifest", json=body(), headers=auth)
+    assert r.status_code == 200
+    assert await scalar("SELECT max(deploy_seq) FROM deployment WHERE service_id = 1") == 3
+    doc = await get_mongo()["raw_manifests"].find_one({"service_id": 1})
+    assert doc["status"] == "received"  # Postgres committed; only the bookkeeping was lost
+
+
+async def test_scan_degrades_when_mongo_down(client, auth, monkeypatch, reseed):
+    before = await scalar("SELECT count(*) FROM scan_run WHERE service_id = 1")
+    monkeypatch.setattr(osv_fetcher, "osv_advisories", _DownCollection)
+    with mock_upstreams():
+        r = await client.post("/ingest/scan/1", headers=auth)
+    assert r.status_code == 200
+    assert await scalar("SELECT count(*) FROM scan_run WHERE service_id = 1") == before + 1
+
+
+async def test_store_raw_is_idempotent_upsert():
+    adv = {"GHSA-x": {"id": "GHSA-x", "summary": "one"}}
+    assert await osv_fetcher.store_raw(adv)
+    adv["GHSA-x"]["summary"] = "two"
+    assert await osv_fetcher.store_raw(adv)
+    coll = get_mongo()["osv_advisories"]
+    assert await coll.count_documents({"osv_id": "GHSA-x"}) == 1
+    assert (await coll.find_one({"osv_id": "GHSA-x"}))["raw_osv"]["summary"] == "two"
