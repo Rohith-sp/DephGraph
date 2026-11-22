@@ -1,6 +1,6 @@
 # DephGraph — Where things stand and what is left
 
-*Status as of 21 November 2026: course Phases 4 and 5 done on Fedora (MySQL 8.4 in Docker).*
+*Status as of 22 November 2026: course Phases 1–6 done, report written, synopsis features complete. Left: Groq live test of PR-gate stage 3, production deploy, viva prep. PostgreSQL is the system of record; the MySQL schema is the course demonstration.*
 
 There are two tracks:
 
@@ -41,6 +41,26 @@ Postgres, MongoDB and Redis. The team setup is `docker compose up` (README, "Run
 GitHub Actions CI is also green on the app commits.
 
 ---
+
+### Completion work (22 November 2026)
+
+Everything the synopsis promised, except the live Groq test and deployment, is built and tested
+(208 backend tests, 97 % coverage, CI green):
+
+| Synopsis item | What was added | Where |
+|---|---|---|
+| Runtime liveness detection | `POST /runtime/samples`: raw batch to Mongo `runtime_samples` first, then `scan_run` + `observes` in one transaction | `routers/runtime.py`, `services/runtime.py` |
+| Maintainer abandonment scoring | `maintainer.last_active_at`; `v_abandonment` = single-maintainer + inactivity (same idea as the MySQL view); registry sync `POST /internal/maintainers-sync` | `migrations/007_maintainer_activity.sql`, `services/maintainers.py` |
+| MongoDB raw layer, one-way projection | Ingest stores the raw manifest and advisories in Mongo first, then projects into Postgres; `POST /ingest/replay/{manifest_id}` | `routers/ingest.py`, `services/osv_fetcher.py` |
+| PR gate redundancy signal | Stage 2 flags a dependency that does the same job as one the service already uses (same cluster, same ecosystem); offline gate runner | `services/pr_gate_engine.py`, `scripts/pr_gate_dry_run.py` |
+| Semantic clustering target | Demo data seed; clustering skips packages without a description | `scripts/seed_demo_extra.py`, `services/cluster_engine.py` |
+
+Verified on the local stack: 8 clusters from the 97 described packages (617 packages in total), a
+520-node service graph served in about 0.06 s, a live ingest that pulled 43 advisories from OSV.dev,
+a runtime batch and a replay. `scripts/test_api.sh` runs the backend tests in Docker with an isolated
+test database. Note: the compose Postgres volume predates migration 007; apply it once with
+`docker exec -i dephgraph-postgres-1 psql -U dephgraph dephgraph < apps/api/migrations/007_maintainer_activity.sql`
+(a fresh volume applies all migrations automatically).
 
 ## 2. Course track — what is left (do these first)
 
@@ -129,14 +149,12 @@ five Mongo collections (writers, indexes, TTLs), the one-way Mongo to Postgres f
 lock, a live aggregation, and replication / CAP / sharding / MapReduce marked as design only.
 Optional later: sample documents for four collections that are empty on the local stack.
 
-### 2.5 Report and viva
+### 2.5 Report and viva ✅ report done 22 Nov 2026
 
-- [`docs/COURSEWORK.md`](COURSEWORK.md) now contains report-ready Phase 4–6 explanations and viva
-  checkpoints. No separate synopsis/report template was present in the repository.
-- Transfer the material into the required report template and add screenshots: ER diagram,
-  MySQL Workbench EER diagram, query outputs, and the running dashboard.
-- The known viva topics are summarized in the coursework document: ternary `OBSERVES`, full key in
-  `AFFECTS`, relational-algebra transitive closure, and the course-vs-app schema relationship.
+- The report follows `DBMS-ReportFormat - 2025-26.docx` with an extra Results & Analysis chapter;
+  20 numbered pages. It and the viva guide are kept outside the repo (`DephGraph_Report.docx`,
+  `DephGraph_Technical_Guide.docx`).
+- Still to do: viva rehearsal; MySQL Workbench screenshots only if the faculty asks for them.
 
 ---
 
@@ -149,7 +167,7 @@ Full instructions are in [`DEPLOY.md`](DEPLOY.md). In order:
 | # | Step | Who |
 |---|---|---|
 | 1 | Create accounts: Supabase, MongoDB Atlas (M0), Upstash, Render, Vercel, Groq, cron-job.org | you (sign-ups need your own login) |
-| 2 | **Supabase:** run migrations 001–006 in order, then the seed; copy URL, anon key, JWT secret, pooled `DATABASE_URL` | you, with help |
+| 2 | **Supabase:** run migrations 001–007 in order, then the seed; copy URL, anon key, JWT secret, pooled `DATABASE_URL` | you, with help |
 | 3 | **Security first:** turn off open sign-up in Supabase Auth, or add team scoping. RLS currently lets any signed-in user read everything | you |
 | 4 | **MongoDB Atlas:** create the M0 cluster and a database user; copy the SRV string | you |
 | 5 | **Upstash:** create a Redis database; copy the `rediss://` URL | you |
@@ -210,7 +228,6 @@ One-time login setup on Windows, so no password is ever typed into a script:
 
 ## 5. Suggested order
 
-1. Settle 2.1 with your teammate (option A is enough for the course).
-2. Course Phase 6 (NoSQL). Phases 4 and 5 are done.
-3. Production deploy (3.1). It can run in parallel with step 2 if your teammate takes it on.
-4. CI gaps (3.2) whenever there is a spare hour.
+1. Groq live test of PR-gate stage 3 (`scripts/pr_gate_dry_run.py` with `GROQ_API_KEY` set; check the model id).
+2. Viva rehearsal.
+3. Production deploy (3.1), if time allows.
