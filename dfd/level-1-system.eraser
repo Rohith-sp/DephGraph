@@ -1,0 +1,111 @@
+title DephGraph — Level 1 DFD (major sub-processes and data stores)
+typeface clean
+textSize medium
+colorMode pastel
+direction right
+
+// ---------------------------------------------------------------
+// External entities
+// ---------------------------------------------------------------
+Security Engineer [shape: rectangle, color: blue, label: "E1  Security Engineer / Developer"]
+GitHubApp [shape: rectangle, color: blue, label: "E2  GitHub App (PRs · Checks · Repo API)"]
+Actions [shape: rectangle, color: blue, label: "E6  GitHub Actions (scheduled jobs)"]
+SupabaseAuth [shape: rectangle, color: blue, label: "E7  Supabase Auth (IdP)"]
+Collectors [shape: rectangle, color: blue, label: "E8  Runtime collectors (Python · Node)"]
+OSV [shape: rectangle, color: blue, label: "E3  OSV.dev"]
+DepsDev [shape: rectangle, color: blue, label: "E4  deps.dev"]
+Groq [shape: rectangle, color: blue, label: "E5  Groq LLM"]
+
+// ---------------------------------------------------------------
+// Processes, grouped in lanes
+// ---------------------------------------------------------------
+LaneServe [color: gray, label: "Serve & authenticate"] {
+  P1 [shape: circle, color: orange, label: "1.0\nServe Dashboard & API\n(JWT · teams · alerts)"]
+}
+
+LaneIngest [color: gray, label: "Ingest & enrich"] {
+  P2 [shape: circle, color: orange, label: "2.0\nIngest Manifests\n& Lockfiles"]
+  P3 [shape: circle, color: orange, label: "3.0\nEnrich Registry &\nVulnerability Data"]
+}
+
+LaneAnalyse [color: gray, label: "Analyse"] {
+  P4 [shape: circle, color: orange, label: "4.0\nAnalyse Dependency\nGraph"]
+  P5 [shape: circle, color: orange, label: "5.0\nCluster Equivalent\nPackages"]
+}
+
+LaneGate [color: gray, label: "Gate & observe"] {
+  P6 [shape: circle, color: orange, label: "6.0\nGate Pull Requests\n(queued)"]
+  P7 [shape: circle, color: orange, label: "7.0\nRecord Runtime\nObservations"]
+}
+
+// ---------------------------------------------------------------
+// Data stores
+// ---------------------------------------------------------------
+D1 [shape: cylinder, color: green, label: "D1  PostgreSQL (Supabase) — 31 tables (23 core + 8 operational), views, RLS"]
+D2 [shape: cylinder, color: green, label: "D2  MongoDB Atlas — raw manifests · OSV raw · embeddings · samples · LLM replies"]
+D3 [shape: cylinder, color: green, label: "D3  Redis (Upstash) — cache generations · rate limits · job locks · PR queue"]
+
+// ---------------------------------------------------------------
+// Users and identity
+// ---------------------------------------------------------------
+Security Engineer > P1: "HTTPS request + bearer JWT"
+P1 > Security Engineer: "dashboard · dependency graph · remediation plan · JSON"
+P1 > SupabaseAuth: "JWKS lookup"
+SupabaseAuth > P1: "public signing keys"
+
+// ---------------------------------------------------------------
+// Ingestion and enrichment
+// ---------------------------------------------------------------
+P1 > P2: "manifest / lockfile upload · replay request"
+P2 > P1: "IngestResult (deploy_seq · counts)"
+P2 <> D2: "raw_manifests documents (read + write)"
+P2 <> D1: "packages · versions · deployment · resolves_to · deployment_edge (read + write)"
+P2 > P3: "ecosystem groups + package refs"
+P3 > OSV: "package + version query"
+OSV > P3: "advisories · CVSS · fixed-in"
+P3 > DepsDev: "package metadata query"
+DepsDev > P3: "licence · release · maintainer"
+P3 > D1: "vulnerability · affects · license · maintainer"
+P3 > D2: "raw OSV advisories"
+Actions > P3: "nightly OSV sync · weekly maintainer sync"
+
+// ---------------------------------------------------------------
+// Analysis
+// ---------------------------------------------------------------
+P1 > P4: "blast radius · prune · licence · set-cover query"
+P4 > P1: "ranked results"
+P4 > D1: "recursive CTE reads / view queries"
+P4 <> D3: "cached reads (team + catalogue generations)"
+Actions > P5: "daily cluster recompute"
+P5 > D1: "package text · semantic_cluster rows"
+P5 > D2: "package_embeddings (vector · 2-D coords)"
+P5 > D3: "job lock"
+
+// ---------------------------------------------------------------
+// PR gate and runtime evidence
+// ---------------------------------------------------------------
+GitHubApp > P6: "HMAC-signed push / pull_request webhook"
+P6 <> D3: "queue delivery · claim · retry"
+P6 > GitHubApp: "PR diff request · check-run verdict"
+P6 <> D1: "package / vuln lookup · pr_review · pr_risk_verdict (read + write)"
+P6 > Groq: "stage-3 prompt (medium risk only)"
+Groq > P6: "advisory verdict"
+Actions > P6: "queued-delivery retry"
+Collectors > P7: "execution-count samples (service token)"
+P7 > D2: "runtime_samples (90-day TTL)"
+P7 > D1: "runtime_observation · scan_run"
+
+// ---------------------------------------------------------------
+// Dashboard reads
+// ---------------------------------------------------------------
+P1 > D1: "services · vulnerabilities · stats · plans · teams · alerts"
+P1 <> D3: "team memberships · rate-limit counters · LLM cache"
+
+// force lane order left-to-right
+LaneServe > LaneIngest > LaneAnalyse > LaneGate
+
+legend [position: bottom-left] {
+  [shape: rectangle, color: blue, label: "External entity"]
+  [shape: circle, color: orange, label: "Process"]
+  [shape: cylinder, color: green, label: "Data store"]
+}
