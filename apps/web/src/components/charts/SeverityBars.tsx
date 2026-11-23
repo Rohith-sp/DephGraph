@@ -14,7 +14,7 @@ export function SeverityBars({ counts }: { counts: Record<Severity, number> }) {
       <ResponsiveContainer>
         <BarChart data={data} layout="vertical" margin={{ top: 0, right: 32, bottom: 0, left: 0 }} barCategoryGap={16}>
           <XAxis type="number" hide domain={[0, "dataMax"]} />
-          <YAxis type="category" dataKey="name" width={64} tickLine={false} axisLine={false} tick={tick} />
+          <YAxis type="category" dataKey="name" width={72} tickLine={false} axisLine={false} tick={tick} />
           <Tooltip
             cursor={{ fill: "rgb(var(--fg) / 0.04)" }}
             contentStyle={{
