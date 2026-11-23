@@ -786,7 +786,7 @@ because the read and the write happen under the same row lock.
 # How to rerun the demos
 
 Start the course MySQL and load the schema and the sample data (see
-[`docs/NEXT_STEPS.md`](../docs/NEXT_STEPS.md) §4):
+[`docs/STATUS.md`](../docs/STATUS.md) §4):
 
 ```bash
 scripts/mysql.sh up

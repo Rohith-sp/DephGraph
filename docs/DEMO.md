@@ -1,7 +1,8 @@
 # DephGraph — demo runbook (about 15 minutes)
 
 Two parts: **A. the database course work on MySQL** (what is graded), then **B. the running
-application on PostgreSQL + MongoDB + Redis**, ending with one live pipeline run. Every command is run
+application on PostgreSQL + MongoDB + Redis**, ending with one live pipeline run. Part B uses the local
+Docker stack (it has seed data and a dev token); **C** shows that the same code is also deployed. Every command is run
 from the repo root. Expected outputs are shapes, not fixed numbers: counts depend on seed data and live OSV / registry data.
 
 ## 0. Setup (30 minutes before)
@@ -103,26 +104,24 @@ Optional: `scripts/tx_two_sessions.sh lostupdate` (plain SELECT loses an update,
        --dep pypi:httpx:0.27.0 --dep pypi:werkzeug:2.0.1 --dep npm:lodash:4.17.15
    ```
    Expected: httpx ADVISORY (redundant with requests/flask), werkzeug ADVISORY (CVEs + abandonment
-   55), lodash PASS (stage 1); with the key, ADVISORY rows reach stage 3 with an LLM reason. Say:
+   55), lodash PASS (stage 1); with the key, ADVISORY rows backed by CVEs, copyleft or abandonment reach stage 3 with an LLM reason (redundancy-only findings such as httpx stay at stage 2). Say:
    stage 1 = fast exit, stage 2 = SQL rule table (CVSS, copyleft, abandonment, redundancy), stage 3 =
    LLM may only escalate, never relax.
 
-## C. Production (optional, about 5 minutes, needs internet)
+## C. The live deployment, about 1 minute
 
-Live at https://dephgraph-loki.vercel.app. Real data only: no seed runs in production. Sign in before
-the demo (GitHub button) so the session is warm.
+The production copy runs on Vercel (Mumbai) with Supabase, MongoDB Atlas and Upstash Redis
+(details in [`DEPLOY.md`](DEPLOY.md)). It has no seed data, so use it only to show that it is live:
 
-| # | Show | Say |
-|---|---|---|
-| C1 | Overview | the same schema on hosted Supabase; services were imported from this repo through the GitHub App |
-| C2 | Services → dephgraph-api | real `apps/api` manifest; the graph is laid out as a grid because a requirements file has no edges; critical packages are red |
-| C3 | Vulnerabilities | live OSV advisories for this project's own dependencies; the nightly `osv-sync` cron keeps them fresh |
-| C4 | Remediation → team Core | greedy set cover on real advisories |
-| C5 | GitHub → Actions | cron jobs (`osv-sync`, `maintainers-sync`) and the encrypted nightly backup |
-| C6 | A pull request that adds a dependency | the GitHub App posts the PR gate verdict as a Check Run |
+```bash
+curl -s -w '  %{http_code} %{time_total}s\n' https://dephgraph-loki-api.vercel.app/health
+curl -s -o /dev/null -w '%{http_code}\n' https://dephgraph-loki-api.vercel.app/me
+```
 
-C6 is not rehearsed yet on production: open the PR before the demo and show its Check Run, or skip it
-and use B2.4.
+Expected: `{"status":"ok"}  200` in well under a second, then `401` (no token, so the API refuses).
+Then open https://dephgraph-loki.vercel.app in the browser: the login page, with GitHub sign-in.
+Say: two Vercel projects from one monorepo (web and API), invite-only access, schedules and clustering
+run in GitHub Actions. Do the full walkthrough on the local stack (part B), not on production.
 
 ## If something breaks
 
@@ -133,9 +132,11 @@ and use B2.4.
 | MySQL container | `scripts/mysql.sh down && scripts/mysql.sh up`; logs in `logs/*.log` from the dry run |
 | Groq error | the gate keeps the stage-2 verdict by design; say so |
 | Port busy | set `WEB_PORT`, `API_PORT`, `MYSQL_PORT` before `up` |
+| Live site slow or down | first request after idle can be a cold start; retry once, otherwise skip part C |
 
 ## Do not show
 
 - Any password, token or key: `scripts/mysql.sh password`, `~/.config/dephgraph/*`, `echo $T`.
 - The old ER renders marked "older design" in `er-diagram/README.md`.
-- Your account menu or settings page in production: they show your email.
+- Production data, the Vercel / Supabase / Atlas / Upstash dashboards, or their environment variables.
+- Claims that production holds the demo data: the seed and demo scripts run only on the local stack.

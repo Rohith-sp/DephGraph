@@ -39,8 +39,9 @@ error in the report.
 ### Transaction boundary in the product
 
 The manifest endpoint in `apps/api/app/routers/ingest.py` fetches OSV and deps.dev data before
-opening the write transaction. It then groups the PostgreSQL package, version, metadata, advisory,
-deployment, resolution, and scan writes inside `AsyncSession.begin()`. A database error in that
+opening the write transaction. It then groups the PostgreSQL package, version, licence, metadata,
+advisory, deployment, lockfile-edge (`deployment_edge`), resolution, and scan writes inside
+`AsyncSession.begin()`. Ingest never writes the global `depends_on` table. A database error in that
 block rolls those PostgreSQL changes back together.
 
 This is **not a distributed transaction** across PostgreSQL, upstream APIs, and MongoDB:
@@ -198,7 +199,8 @@ when the transactions finish.
 Legend: **[implemented]** = in the code and checked on the running stack on 22 Nov 2026.
 **[design]** = a Unit V concept explained for DephGraph; not built or deployed here.
 
-DephGraph is polyglot. PostgreSQL is the system of record (23 tables, constraints, joins). MongoDB
+DephGraph is polyglot. PostgreSQL is the system of record (31 tables: the 23 core tables of the course design plus 8
+operational ones; constraints, joins). MongoDB
 is the raw layer (documents as received, plus derived vectors). Redis is cache and lock. The
 database name is `dephgraph` (`mongo_db_name` in `apps/api/app/config.py`).
 
@@ -271,8 +273,9 @@ Manifest ingest (`POST /ingest/manifest`):
    transaction open.
 4. `osv_fetcher.store_raw(..., required=True)`: advisories are saved to `osv_advisories` before any
    vulnerability row exists in Postgres.
-5. One Postgres transaction: per-service advisory lock, packages, metadata, vulnerabilities,
-   deployment with `resolves_to` closure, `scan_run`.
+5. One Postgres transaction: per-service advisory lock, packages, licences, metadata, vulnerabilities,
+   deployment with its lockfile edges (`deployment_edge`, stored per deployment, never in the global
+   `depends_on`) and `resolves_to` closure, `scan_run`.
 6. On commit, `_mark(..., "projected")` records `deploy_seq`, `projected_at`, `parsed_packages`;
    on any exception it records `failed` with `error`. Then the blast-radius cache is invalidated.
 7. `POST /ingest/replay/{manifest_id}` loads the stored document and runs step 3 onward again, as a
@@ -296,14 +299,18 @@ a code comment).
 
 | Key | Type | Value | Expiry |
 |---|---|---|---|
-| `dephgraph:blast_radius:gen` | string (counter) | generation number; absent means 0 | none |
-| `dephgraph:blast_radius:{service_id}:{gen}` | string | JSON blast-radius result | 24 h (`CACHE_TTL = 86400`) |
+| `dephgraph:datagen:catalog`, `dephgraph:datagen:team:{id}`, `dephgraph:datagen:members` | string (counter) | data generation of the shared catalogue, of one team, of memberships | none |
+| `dephgraph:cache:{generations}:{key}` (e.g. `blast_radius:v2:{service_id}`) | string | cached JSON response | 120 s (`TTL` in `services/cache.py`) |
+| `dephgraph:member:{user_id}` | string | the user's team ids | short |
+| `dephgraph:rl:*` | counter | rate-limit window per signed-in user (per client IP without a token); default 100/minute | window length |
+| `dephgraph:prompts:{sha256}` | string | PR-gate LLM prompt | 7 days |
 | `dephgraph:lock:cluster_recompute` | string | random token of the lock holder | 900 s (`LOCK_TTL`) |
 
-Blast-radius cache (`services/blast_radius.py`): a reader reads the generation first, then
-`GET`s `{service}:{gen}`; on a miss it computes from Postgres and `SET ... EX 86400`. `invalidate()`
-does `INCR` on the generation and deletes old keys. A reader that started before an invalidation
-writes to the old generation, which nobody reads, so it cannot bring back stale data.
+Read cache (`services/cache.py`): a cache key embeds the current generation of every team (and the
+catalogue) it depends on; on a miss the result is computed from Postgres and stored for 120 s. A write
+calls `bump()`, which `INCR`s the affected team's generation (and the catalogue's for shared data) after
+commit. A reader that started before the bump writes under the old generation, which nobody reads, so it
+cannot bring back stale data.
 
 Recompute lock (`jobs/cluster.py`): acquired with `SET key token NX EX 900`, so only one
 recompute runs at a time. Release is a Lua script: delete only if the stored token is still ours,
@@ -385,7 +392,8 @@ skipped because its name did not match a resolved package:
 { package_id: 2, cluster_id: 50, embedding: [ … 384 floats … ], umap_2d: [ 5.9729, 7.3226 ] }
 ```
 
-`review_responses` (written by `stage3` for each ADVISORY dependency the LLM judged; prompt trimmed):
+`review_responses` (written by `stage3` for each ADVISORY dependency the LLM judged; redundancy-only
+findings skip stage 3; prompt trimmed):
 
 ```js
 {
@@ -395,6 +403,9 @@ skipped because its name did not match a resolved package:
   responded_at: ISODate('2026-11-22T10:38:52.880Z')
 }
 ```
+
+This document was recorded on 22 Nov 2026, when the ADVISORY band still started at CVSS 6.0. The final
+rule is ADVISORY for CVSS 7.0–8.9 and BLOCK for 9.0 and above.
 
 ### 7. Aggregation pipelines run on live data [implemented]
 
@@ -426,11 +437,13 @@ sql". The collection holds 97 documents (only packages with a description are em
 
 ### 8. Replication, consistency and CAP [design]
 
-The Compose stack runs one standalone MongoDB and one Redis, so nothing here is deployed.
+The local Compose stack runs one standalone MongoDB and one Redis, so none of this is visible there. The
+production deployment (23 Nov 2026, see `docs/DEPLOY.md`) uses MongoDB Atlas M0 and Upstash Redis, where
+replication is managed by the provider; the application code does not configure it.
 
 - **Primary/secondary:** a MongoDB replica set has one primary taking writes; secondaries copy its
-  oplog. If the primary fails, an election picks a new one. Atlas M0 (the planned target in
-  `docs/DEPLOY.md`) is a managed replica set.
+  oplog. If the primary fails, an election picks a new one. Atlas M0 (used by the production
+  deployment, `docs/DEPLOY.md`) is a managed replica set.
 - **Consistency trade-off:** reading from a secondary can return data a little behind the primary
   (eventual consistency). DephGraph's raw-first write (step 2 above) should use write concern
   `majority` and read from the primary, because step 3 reads back what step 2 wrote. Reads of

@@ -6,6 +6,21 @@ Mumbai (`ap-south-1`) too where the free tier offers it; check each console's re
 database adds its round-trip time to every query. Vercel Hobby is for personal, non-commercial use.
 Every variable is documented in [`.env.example`](../.env.example).
 
+## Current deployment (23 November 2026)
+
+| Part | Where |
+|---|---|
+| Web (Vercel project `dephgraph-loki`, Root Directory `apps/web`, region `bom1`) | https://dephgraph-loki.vercel.app |
+| API (Vercel project `dephgraph-loki-api`, Root Directory `apps/api`, region `bom1`) | https://dephgraph-loki-api.vercel.app |
+| Postgres + Auth | Supabase (GitHub sign-in on; Site URL and redirect URL = the web URL) |
+| MongoDB | Atlas M0, Mumbai, added through the Vercel Marketplace integration on the API project |
+| Redis | Upstash (free), Mumbai, added through the Vercel Marketplace integration on the API project |
+| GitHub App | `dephgraph-rohith`, public; webhook `https://dephgraph-loki.vercel.app/api/webhooks/github`; events Push and Pull request |
+| Schedules | GitHub Actions secrets set; `cron.yml`, `cluster.yml` and `backup.yml` use them |
+
+Checked after the deploy: API `/health` answers `200 {"status":"ok"}` in about 0.3 s, `/me` without a token
+answers `401`, and the web `/login` page answers `200`.
+
 Order: 1 Supabase, 2 Atlas, 3 Upstash, 4 Vercel API project, 5 Vercel web project, 6 GitHub (secrets, App,
 token), 7 smoke test. The API URL is needed for the web project and for GitHub, so deploy the API first.
 
@@ -24,12 +39,15 @@ edited: schema changes go in a new file with the next unused number. `--status` 
 A database that was set up by hand with 001..N (SQL editor, psql) needs `--baseline N` once, which records those
 files without running them after checking their tables exist. `python scripts/verify_schema.py` checks the result.
 
-Access is per team (`team_member`): the API limits every read and write to the caller's teams and the RLS
-policies in `010` mirror that. Disable open sign-up (Auth > Providers > Email > "Allow new users to sign up")
+Access is per team (`team_member`): the API checks membership itself and limits every read and write to the
+caller's teams. The RLS policies in `010` mirror that rule and guard direct database access (Supabase PostgREST). Disable open sign-up (Auth > Providers > Email > "Allow new users to sign up")
 and add people with `python scripts/add_team_member.py --team-slug <slug> --user-id <uuid>` (or `--email`).
 
 New projects sign tokens with ES256/RS256; the API verifies them against
 `{SUPABASE_URL}/auth/v1/.well-known/jwks.json`. `SUPABASE_JWT_SECRET` is only for legacy HS256 projects.
+
+For GitHub sign-in set Authentication > URL Configuration: Site URL = the web URL, and add the web URL to the
+redirect URLs (see also "Access model" below).
 
 Two connection strings, both with the `postgresql+asyncpg://` scheme (Project > Connect > Shared pooler):
 
@@ -45,6 +63,17 @@ The pooled user is `postgres.<project-ref>`.
 Atlas M0: create the cluster and a database user, allow `0.0.0.0/0` in Network Access (Vercel has no fixed
 egress IP), copy the SRV string into `MONGO_URI`. Indexes are created idempotently at every cold start.
 Upstash: create a Redis database, copy the `rediss://default:<token>@<host>:6379` URL into `REDIS_URL`.
+
+**Using the Vercel Marketplace integrations (what the live deploy did).** Atlas and Upstash can both be added
+from the API project's Storage tab. The integrations create their own variables (`MONGODB_URI`, and
+`UPSTASH_REDIS_*` such as `UPSTASH_REDIS_REDIS_URL`), but the app reads only **`MONGO_URI`** and **`REDIS_URL`**.
+Copy the values into those two names yourself:
+
+- `MONGO_URI` = the value of `MONGODB_URI`.
+- `REDIS_URL` = the `rediss://` URL (`UPSTASH_REDIS_REDIS_URL`), **not** the REST `https://` URL.
+- To read a value, turn "Sensitive" off on the integration's variables, or copy it from the store's
+  Quickstart ("Show secret") page.
+- Still allow `0.0.0.0/0` in Atlas Network Access.
 Free limit: 500K commands per month. The limiter costs two commands per request (one `EVAL` that runs `INCR` and
 `EXPIRE`) and a cached read one more, so roughly 150K requests per month. Cache generations (per team, one for the
 shared catalogue, one for memberships) and memberships are also held in each instance's memory for 1.5 s, so a burst
@@ -53,10 +82,21 @@ degrade to "compute directly" / in-memory counters if Redis is exhausted or down
 
 ## 4. Vercel project "API"
 
-Import the repo, **Root Directory `apps/api`**, framework preset Other/FastAPI. Vercel detects `app/main.py`
-(top-level `app`), installs `requirements.txt` (slim: no torch), uses Python 3.12 (`.python-version`) and
-reads `apps/api/vercel.json` (region `bom1`, `maxDuration` 300 s, tests/migrations/jobs excluded from the
-bundle). One function serves every route, so the 300 s Hobby maximum applies to all of them.
+Import the repo, **Root Directory `apps/api`**. Vercel detects `app/main.py` (top-level `app`), uses Python 3.12
+(`.python-version`) and reads `apps/api/vercel.json` (region `bom1`, `maxDuration` 300 s, tests/migrations/jobs
+excluded from the bundle). One function serves every route, so the 300 s Hobby maximum applies to all of them.
+
+**Required: override the build settings** (Settings > Build and Deployment). Vercel sees the Turborepo at the
+repo root and otherwise runs `npm install` and `turbo run build` for this project, so the Python packages are
+never installed and every request fails with `ModuleNotFoundError: No module named 'httpx'`. Set:
+
+| Setting | Value |
+|---|---|
+| Framework Preset | FastAPI |
+| Install Command (override on) | `pip install -r requirements.txt` (slim: no torch) |
+| Build Command (override on) | empty |
+
+Redeploy after changing them.
 
 | Variable | Value |
 |---|---|
@@ -68,7 +108,7 @@ bundle). One function serves every route, so the 300 s Hobby maximum applies to 
 | `GROQ_API_KEY` | Groq key (PR gate stage 3); `GROQ_MODEL` optional |
 | `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY_BASE64`, `GITHUB_WEBHOOK_SECRET` | GitHub App; key is the PEM, base64-encoded |
 | `INTERNAL_CRON_SECRET` | long random string; guards `/internal/*` |
-| `CORS_ORIGINS` | JSON list, e.g. `["https://dephgraph.vercel.app"]` |
+| `CORS_ORIGINS` | JSON list, e.g. `["https://dephgraph-loki.vercel.app"]` |
 | `WEB_URL` | web project URL; alert issues link to its vulnerability page |
 | `GITHUB_REPOSITORY` | `owner/name` of this repo |
 | `ENVIRONMENT` | `production` (JSON logs) |
@@ -77,7 +117,7 @@ Optional: `SENTRY_DSN` (errors are reported only when set; request bodies, cooki
 `X-Hub-Signature-256` and `X-Cron-Secret` headers are stripped) and `SENTRY_TRACES_SAMPLE_RATE` (default `0.1`),
 `RATE_LIMIT` (default `100/minute`), `TRUSTED_PROXY_HOPS` (default `1`). Vercel sets `VERCEL=1` itself.
 
-Rate limiting is per authenticated user (verified JWT `sub`), else per client IP, as a fixed window in Redis
+Rate limiting is per signed-in user (verified JWT `sub`), or per client IP for requests without a token (default 100/minute), as a fixed window in Redis
 shared by all instances (in-memory fallback when Redis errors). Vercel overwrites `X-Forwarded-For` with the
 client's IP and does not forward client-supplied values, so the default `TRUSTED_PROXY_HOPS=1` is right;
 raise it only if you add another proxy. `/health` and `/pr-gate/webhook` are exempt.
@@ -108,7 +148,7 @@ processing_ms, deps}`, which the route only logs; GitHub sees the result as a Ch
 Deliveries are durable once they reach the API: it stores each `pull_request`, `push` and installation delivery (`pr_gate_delivery`, keyed by
 `X-GitHub-Delivery`) before reviewing it. A redelivery of the same id is a no-op (`{"duplicate": true}`), and a review
 that fails or whose function dies is retried with backoff (2, 4, 8, 16 minutes, 5 attempts) by `retry.yml`, which calls
-`POST /internal/pr-gate/retry`. Rows older than 30 days are purged. The one remaining gap is a delivery that never
+`POST /internal/pr-gate/retry`. Rows older than 30 days are purged. The one case the queue cannot cover is a delivery that never
 reaches the API: the web route retries the forward twice (2 s, 8 s) and then logs/reports the failure; use "Redeliver" in
 the GitHub App's Advanced tab to replay it.
 
@@ -169,11 +209,14 @@ workflow), or push any commit. A failed keep-alive step fails the run, and GitHu
 
 ## Using DephGraph on this repository (dogfooding)
 
-1. Create the GitHub App (webhook URL `https://<web project>/api/webhooks/github`, secret = `GITHUB_WEBHOOK_SECRET`,
+1. Create the GitHub App (the live one is `dephgraph-rohith`, made public so other people can sign in with it
+   and install it; webhook URL `https://<web project>/api/webhooks/github`, secret = `GITHUB_WEBHOOK_SECRET`,
    permissions: Actions read and write, Checks read and write, Contents read, Issues read and write, Metadata read,
    Pull requests read, account Email addresses read; events: Pull request, Push, Installation,
    Installation repositories) and install it on this repository. Push and the two installation events import
    a service's manifests; Issues write opens vulnerability alerts; Actions write dispatches `cluster.yml`.
+   The live App currently subscribes to Push and Pull request only, so a new installation does not import
+   manifests until the next push; add the two installation events if you want that.
 2. Register the repository as a service of a team:
    `python scripts/register_service.py --repo https://github.com/Rohith-sp/DephGraph --team <team-slug>`
    (needs `DATABASE_URL`; idempotent; the name defaults to the repository name).
@@ -183,8 +226,10 @@ workflow), or push any commit. A failed keep-alive step fails the run, and GitHu
 ## 7. Smoke test
 
 ```bash
-BASE=https://<api project>.vercel.app
-curl $BASE/health
+BASE=https://dephgraph-loki-api.vercel.app
+curl $BASE/health                         # 200 {"status":"ok"}
+curl -i $BASE/me                          # 401 without a token
+curl -I https://dephgraph-loki.vercel.app/login   # 200
 curl -X POST $BASE/internal/osv-sync -H "X-Cron-Secret: $INTERNAL_CRON_SECRET"
 curl $BASE/services -H "Authorization: Bearer $TOKEN"
 curl -X POST $BASE/clusters/recompute -H "Authorization: Bearer $TOKEN"   # {"status":"dispatched"}; watch the Actions tab
