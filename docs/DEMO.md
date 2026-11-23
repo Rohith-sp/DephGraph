@@ -107,6 +107,23 @@ Optional: `scripts/tx_two_sessions.sh lostupdate` (plain SELECT loses an update,
    stage 1 = fast exit, stage 2 = SQL rule table (CVSS, copyleft, abandonment, redundancy), stage 3 =
    LLM may only escalate, never relax.
 
+## C. Production (optional, about 5 minutes, needs internet)
+
+Live at https://dephgraph-loki.vercel.app. Real data only: no seed runs in production. Sign in before
+the demo (GitHub button) so the session is warm.
+
+| # | Show | Say |
+|---|---|---|
+| C1 | Overview | the same schema on hosted Supabase; services were imported from this repo through the GitHub App |
+| C2 | Services → dephgraph-api | real `apps/api` manifest; the graph is laid out as a grid because a requirements file has no edges; critical packages are red |
+| C3 | Vulnerabilities | live OSV advisories for this project's own dependencies; the nightly `osv-sync` cron keeps them fresh |
+| C4 | Remediation → team Core | greedy set cover on real advisories |
+| C5 | GitHub → Actions | cron jobs (`osv-sync`, `maintainers-sync`) and the encrypted nightly backup |
+| C6 | A pull request that adds a dependency | the GitHub App posts the PR gate verdict as a Check Run |
+
+C6 is not rehearsed yet on production: open the PR before the demo and show its Check Run, or skip it
+and use B2.4.
+
 ## If something breaks
 
 | Problem | Do |
@@ -121,4 +138,4 @@ Optional: `scripts/tx_two_sessions.sh lostupdate` (plain SELECT loses an update,
 
 - Any password, token or key: `scripts/mysql.sh password`, `~/.config/dephgraph/*`, `echo $T`.
 - The old ER renders marked "older design" in `er-diagram/README.md`.
-- Claims about a live URL: nothing is deployed.
+- Your account menu or settings page in production: they show your email.
