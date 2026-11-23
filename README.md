@@ -185,6 +185,7 @@ DephGraph/
 ├── scripts/                 Migrations runner, seeding, dev tokens, demo, test runner, MySQL helpers
 ├── supabase/                Local Supabase configuration
 ├── docs/                    Deploy, demo, coursework and status documents
+├── dfd/                     Data flow diagrams (levels 0-2, Eraser sources + PNGs)
 ├── er-diagram/              ER model, diagrams, MySQL course schema
 ├── relational-model/        ER-to-relational mapping
 ├── normalization/           Functional dependencies, normal forms
@@ -204,6 +205,7 @@ DephGraph/
 | [docs/DEMO.md](docs/DEMO.md) | Demo runbook |
 | [docs/COURSEWORK.md](docs/COURSEWORK.md) | Course phases 4 to 6: SQL, transactions, NoSQL |
 | [docs/STATUS.md](docs/STATUS.md) | Final status: what was built, tests, deployment |
+| [dfd/README.md](dfd/README.md) | Data flow diagrams: context, system and ingestion levels |
 | [collectors/README.md](collectors/README.md) | Runtime collector setup |
 
 ## Course project

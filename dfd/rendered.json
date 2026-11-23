@@ -1,0 +1,17 @@
+{
+  "level-0-context": {
+    "createEraserFileUrl": "https://app.eraser.io/new?requestId=ZIAegR8XjQJFE5okoVIm&state=8PIGYGrdBuOPmenynW8jj",
+    "imageUrl": "https://app.eraser.io/api/export/artifact?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJwYXRoIjoiZXhwb3J0cy90b2tlbnMvMDQzNzNkOTM3NDJiYzU4NTY4YTEyZTYzNGIwMzQwZDFjNjRmYWI2OGVjMDAyZmM0YjdmMjkwMDJmMDZjZTAzNC5wbmciLCJpYXQiOjE3OTU0MDUwMzIsImV4cCI6MTc5NTQwODYzMiwiYXVkIjoiZXJhc2VyLWV4cG9ydC1hcnRpZmFjdCIsImlzcyI6ImVyYXNlci1saXZlIn0.OsckOVsdPCigKkQXWr8wHiQOq25NZmxkEmQBel1OX1s",
+    "file": "dfd/images/dfd-level-0-context.png"
+  },
+  "level-1-system": {
+    "createEraserFileUrl": "https://app.eraser.io/new?requestId=Sxdust6xqAAZAObH0PRE&state=pcTv13MfnDg7aeyHNuuLZ",
+    "imageUrl": "https://app.eraser.io/api/export/artifact?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJwYXRoIjoiZXhwb3J0cy90b2tlbnMvY2U2MDdlMzRiZmIxZjQwMzhlYmRlNmY1MTBmMzI0ZmIxOTQ0ZGQwMGM4OTcxNmFjOWNkYWY4NDVmMGJmOTAzZC5wbmciLCJpYXQiOjE3OTU0MDUwNDMsImV4cCI6MTc5NTQwODY0MywiYXVkIjoiZXJhc2VyLWV4cG9ydC1hcnRpZmFjdCIsImlzcyI6ImVyYXNlci1saXZlIn0.jSF69c51IJTSXB4IHE8i7j_wZkrem35PMTlVW5KKtxM",
+    "file": "dfd/images/dfd-level-1-system.png"
+  },
+  "level-2-ingestion": {
+    "createEraserFileUrl": "https://app.eraser.io/new?requestId=DDf2Bk3luhtdYGS7fgmw&state=pLM67yXOZtKiGe-dzCADo",
+    "imageUrl": "https://app.eraser.io/api/export/artifact?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJwYXRoIjoiZXhwb3J0cy90b2tlbnMvZTQwMDA5NWM0MTIxY2Q5Njk2MGMyNTVhZmQ3OGM5OTkyZjkwNzhlZmFhZmI2OTIwYWE0NzUxZTIyYzQ5OWFiZC5wbmciLCJpYXQiOjE3OTU0MDUwNDksImV4cCI6MTc5NTQwODY0OSwiYXVkIjoiZXJhc2VyLWV4cG9ydC1hcnRpZmFjdCIsImlzcyI6ImVyYXNlci1saXZlIn0.bKjh7fmYOY5q6gcIFOIIKGD0UOl0Lg-ySumzX64hsNs",
+    "file": "dfd/images/dfd-level-2-ingestion.png"
+  }
+}

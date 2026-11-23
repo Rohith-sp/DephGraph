@@ -1,0 +1,54 @@
+title DephGraph — Level 0 Context Diagram (DFD)
+typeface clean
+textSize medium
+colorMode pastel
+direction down
+
+// ---------------------------------------------------------------
+// External entities (squares). Everything outside the system
+// boundary that sends data in or receives data out.
+// ---------------------------------------------------------------
+Security Engineer [shape: rectangle, color: blue, label: "E1  Security Engineer / Developer"]
+GitHubApp [shape: rectangle, color: blue, label: "E2  GitHub App (PRs · push · Checks)"]
+OSV [shape: rectangle, color: blue, label: "E3  OSV.dev"]
+DepsDev [shape: rectangle, color: blue, label: "E4  deps.dev"]
+Groq [shape: rectangle, color: blue, label: "E5  Groq LLM"]
+Actions [shape: rectangle, color: blue, label: "E6  GitHub Actions (scheduled jobs)"]
+SupabaseAuth [shape: rectangle, color: blue, label: "E7  Supabase Auth (IdP)"]
+Collectors [shape: rectangle, color: blue, label: "E8  Runtime collectors (Python · Node)"]
+
+// ---------------------------------------------------------------
+// The whole system as ONE process (circle). No internal detail,
+// no data stores at this level.
+// ---------------------------------------------------------------
+DephGraph [shape: circle, color: orange, label: "0\nDephGraph\nSupply-Chain Risk Platform"]
+
+// ---------------------------------------------------------------
+// Data exchanges across the system boundary
+// ---------------------------------------------------------------
+Security Engineer > DephGraph: "manifests · scan and analysis requests · team and alert settings"
+DephGraph > Security Engineer: "dashboard · dependency graph · vulnerability and blast-radius views · plans"
+
+GitHubApp > DephGraph: "HMAC-signed push / pull_request webhooks"
+DephGraph > GitHubApp: "PR diff request · check-run verdict (pass / advisory / block)"
+
+DephGraph > OSV: "package + version lookup"
+OSV > DephGraph: "OSV advisories (CVE / GHSA, CVSS, fixed-in)"
+
+DephGraph > DepsDev: "package metadata lookup"
+DepsDev > DephGraph: "licence · release date · maintainer data"
+
+DephGraph > Groq: "stage-3 dependency risk prompt"
+Groq > DephGraph: "advisory verdict + reasoning"
+
+Actions > DephGraph: "OSV sync · maintainer sync · clustering · PR-gate retry · keepalive"
+
+DephGraph > SupabaseAuth: "JWKS public-key request"
+SupabaseAuth > DephGraph: "token signing keys (JWT verification)"
+
+Collectors > DephGraph: "runtime execution samples (service token)"
+
+legend [position: bottom-left] {
+  [shape: rectangle, color: blue, label: "External entity"]
+  [shape: circle, color: orange, label: "Process (system under study)"]
+}

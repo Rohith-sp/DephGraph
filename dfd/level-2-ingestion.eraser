@@ -1,0 +1,107 @@
+title DephGraph — Level 2 DFD (Process 2.0: Ingest Manifests & Lockfiles)
+typeface clean
+textSize medium
+colorMode pastel
+direction right
+
+// ---------------------------------------------------------------
+// External entities that touch this sub-process
+// ---------------------------------------------------------------
+Security Engineer [shape: rectangle, color: blue, label: "E1  Security Engineer / Developer"]
+OSV [shape: rectangle, color: blue, label: "E3  OSV.dev"]
+DepsDev [shape: rectangle, color: blue, label: "E4  deps.dev"]
+
+// ---------------------------------------------------------------
+// Local data stores used by this sub-process
+// ---------------------------------------------------------------
+D1 [shape: cylinder, color: green, label: "D1  PostgreSQL — package · package_version · vulnerability · affects · deployment · deployment_edge · resolves_to · scan_run"]
+D2 [shape: cylinder, color: green, label: "D2  MongoDB — raw_manifests · osv_advisories"]
+D3 [shape: cylinder, color: green, label: "D3  Redis — team + catalogue data generations"]
+
+// ---------------------------------------------------------------
+// 2A — receive the evidence and keep the raw copies
+// ---------------------------------------------------------------
+Group2A [color: gray, label: "2A  Receive and keep the raw evidence"] {
+  2.1 [shape: circle, color: orange, label: "2.1\nReceive manifest /\nlockfile batch"]
+  2.2 [shape: circle, color: orange, label: "2.2\nAuthorise service\n& compute SHA-256"]
+  2.3 [shape: circle, color: orange, label: "2.3\nUpsert raw manifest\ndocuments"]
+}
+
+// ---------------------------------------------------------------
+// 2B — parse, then enrich from external registries
+// ---------------------------------------------------------------
+Group2B [color: gray, label: "2B  Parse and enrich from registries"] {
+  2.4 [shape: circle, color: orange, label: "2.4\nParse manifests +\nlockfiles (eco groups)"]
+  2.5 [shape: circle, color: orange, label: "2.5\nFetch registry\nmetadata"]
+  2.6 [shape: circle, color: orange, label: "2.6\nFetch OSV\nadvisories"]
+  2.7 [shape: circle, color: orange, label: "2.7\nStore raw\nadvisories"]
+}
+
+// ---------------------------------------------------------------
+// 2C — one atomic Postgres transaction
+// ---------------------------------------------------------------
+Group2C [color: gray, label: "2C  Atomic Postgres projection (one transaction)"] {
+  2.8 [shape: circle, color: orange, label: "2.8\nProject packages\n+ versions"]
+  2.9 [shape: circle, color: orange, label: "2.9\nProject metadata\n+ vulnerabilities"]
+  2.10 [shape: circle, color: orange, label: "2.10\nProject deployment\n+ dependency edges"]
+  2.11 [shape: circle, color: orange, label: "2.11\nRecord scan_run"]
+}
+
+// ---------------------------------------------------------------
+// 2D — commit, report, invalidate
+// ---------------------------------------------------------------
+Group2D [color: gray, label: "2D  Commit, report, invalidate"] {
+  2.12 [shape: circle, color: orange, label: "2.12\nMark documents\nprojected / failed"]
+  2.13 [shape: circle, color: orange, label: "2.13\nBump cache\ngenerations"]
+  2.14 [shape: circle, color: orange, label: "2.14\nReturn IngestResult\nor error envelope"]
+}
+
+// ---------------------------------------------------------------
+// Happy path
+// ---------------------------------------------------------------
+Security Engineer > 2.1: "service_id · environment · [manifest files] · replay id"
+2.1 > 2.2: "accepted uploads"
+2.2 > 2.3: "sha256 + service_id (one doc per pair)"
+2.3 > D2: "raw_manifests upsert · status: received · returns _id"
+2.3 > 2.4: "raw_content + ecosystem per document"
+
+2.4 > 2.5: "package refs per ecosystem group"
+2.4 > 2.6: "package refs per ecosystem group"
+DepsDev > 2.5: "licence · release date · maintainer"
+OSV > 2.6: "advisories · CVSS · fixed-in"
+2.6 > 2.7: "raw OSV payloads"
+2.7 > D2: "osv_advisories upsert (required)"
+
+2.5 > 2.8: "metadata keyed by package"
+2.7 > 2.9: "advisory hits"
+2.8 > D1: "package · package_version (sorted upserts per group)"
+2.8 > 2.9: "resolved package ids"
+2.9 > D1: "vulnerability · affects · license · maintainer"
+2.9 > 2.10: "direct deps + locked edges"
+2.10 > D1: "deployment (environment) · resolves_to · deployment_edge"
+2.10 > 2.11: "deploy_seq"
+2.11 > D1: "scan_run (source: manual)"
+
+2.11 > 2.12: "transaction committed"
+2.12 > D2: "status: projected + deploy_seq + parsed_packages"
+2.12 > 2.13: "projection done"
+2.13 > D3: "bump team + catalogue data generations"
+2.13 > 2.14: "cache invalidated"
+2.14 > Security Engineer: "manifest_id · deploy_seq · counts · duration_ms"
+
+// ---------------------------------------------------------------
+// Failure paths
+// ---------------------------------------------------------------
+2.2 > 2.14: "404 unknown service / no access · 503 raw store down" [color: red]
+2.4 > 2.14: "422 malformed manifest / no versioned packages" [color: red]
+2.10 > 2.12: "rollback → status: failed + error" [color: red]
+
+// keep the four phases in reading order
+Group2A > Group2B > Group2C > Group2D
+
+legend [position: bottom-left] {
+  [shape: rectangle, color: blue, label: "External entity"]
+  [shape: circle, color: orange, label: "Sub-process"]
+  [shape: cylinder, color: green, label: "Data store"]
+  [connection: >, color: red, label: "Error / alternate path"]
+}
